@@ -4,6 +4,14 @@ export interface AuthTokens {
   refreshToken: string
 }
 
+export interface AuthResponse extends AuthTokens {
+  user: Pick<User, 'id' | 'email' | 'createdAt'>
+}
+
+export interface RefreshTokenRequest {
+  refreshToken: string
+}
+
 export interface LoginRequest {
   email: string
   password: string
