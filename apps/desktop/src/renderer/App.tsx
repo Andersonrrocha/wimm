@@ -1,22 +1,29 @@
+import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { AuthProvider } from './context/auth-context'
+import { ProtectedRoute } from './components/protected-route'
+import { LoginPage } from './pages/login-page'
+import { RegisterPage } from './pages/register-page'
+import { DashboardPage } from './pages/dashboard-page'
+
 function App(): JSX.Element {
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: '100vh',
-        gap: '0.5rem',
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-      }}
-    >
-      <h1 style={{ fontSize: '2rem', fontWeight: 700 }}>Wimm</h1>
-      <p style={{ color: '#888', fontSize: '1rem' }}>Personal Finance Tracker</p>
-      <p style={{ color: '#555', fontSize: '0.875rem', marginTop: '1rem' }}>
-        Phase 1 — Project Foundation
-      </p>
-    </div>
+    <HashRouter>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
+          <Route
+            path="/"
+            element={
+              <ProtectedRoute>
+                <DashboardPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AuthProvider>
+    </HashRouter>
   )
 }
 

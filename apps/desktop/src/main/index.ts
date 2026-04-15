@@ -1,5 +1,15 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
+import { clearTokens, getAccessToken, getRefreshToken, setTokens } from './store'
+
+function registerIpcHandlers(): void {
+  ipcMain.handle('tokens:getAccess', () => getAccessToken())
+  ipcMain.handle('tokens:getRefresh', () => getRefreshToken())
+  ipcMain.handle('tokens:set', (_event, access: string, refresh: string) =>
+    setTokens(access, refresh),
+  )
+  ipcMain.handle('tokens:clear', () => clearTokens())
+}
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -24,6 +34,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  registerIpcHandlers()
   createWindow()
 
   app.on('activate', () => {
