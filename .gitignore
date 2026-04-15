@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+out/
+.turbo/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Prisma
+prisma/.env
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+
+# Test coverage
+coverage/
+
+# Electron build artifacts
+apps/desktop/dist/
+apps/desktop/out/
+
+# NestJS
+apps/api/dist/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Cursor (local-only; do not version)
+.cursorrules
