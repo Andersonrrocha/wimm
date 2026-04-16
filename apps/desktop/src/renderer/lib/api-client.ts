@@ -31,6 +31,9 @@ export function createApiClient(): AxiosInstance {
 
   // Attach stored access token to every request
   client.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
+    if (config.data instanceof FormData) {
+      config.headers.delete('Content-Type')
+    }
     const token = await window.tokenStore.getAccessToken()
     if (token) {
       config.headers.set('Authorization', `Bearer ${token}`)

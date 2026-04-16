@@ -83,6 +83,7 @@ export interface Transaction {
   userId: string
   sourceId: string | null
   categoryId: string | null
+  importBatchId: string | null
   kind: TransactionKind
   amount: string
   description: string
@@ -90,4 +91,45 @@ export interface Transaction {
   fingerprint: string | null
   createdAt: string
   updatedAt: string
+}
+
+// Imports (CSV / OFX)
+export type ImportBatchFormat = 'CSV' | 'OFX'
+
+export interface ImportPreviewRow {
+  occurredAt: string
+  kind: TransactionKind
+  amount: string
+  description: string
+  fingerprint: string
+  isDuplicate: boolean
+}
+
+export interface ImportPreviewResponse {
+  format: ImportBatchFormat
+  fileName: string
+  rows: ImportPreviewRow[]
+  totalParsed: number
+  duplicateCount: number
+  newCount: number
+}
+
+export interface CommitImportRow {
+  occurredAt: string
+  kind: TransactionKind
+  amount: number
+  description: string
+}
+
+export interface CommitImportRequest {
+  sourceId: string
+  fileName: string
+  format: ImportBatchFormat
+  rows: CommitImportRow[]
+}
+
+export interface CommitImportResponse {
+  importBatchId: string
+  created: number
+  skippedDuplicates: number
 }

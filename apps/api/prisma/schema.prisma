@@ -17,6 +17,7 @@ model User {
   sources        Source[]
   categories     Category[]
   transactions   Transaction[]
+  importBatches  ImportBatch[]
 }
 
 enum SourceType {
@@ -37,14 +38,15 @@ enum TransactionKind {
 }
 
 model Source {
-  id           String        @id @default(uuid())
-  userId       String
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name         String
-  type         SourceType
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  transactions Transaction[]
+  id             String          @id @default(uuid())
+  userId         String
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  type           SourceType
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  transactions   Transaction[]
+  importBatches  ImportBatch[]
 
   @@unique([userId, name])
   @@index([userId])
@@ -64,24 +66,52 @@ model Category {
   @@index([userId])
 }
 
+enum ImportBatchFormat {
+  CSV
+  OFX
+}
+
+enum ImportBatchStatus {
+  COMPLETED
+}
+
+model ImportBatch {
+  id           String             @id @default(uuid())
+  userId       String
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceId     String
+  source       Source             @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  fileName     String
+  format       ImportBatchFormat
+  status       ImportBatchStatus  @default(COMPLETED)
+  createdAt    DateTime           @default(now())
+  transactions Transaction[]
+
+  @@index([userId])
+  @@index([sourceId])
+}
+
 model Transaction {
-  id          String            @id @default(uuid())
-  userId      String
-  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  sourceId    String?
-  source      Source?           @relation(fields: [sourceId], references: [id], onDelete: SetNull)
-  categoryId  String?
-  category    Category?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  kind        TransactionKind
-  amount      Decimal           @db.Decimal(14, 2)
-  description String
-  occurredAt  DateTime
-  fingerprint String?
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  id             String            @id @default(uuid())
+  userId         String
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceId       String?
+  source         Source?           @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  categoryId     String?
+  category       Category?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  importBatchId  String?
+  importBatch    ImportBatch?      @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  kind           TransactionKind
+  amount         Decimal           @db.Decimal(14, 2)
+  description    String
+  occurredAt     DateTime
+  fingerprint    String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
 
   @@index([userId, occurredAt])
   @@index([userId])
+  @@index([userId, fingerprint])
 }
 
 model RefreshToken {

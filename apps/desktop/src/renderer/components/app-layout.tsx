@@ -37,6 +37,9 @@ export function AppLayout(): JSX.Element {
           <NavLink to="/sources" style={({ isActive }) => navLinkStyle(isActive)}>
             Sources
           </NavLink>
+          <NavLink to="/imports" style={({ isActive }) => navLinkStyle(isActive)}>
+            Import
+          </NavLink>
         </nav>
         <button type="button" onClick={handleLogout} style={styles.logoutBtn}>
           Sign out
