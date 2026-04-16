@@ -1,0 +1,25 @@
+# Local PostgreSQL for development. Start: docker compose up -d
+# Default credentials match apps/api/.env.example (DATABASE_URL).
+# If port 5432 is busy, change to "5433:5432" and use localhost:5433 in DATABASE_URL.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: wimm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: wimm
+    ports:
+      - "5432:5432"
+    volumes:
+      - wimm_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d wimm"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  wimm_pgdata:
