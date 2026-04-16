@@ -84,6 +84,7 @@ export interface Transaction {
   sourceId: string | null
   categoryId: string | null
   importBatchId: string | null
+  recurrenceId: string | null
   kind: TransactionKind
   amount: string
   description: string
@@ -91,6 +92,35 @@ export interface Transaction {
   fingerprint: string | null
   createdAt: string
   updatedAt: string
+}
+
+export type RecurrenceFrequency = 'WEEKLY' | 'MONTHLY' | 'YEARLY'
+export type RecurrenceEndMode = 'INDEFINITE' | 'UNTIL_DATE'
+
+export interface Recurrence {
+  id: string
+  userId: string
+  kind: TransactionKind
+  amount: string
+  description: string
+  sourceId: string | null
+  categoryId: string | null
+  frequency: RecurrenceFrequency
+  startDate: string
+  endMode: RecurrenceEndMode
+  endDate: string | null
+  active: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface MaterializeRequest {
+  until: string
+  recurrenceId?: string
+}
+
+export interface MaterializeResponse {
+  created: number
 }
 
 // Imports (CSV / OFX)

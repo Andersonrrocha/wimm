@@ -40,6 +40,12 @@ export function AppLayout(): JSX.Element {
           <NavLink to="/imports" style={({ isActive }) => navLinkStyle(isActive)}>
             Import
           </NavLink>
+          <NavLink
+            to="/recurrences"
+            style={({ isActive }) => navLinkStyle(isActive)}
+          >
+            Recurrences
+          </NavLink>
         </nav>
         <button type="button" onClick={handleLogout} style={styles.logoutBtn}>
           Sign out

@@ -18,6 +18,7 @@ model User {
   categories     Category[]
   transactions   Transaction[]
   importBatches  ImportBatch[]
+  recurrences    Recurrence[]
 }
 
 enum SourceType {
@@ -37,6 +38,17 @@ enum TransactionKind {
   EXPENSE
 }
 
+enum RecurrenceFrequency {
+  WEEKLY
+  MONTHLY
+  YEARLY
+}
+
+enum RecurrenceEndMode {
+  INDEFINITE
+  UNTIL_DATE
+}
+
 model Source {
   id             String          @id @default(uuid())
   userId         String
@@ -47,6 +59,7 @@ model Source {
   updatedAt      DateTime        @updatedAt
   transactions   Transaction[]
   importBatches  ImportBatch[]
+  recurrences    Recurrence[]
 
   @@unique([userId, name])
   @@index([userId])
@@ -61,6 +74,7 @@ model Category {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   transactions Transaction[]
+  recurrences  Recurrence[]
 
   @@unique([userId, name])
   @@index([userId])
@@ -91,6 +105,29 @@ model ImportBatch {
   @@index([sourceId])
 }
 
+model Recurrence {
+  id           String               @id @default(uuid())
+  userId       String
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind         TransactionKind
+  amount       Decimal              @db.Decimal(14, 2)
+  description  String
+  sourceId     String?
+  source       Source?              @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  categoryId   String?
+  category     Category?            @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  frequency    RecurrenceFrequency
+  startDate    DateTime
+  endMode      RecurrenceEndMode
+  endDate      DateTime?
+  active       Boolean              @default(true)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  transactions Transaction[]
+
+  @@index([userId])
+}
+
 model Transaction {
   id             String            @id @default(uuid())
   userId         String
@@ -101,6 +138,8 @@ model Transaction {
   category       Category?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   importBatchId  String?
   importBatch    ImportBatch?      @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  recurrenceId   String?
+  recurrence     Recurrence?       @relation(fields: [recurrenceId], references: [id], onDelete: SetNull)
   kind           TransactionKind
   amount         Decimal           @db.Decimal(14, 2)
   description    String
@@ -112,6 +151,7 @@ model Transaction {
   @@index([userId, occurredAt])
   @@index([userId])
   @@index([userId, fingerprint])
+  @@index([recurrenceId, occurredAt])
 }
 
 model RefreshToken {
