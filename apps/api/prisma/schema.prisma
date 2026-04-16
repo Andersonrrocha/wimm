@@ -14,6 +14,74 @@ model User {
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
   refreshTokens  RefreshToken[]
+  sources        Source[]
+  categories     Category[]
+  transactions   Transaction[]
+}
+
+enum SourceType {
+  BANK_ACCOUNT
+  CREDIT_CARD
+  CASH
+  MANUAL
+}
+
+enum CategoryType {
+  INCOME
+  EXPENSE
+}
+
+enum TransactionKind {
+  INCOME
+  EXPENSE
+}
+
+model Source {
+  id           String        @id @default(uuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  type         SourceType
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  transactions Transaction[]
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model Category {
+  id           String        @id @default(uuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  type         CategoryType
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  transactions Transaction[]
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model Transaction {
+  id          String            @id @default(uuid())
+  userId      String
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceId    String?
+  source      Source?           @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  categoryId  String?
+  category    Category?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  kind        TransactionKind
+  amount      Decimal           @db.Decimal(14, 2)
+  description String
+  occurredAt  DateTime
+  fingerprint String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@index([userId, occurredAt])
+  @@index([userId])
 }
 
 model RefreshToken {

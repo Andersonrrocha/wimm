@@ -41,3 +41,4 @@ pnpm-debug.log*
 
 # Cursor (local-only; do not version)
 .cursorrules
+.cursor
