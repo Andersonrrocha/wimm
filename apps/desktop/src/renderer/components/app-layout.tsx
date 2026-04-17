@@ -46,6 +46,9 @@ export function AppLayout(): JSX.Element {
           >
             Recurrences
           </NavLink>
+          <NavLink to="/rules" style={({ isActive }) => navLinkStyle(isActive)}>
+            Rules
+          </NavLink>
         </nav>
         <button type="button" onClick={handleLogout} style={styles.logoutBtn}>
           Sign out

@@ -14,13 +14,12 @@ It allows users to import financial data, categorize transactions, and analyze s
 
 ## MVP Features
 
-- CSV and OFX import
-- Transaction categorization
+- CSV and OFX import (preview, dedupe, commit)
+- Categorization rules (pattern → category) applied on import
 - Manual entries
-- Recurring transactions
-- Monthly views
-- Filters by date and category
-- Table and analytics views
+- Recurring transactions (materialize through a date)
+- Reports (summary + by category) and dashboard charts
+- Filters by date and category on transactions (API + list UI)
 
 ---
 
@@ -50,31 +49,73 @@ It allows users to import financial data, categorize transactions, and analyze s
 - Desktop is a UI client
 - Mobile will reuse backend
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
+
+---
+
+## Development
+
+### Prerequisites
+
+- Node.js 20+
+- pnpm 9+
+- Docker (optional, for local PostgreSQL — see `docker-compose.yml`)
+
+### Setup
+
+```bash
+pnpm install
+```
+
+### Database
+
+Create `apps/api/.env` from `apps/api/.env.example` and set `DATABASE_URL`, JWT secrets, etc.
+
+Start PostgreSQL (example):
+
+```bash
+pnpm db:up
+pnpm --filter @wimm/api exec prisma migrate deploy
+pnpm --filter @wimm/api exec prisma generate
+```
+
+### Run
+
+From the repository root, start API and desktop (Turbo runs both):
+
+```bash
+pnpm dev
+```
+
+- API: `http://localhost:3000/api` (or `PORT` from `.env`)
+- Desktop: Electron window (Vite dev server for renderer)
+
+Configure the desktop with `apps/desktop/.env` from `.env.example` (`VITE_API_URL`).
+
+### Build
+
+```bash
+pnpm build
+pnpm lint
+```
 
 ---
 
 ## Repository layout
 
-High-level view of the monorepo. For the full picture (including planned packages), see **[Repository layout](ARCHITECTURE.md#repository-layout)** in `ARCHITECTURE.md`.
-
-### Today
+High-level view of the monorepo. For the full picture, see **[Repository layout](ARCHITECTURE.md#repository-layout)** in `ARCHITECTURE.md`.
 
 ```text
 wimm/
 ├── apps/
-│   ├── api/                 NestJS REST API (Prisma + PostgreSQL when persistence is added)
+│   ├── api/                 NestJS REST API (Prisma + PostgreSQL)
 │   └── desktop/             Electron + React + TypeScript
 ├── packages/
 │   └── shared/              Shared types and API contracts
-└── docs/
-    └── ARCHITECTURE.md      Link to the full architecture doc at repo root
+├── docker-compose.yml       Local PostgreSQL for development
+├── ARCHITECTURE.md
+└── README.md
 ```
-
-### Planned
-
-- `apps/mobile/` — React Native client  
-- `packages/types`, `packages/utils`, `packages/config/` — optional split from `shared` when needed
 
 ---
 
@@ -85,6 +126,7 @@ wimm/
 - **Category:** classification
 - **ImportBatch:** file import
 - **Recurrence:** recurring rule
+- **Categorization rule:** match text in description → assign category
 
 ---
 
@@ -99,4 +141,4 @@ wimm/
 
 ## Status
 
-Planning and foundation phase
+MVP implementation in progress; core flows (auth, master data, imports, recurrences, reports, rules) are implemented in-repo.

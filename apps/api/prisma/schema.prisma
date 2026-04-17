@@ -8,17 +8,18 @@ datasource db {
 }
 
 model User {
-  id             String         @id @default(uuid())
-  email          String         @unique
-  passwordHash   String
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  refreshTokens  RefreshToken[]
-  sources        Source[]
-  categories     Category[]
-  transactions   Transaction[]
-  importBatches  ImportBatch[]
-  recurrences    Recurrence[]
+  id                   String                @id @default(uuid())
+  email                String                @unique
+  passwordHash         String
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  refreshTokens        RefreshToken[]
+  sources              Source[]
+  categories           Category[]
+  transactions         Transaction[]
+  importBatches        ImportBatch[]
+  recurrences          Recurrence[]
+  categorizationRules  CategorizationRule[]
 }
 
 enum SourceType {
@@ -66,18 +67,40 @@ model Source {
 }
 
 model Category {
-  id           String        @id @default(uuid())
-  userId       String
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name         String
-  type         CategoryType
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  transactions Transaction[]
-  recurrences  Recurrence[]
+  id                   String               @id @default(uuid())
+  userId               String
+  user                 User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                 String
+  type                 CategoryType
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  transactions         Transaction[]
+  recurrences          Recurrence[]
+  categorizationRules  CategorizationRule[]
 
   @@unique([userId, name])
   @@index([userId])
+}
+
+enum CategorizationMatchType {
+  CONTAINS
+  EQUALS
+}
+
+model CategorizationRule {
+  id          String                   @id @default(uuid())
+  userId      String
+  user        User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  priority    Int
+  matchType   CategorizationMatchType
+  pattern     String
+  categoryId  String
+  category    Category                 @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  active      Boolean                  @default(true)
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+
+  @@index([userId, priority])
 }
 
 enum ImportBatchFormat {

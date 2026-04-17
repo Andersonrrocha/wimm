@@ -133,6 +133,7 @@ export interface ImportPreviewRow {
   description: string
   fingerprint: string
   isDuplicate: boolean
+  suggestedCategoryId: string | null
 }
 
 export interface ImportPreviewResponse {
@@ -149,6 +150,7 @@ export interface CommitImportRow {
   kind: TransactionKind
   amount: number
   description: string
+  categoryId?: string
 }
 
 export interface CommitImportRequest {
@@ -180,4 +182,19 @@ export interface CategoryReportRow {
 
 export interface ReportByCategoryResponse {
   items: CategoryReportRow[]
+}
+
+export type CategorizationMatchType = 'CONTAINS' | 'EQUALS'
+
+export interface CategorizationRule {
+  id: string
+  userId: string
+  priority: number
+  matchType: CategorizationMatchType
+  pattern: string
+  categoryId: string
+  active: boolean
+  createdAt: string
+  updatedAt: string
+  category: Category
 }

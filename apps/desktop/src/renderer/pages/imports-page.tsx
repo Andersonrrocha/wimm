@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { CSSProperties } from 'react'
 import { FormEvent, useCallback, useMemo, useState } from 'react'
 import type {
+  Category,
   CommitImportRequest,
   CommitImportResponse,
   ImportPreviewResponse,
@@ -43,6 +44,22 @@ export function ImportsPage(): JSX.Element {
       return data
     },
   })
+
+  const { data: categories = [] } = useQuery({
+    queryKey: ['categories'],
+    queryFn: async () => {
+      const { data } = await apiClient.get<Category[]>('/categories')
+      return data
+    },
+  })
+
+  const categoryNameById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of categories) {
+      m.set(c.id, c.name)
+    }
+    return m
+  }, [categories])
 
   const previewMut = useMutation({
     mutationFn: async (payload: { file: File; sourceId: string }) => {
@@ -107,6 +124,9 @@ export function ImportsPage(): JSX.Element {
       kind: r.kind,
       amount: Number.parseFloat(r.amount),
       description: r.description,
+      ...(r.suggestedCategoryId
+        ? { categoryId: r.suggestedCategoryId }
+        : {}),
     }))
     if (rows.length === 0) return
     const body: CommitImportRequest = {
@@ -130,8 +150,9 @@ export function ImportsPage(): JSX.Element {
       <h1 style={styles.h1}>Import</h1>
       <p style={styles.lead}>
         Upload a CSV or OFX/QFX file, preview normalized rows, then save new
-        transactions. Duplicates (same fingerprint as an existing transaction)
-        are marked and excluded by default.
+        transactions. Active categorization rules (Rules in the nav) suggest
+        categories on preview and apply on import when matched. Duplicates are
+        excluded by default.
       </p>
 
       <form onSubmit={handlePreview} style={styles.form}>
@@ -199,6 +220,7 @@ export function ImportsPage(): JSX.Element {
                   <th style={styles.th}>Kind</th>
                   <th style={styles.th}>Amount</th>
                   <th style={styles.th}>Description</th>
+                  <th style={styles.th}>Suggested category</th>
                   <th style={styles.th}>Status</th>
                 </tr>
               </thead>
@@ -230,6 +252,12 @@ export function ImportsPage(): JSX.Element {
                       <td style={styles.td}>{row.kind}</td>
                       <td style={styles.td}>{formatMoney(row.amount)}</td>
                       <td style={styles.tdDesc}>{row.description}</td>
+                      <td style={styles.td}>
+                        {row.suggestedCategoryId
+                          ? categoryNameById.get(row.suggestedCategoryId) ??
+                            row.suggestedCategoryId
+                          : '—'}
+                      </td>
                       <td style={styles.td}>
                         {row.isDuplicate ? (
                           <span style={styles.badgeDup}>Duplicate</span>

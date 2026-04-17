@@ -5,6 +5,7 @@ import {
   IsDateString,
   IsEnum,
   IsNumber,
+  IsOptional,
   IsString,
   IsUUID,
   Max,
@@ -32,6 +33,10 @@ export class CommitImportRowDto {
   @MinLength(1)
   @MaxLength(512)
   description!: string
+
+  @IsOptional()
+  @IsUUID()
+  categoryId?: string
 }
 
 export class CommitImportDto {

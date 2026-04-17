@@ -3,10 +3,12 @@ import {
   Injectable,
 } from '@nestjs/common'
 import {
+  CategoryType,
   ImportBatchFormat,
   Prisma,
   TransactionKind,
 } from '@prisma/client'
+import { CategorizationRulesService } from '../categorization-rules/categorization-rules.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { computeImportFingerprint } from './fingerprint'
 import type { ParsedLedgerRow } from './parsers/csv-parser'
@@ -51,7 +53,10 @@ function toNormalized(row: ParsedLedgerRow): {
 
 @Injectable()
 export class ImportsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly categorizationRules: CategorizationRulesService,
+  ) {}
 
   async preview(
     userId: string,
@@ -100,9 +105,18 @@ export class ImportsService {
       existing.map((e) => e.fingerprint).filter(Boolean) as string[],
     )
 
+    const rules =
+      await this.categorizationRules.loadActiveRulesWithCategories(userId)
+
     const rows = normalized.map((n, i) => {
       const fingerprint = fingerprints[i]
       const isDuplicate = dupSet.has(fingerprint)
+      const suggestedCategoryId =
+        this.categorizationRules.resolveCategoryId(
+          n.kind,
+          n.description,
+          rules,
+        ) ?? null
       return {
         occurredAt: n.occurredAt.toISOString(),
         kind: n.kind,
@@ -110,6 +124,7 @@ export class ImportsService {
         description: n.description,
         fingerprint,
         isDuplicate,
+        suggestedCategoryId,
       }
     })
 
@@ -128,6 +143,9 @@ export class ImportsService {
 
   async commit(userId: string, dto: CommitImportDto) {
     await this.assertSourceOwned(userId, dto.sourceId)
+
+    const rules =
+      await this.categorizationRules.loadActiveRulesWithCategories(userId)
 
     const result = await this.prisma.$transaction(async (tx) => {
       const batch = await tx.importBatch.create({
@@ -163,6 +181,33 @@ export class ImportsService {
           continue
         }
 
+        let categoryId: string | null =
+          row.categoryId ??
+          this.categorizationRules.resolveCategoryId(
+            row.kind,
+            row.description,
+            rules,
+          ) ??
+          null
+
+        if (categoryId) {
+          const cat = await tx.category.findFirst({
+            where: { id: categoryId, userId },
+          })
+          if (!cat) {
+            throw new BadRequestException('Invalid category')
+          }
+          const want: CategoryType =
+            row.kind === TransactionKind.INCOME
+              ? CategoryType.INCOME
+              : CategoryType.EXPENSE
+          if (cat.type !== want) {
+            throw new BadRequestException(
+              'Category type must match transaction kind',
+            )
+          }
+        }
+
         await tx.transaction.create({
           data: {
             userId,
@@ -173,6 +218,7 @@ export class ImportsService {
             description: row.description.trim(),
             occurredAt,
             fingerprint: fp,
+            categoryId,
           },
         })
         created++

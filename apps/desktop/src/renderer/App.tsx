@@ -12,6 +12,7 @@ import { CategoriesPage } from './pages/categories-page'
 import { SourcesPage } from './pages/sources-page'
 import { ImportsPage } from './pages/imports-page'
 import { RecurrencesPage } from './pages/recurrences-page'
+import { RulesPage } from './pages/rules-page'
 
 function App(): JSX.Element {
   return (
@@ -35,6 +36,7 @@ function App(): JSX.Element {
               <Route path="sources" element={<SourcesPage />} />
               <Route path="imports" element={<ImportsPage />} />
               <Route path="recurrences" element={<RecurrencesPage />} />
+              <Route path="rules" element={<RulesPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
