@@ -7,6 +7,7 @@ import { CategoriesModule } from './categories/categories.module'
 import { ImportsModule } from './imports/imports.module'
 import { PrismaModule } from './prisma/prisma.module'
 import { RecurrencesModule } from './recurrences/recurrences.module'
+import { ReportsModule } from './reports/reports.module'
 import { SourcesModule } from './sources/sources.module'
 import { TransactionsModule } from './transactions/transactions.module'
 import { UsersModule } from './users/users.module'
@@ -24,6 +25,7 @@ import { UsersModule } from './users/users.module'
     TransactionsModule,
     ImportsModule,
     RecurrencesModule,
+    ReportsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

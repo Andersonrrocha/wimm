@@ -163,3 +163,21 @@ export interface CommitImportResponse {
   created: number
   skippedDuplicates: number
 }
+
+// Reports (Phase 7)
+export interface ReportSummaryResponse {
+  income: string
+  expense: string
+  net: string
+}
+
+export interface CategoryReportRow {
+  categoryId: string | null
+  name: string
+  kind: TransactionKind
+  total: string
+}
+
+export interface ReportByCategoryResponse {
+  items: CategoryReportRow[]
+}
