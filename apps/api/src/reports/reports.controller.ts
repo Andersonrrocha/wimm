@@ -2,6 +2,7 @@ import { Controller, Get, Query, UseGuards } from '@nestjs/common'
 import { AuthGuard } from '@nestjs/passport'
 import type { JwtPayload } from '../auth/strategies/jwt.strategy'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { MonthlyQueryDto } from './dto/monthly-query.dto'
 import { ReportsQueryDto } from './dto/reports-query.dto'
 import { ReportsService } from './reports.service'
 
@@ -24,5 +25,13 @@ export class ReportsController {
     @Query() query: ReportsQueryDto,
   ) {
     return this.reportsService.byCategoryForUser(user.sub, query)
+  }
+
+  @Get('monthly')
+  monthly(
+    @CurrentUser() user: JwtPayload,
+    @Query() query: MonthlyQueryDto,
+  ) {
+    return this.reportsService.monthlyForUser(user.sub, query)
   }
 }

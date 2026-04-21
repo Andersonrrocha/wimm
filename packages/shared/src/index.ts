@@ -184,6 +184,19 @@ export interface ReportByCategoryResponse {
   items: CategoryReportRow[]
 }
 
+export interface MonthlyReportMonth {
+  month: number
+  label: string
+  income: string
+  expense: string
+  net: string
+}
+
+export interface ReportMonthlyResponse {
+  year: number
+  months: MonthlyReportMonth[]
+}
+
 export type CategorizationMatchType = 'CONTAINS' | 'EQUALS'
 
 export interface CategorizationRule {

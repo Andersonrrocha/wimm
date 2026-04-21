@@ -5,6 +5,9 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -13,6 +16,7 @@ import {
 import type {
   CategoryReportRow,
   ReportByCategoryResponse,
+  ReportMonthlyResponse,
   ReportSummaryResponse,
 } from '@wimm/shared'
 import { useAuth } from '../context/auth-context'
@@ -46,6 +50,7 @@ export function DashboardPage(): JSX.Element {
   const { state } = useAuth()
   const user = state.status === 'authenticated' ? state.user : null
   const [range, setRange] = useState(() => currentMonthRange())
+  const [trendYear, setTrendYear] = useState(() => new Date().getFullYear())
 
   const params = useMemo(
     () => ({ from: range.from, to: range.to }),
@@ -74,6 +79,17 @@ export function DashboardPage(): JSX.Element {
     },
   })
 
+  const { data: monthly, isLoading: loadingMonthly } = useQuery({
+    queryKey: ['reports', 'monthly', trendYear],
+    queryFn: async () => {
+      const { data } = await apiClient.get<ReportMonthlyResponse>(
+        '/reports/monthly',
+        { params: { year: trendYear } },
+      )
+      return data
+    },
+  })
+
   const expenseChartData = useMemo(() => {
     const items = (byCategory?.items ?? []).filter(
       (r: CategoryReportRow) => r.kind === 'EXPENSE',
@@ -97,6 +113,15 @@ export function DashboardPage(): JSX.Element {
       value: Number.parseFloat(r.total),
     }))
   }, [byCategory])
+
+  const monthlyTrendData = useMemo(() => {
+    return (monthly?.months ?? []).map((m) => ({
+      label: m.label,
+      income: Number.parseFloat(m.income),
+      expense: Number.parseFloat(m.expense),
+      net: Number.parseFloat(m.net),
+    }))
+  }, [monthly])
 
   return (
     <div style={styles.wrap}>
@@ -134,6 +159,92 @@ export function DashboardPage(): JSX.Element {
           This month
         </button>
       </div>
+
+      <section style={styles.trendSection}>
+        <div style={styles.trendHeader}>
+          <h2 style={styles.h2}>Monthly trend</h2>
+          <label style={styles.label}>
+            Year
+            <input
+              type="number"
+              min={2000}
+              max={2100}
+              value={trendYear}
+              onChange={(e) => {
+                const y = Number.parseInt(e.target.value, 10)
+                if (!Number.isNaN(y)) setTrendYear(y)
+              }}
+              style={{ ...styles.input, width: 88 }}
+            />
+          </label>
+        </div>
+        {loadingMonthly ? (
+          <p style={styles.muted}>Loading…</p>
+        ) : (
+          <div style={styles.chartBox}>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart
+                data={monthlyTrendData}
+                margin={{ top: 8, right: 8, left: 4, bottom: 8 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" />
+                <XAxis dataKey="label" tick={{ fill: '#888', fontSize: 11 }} />
+                <YAxis tick={{ fill: '#888', fontSize: 11 }} />
+                <Tooltip
+                  contentStyle={{
+                    background: '#1e1e1e',
+                    border: '1px solid #333',
+                    borderRadius: 8,
+                  }}
+                  formatter={(value: number) => formatMoney(String(value))}
+                />
+                <Legend />
+                <Bar
+                  dataKey="income"
+                  name="Income"
+                  fill={INCOME_BAR}
+                  radius={[2, 2, 0, 0]}
+                />
+                <Bar
+                  dataKey="expense"
+                  name="Expense"
+                  fill={EXPENSE_BAR}
+                  radius={[2, 2, 0, 0]}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+            <div style={styles.netChartWrap}>
+              <ResponsiveContainer width="100%" height={200}>
+                <LineChart
+                  data={monthlyTrendData}
+                  margin={{ top: 8, right: 8, left: 4, bottom: 8 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" />
+                  <XAxis dataKey="label" tick={{ fill: '#888', fontSize: 11 }} />
+                  <YAxis tick={{ fill: '#888', fontSize: 11 }} />
+                  <Tooltip
+                    contentStyle={{
+                      background: '#1e1e1e',
+                      border: '1px solid #333',
+                      borderRadius: 8,
+                    }}
+                    formatter={(value: number) => formatMoney(String(value))}
+                  />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="net"
+                    name="Net"
+                    stroke="#90caf9"
+                    strokeWidth={2}
+                    dot={{ r: 3 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+      </section>
 
       <div style={styles.cards}>
         <div style={styles.card}>
@@ -325,6 +436,16 @@ const styles: Record<string, CSSProperties> = {
     flexDirection: 'column',
     gap: '1.5rem',
   },
+  trendSection: { marginBottom: '1.5rem' },
+  trendHeader: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '1rem',
+    marginBottom: '0.75rem',
+  },
+  netChartWrap: { marginTop: '1rem' },
   chartSection: {},
   h2: { fontSize: '1rem', marginBottom: '0.75rem', color: '#ccc' },
   chartBox: { width: '100%', minHeight: 280 },
