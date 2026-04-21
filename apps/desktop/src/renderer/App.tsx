@@ -8,11 +8,9 @@ import { LoginPage } from './pages/login-page'
 import { RegisterPage } from './pages/register-page'
 import { DashboardPage } from './pages/dashboard-page'
 import { TransactionsPage } from './pages/transactions-page'
-import { CategoriesPage } from './pages/categories-page'
-import { SourcesPage } from './pages/sources-page'
 import { ImportsPage } from './pages/imports-page'
 import { RecurrencesPage } from './pages/recurrences-page'
-import { RulesPage } from './pages/rules-page'
+import { SettingsPage } from './pages/settings-page'
 
 function App(): JSX.Element {
   return (
@@ -32,11 +30,21 @@ function App(): JSX.Element {
             >
               <Route index element={<DashboardPage />} />
               <Route path="transactions" element={<TransactionsPage />} />
-              <Route path="categories" element={<CategoriesPage />} />
-              <Route path="sources" element={<SourcesPage />} />
               <Route path="imports" element={<ImportsPage />} />
               <Route path="recurrences" element={<RecurrencesPage />} />
-              <Route path="rules" element={<RulesPage />} />
+              <Route path="settings" element={<SettingsPage />} />
+              <Route
+                path="categories"
+                element={<Navigate to="/settings" replace />}
+              />
+              <Route
+                path="sources"
+                element={<Navigate to="/settings" replace />}
+              />
+              <Route
+                path="rules"
+                element={<Navigate to="/settings" replace />}
+              />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

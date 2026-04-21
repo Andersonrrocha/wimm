@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { CSSProperties } from 'react'
-import { FormEvent, useMemo, useState } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import type {
   Category,
   MaterializeRequest,
@@ -11,17 +10,27 @@ import type {
   Source,
   TransactionKind,
 } from '@wimm/shared'
+import { addMonths } from 'date-fns'
 import { apiClient } from '../lib/api-client'
+import { PageHeader } from '../components/ui/page-header'
+import { DatePicker } from '../components/ui/date-picker'
+import { Select } from '../components/ui/select'
+import { formatMediumDate, toIsoDate } from '../lib/dates'
 
-const KIND_OPTIONS: { value: TransactionKind; label: string }[] = [
-  { value: 'INCOME', label: 'Income' },
+const KIND_OPTIONS = [
   { value: 'EXPENSE', label: 'Expense' },
+  { value: 'INCOME', label: 'Income' },
 ]
 
-const FREQ_OPTIONS: { value: RecurrenceFrequency; label: string }[] = [
+const FREQ_OPTIONS = [
   { value: 'WEEKLY', label: 'Weekly' },
   { value: 'MONTHLY', label: 'Monthly' },
   { value: 'YEARLY', label: 'Yearly' },
+]
+
+const END_MODE_OPTIONS = [
+  { value: 'INDEFINITE', label: 'Never' },
+  { value: 'UNTIL_DATE', label: 'On date' },
 ]
 
 function formatMoney(amount: string): string {
@@ -34,9 +43,7 @@ function formatMoney(amount: string): string {
 }
 
 function defaultUntilDate(): string {
-  const d = new Date()
-  d.setUTCMonth(d.getUTCMonth() + 3)
-  return d.toISOString().slice(0, 10)
+  return toIsoDate(addMonths(new Date(), 3))
 }
 
 export function RecurrencesPage(): JSX.Element {
@@ -47,9 +54,7 @@ export function RecurrencesPage(): JSX.Element {
   const [sourceId, setSourceId] = useState('')
   const [categoryId, setCategoryId] = useState('')
   const [frequency, setFrequency] = useState<RecurrenceFrequency>('MONTHLY')
-  const [startDate, setStartDate] = useState(() =>
-    new Date().toISOString().slice(0, 10),
-  )
+  const [startDate, setStartDate] = useState(() => toIsoDate(new Date()))
   const [endMode, setEndMode] = useState<RecurrenceEndMode>('INDEFINITE')
   const [endDate, setEndDate] = useState('')
   const [until, setUntil] = useState(defaultUntilDate)
@@ -71,7 +76,7 @@ export function RecurrencesPage(): JSX.Element {
     },
   })
 
-  const { data: recurrences = [], isLoading } = useQuery({
+  const { data: recurrences = [], isLoading, error } = useQuery({
     queryKey: ['recurrences'],
     queryFn: async () => {
       const { data } = await apiClient.get<Recurrence[]>('/recurrences')
@@ -118,6 +123,7 @@ export function RecurrencesPage(): JSX.Element {
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['transactions'] })
+      await qc.invalidateQueries({ queryKey: ['reports'] })
     },
   })
 
@@ -163,346 +169,292 @@ export function RecurrencesPage(): JSX.Element {
     [recurrences],
   )
 
-  return (
-    <div style={styles.wrap}>
-      <h1 style={styles.h1}>Recurring transactions</h1>
-      <p style={styles.lead}>
-        Rules are stored on the server. Use &quot;Generate&quot; to create
-        transaction rows up to a date (existing generated rows are never
-        overwritten).
-      </p>
+  const activeCount = sorted.filter((r) => r.active).length
 
-      <section style={styles.section}>
-        <h2 style={styles.h2}>Generate transactions</h2>
-        <div style={styles.row}>
-          <label style={styles.label}>
-            Until (inclusive)
-            <input
-              type="date"
-              value={until}
-              onChange={(e) => setUntil(e.target.value)}
-              style={styles.input}
-            />
-          </label>
-          <label style={styles.label}>
-            Only this rule (optional)
-            <select
+  return (
+    <div className="wm-page">
+      <PageHeader
+        eyebrow="Automation"
+        title="Recurring transactions"
+        subtitle="Rules are stored on the server. Generating materializes transactions up to a date; generated rows are never overwritten."
+      />
+
+      <section className="wm-panel">
+        <header className="wm-panel__header">
+          <div>
+            <h2 className="wm-panel__title">Generate transactions</h2>
+            <p className="wm-panel__sub">
+              Create real transactions from active rules up to a given date.
+            </p>
+          </div>
+        </header>
+
+        <div className="wm-form-row">
+          <div className="wm-field" style={{ flex: '1 1 200px' }}>
+            <span>Until (inclusive)</span>
+            <DatePicker value={until} onChange={setUntil} />
+          </div>
+          <div className="wm-field" style={{ flex: '2 1 260px' }}>
+            <span>Only this rule (optional)</span>
+            <Select
               value={materializeRecurrenceId}
-              onChange={(e) => setMaterializeRecurrenceId(e.target.value)}
-              style={styles.input}
+              onChange={setMaterializeRecurrenceId}
+              options={[
+                { value: '', label: 'All active rules' },
+                ...sorted.map((r) => ({
+                  value: r.id,
+                  label: `${r.description} (${r.frequency})`,
+                })),
+              ]}
+              placeholder="All active rules"
+              ariaLabel="Scope"
+            />
+          </div>
+          <div>
+            <button
+              type="button"
+              onClick={handleMaterialize}
+              disabled={materializeMut.isPending}
+              className="wm-btn wm-btn--primary"
             >
-              <option value="">All active rules</option>
-              {sorted.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.description} ({r.frequency})
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            onClick={handleMaterialize}
-            disabled={materializeMut.isPending}
-            style={styles.btnPrimary}
-          >
-            {materializeMut.isPending ? 'Generating…' : 'Generate'}
-          </button>
+              {materializeMut.isPending ? 'Generating…' : 'Generate'}
+            </button>
+          </div>
         </div>
+
         {materializeMut.isSuccess && (
-          <p style={styles.ok}>
+          <p className="wm-ok-text">
             Created {materializeMut.data.created} transaction(s).
           </p>
         )}
         {materializeMut.isError && (
-          <p style={styles.err}>Generation failed.</p>
+          <p className="wm-error-text">Generation failed.</p>
         )}
       </section>
 
-      <section style={styles.section}>
-        <h2 style={styles.h2}>New rule</h2>
-        <form onSubmit={handleCreate} style={styles.form}>
-          <label style={styles.label}>
-            Kind
-            <select
+      <section className="wm-panel">
+        <header className="wm-panel__header">
+          <div>
+            <h2 className="wm-panel__title">New rule</h2>
+            <p className="wm-panel__sub">
+              Templates that generate recurring transactions on a schedule.
+            </p>
+          </div>
+        </header>
+
+        <form onSubmit={handleCreate} className="wm-form-grid">
+          <div className="wm-field">
+            <span>Kind</span>
+            <Select
               value={kind}
-              onChange={(e) => setKind(e.target.value as TransactionKind)}
-              style={styles.input}
-            >
-              {KIND_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label style={styles.label}>
+              onChange={(v) => setKind(v as TransactionKind)}
+              options={KIND_OPTIONS}
+              ariaLabel="Kind"
+            />
+          </div>
+          <label className="wm-field">
             Amount
             <input
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               inputMode="decimal"
               placeholder="0.00"
-              style={styles.input}
+              className="wm-input wm-num"
             />
           </label>
-          <label style={styles.labelWide}>
+          <label className="wm-field" style={{ gridColumn: 'span 2' }}>
             Description
             <input
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               required
-              style={styles.input}
+              className="wm-input"
+              placeholder="Rent, Netflix, Salary…"
             />
           </label>
-          <label style={styles.label}>
-            Frequency
-            <select
+          <div className="wm-field">
+            <span>Frequency</span>
+            <Select
               value={frequency}
-              onChange={(e) =>
-                setFrequency(e.target.value as RecurrenceFrequency)
-              }
-              style={styles.input}
-            >
-              {FREQ_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label style={styles.label}>
-            Start date
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              style={styles.input}
+              onChange={(v) => setFrequency(v as RecurrenceFrequency)}
+              options={FREQ_OPTIONS}
+              ariaLabel="Frequency"
             />
-          </label>
-          <label style={styles.label}>
-            Ends
-            <select
+          </div>
+          <div className="wm-field">
+            <span>Start date</span>
+            <DatePicker value={startDate} onChange={setStartDate} />
+          </div>
+          <div className="wm-field">
+            <span>Ends</span>
+            <Select
               value={endMode}
-              onChange={(e) =>
-                setEndMode(e.target.value as RecurrenceEndMode)
-              }
-              style={styles.input}
-            >
-              <option value="INDEFINITE">Never</option>
-              <option value="UNTIL_DATE">On date</option>
-            </select>
-          </label>
+              onChange={(v) => setEndMode(v as RecurrenceEndMode)}
+              options={END_MODE_OPTIONS}
+              ariaLabel="End mode"
+            />
+          </div>
           {endMode === 'UNTIL_DATE' && (
-            <label style={styles.label}>
-              End date
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                required
-                style={styles.input}
-              />
-            </label>
+            <div className="wm-field">
+              <span>End date</span>
+              <DatePicker value={endDate} onChange={setEndDate} />
+            </div>
           )}
-          <label style={styles.label}>
-            Source
-            <select
+          <div className="wm-field">
+            <span>Source</span>
+            <Select
               value={sourceId}
-              onChange={(e) => setSourceId(e.target.value)}
-              style={styles.input}
-            >
-              <option value="">None</option>
-              {sources.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label style={styles.label}>
-            Category
-            <select
+              onChange={setSourceId}
+              options={[
+                { value: '', label: 'None' },
+                ...sources.map((s) => ({ value: s.id, label: s.name })),
+              ]}
+              placeholder="None"
+              ariaLabel="Source"
+            />
+          </div>
+          <div className="wm-field">
+            <span>Category</span>
+            <Select
               value={categoryId}
-              onChange={(e) => setCategoryId(e.target.value)}
-              style={styles.input}
+              onChange={setCategoryId}
+              options={[
+                { value: '', label: 'None' },
+                ...categories
+                  .filter((c) => c.type === kind)
+                  .map((c) => ({ value: c.id, label: c.name })),
+              ]}
+              placeholder="None"
+              ariaLabel="Category"
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'end' }}>
+            <button
+              type="submit"
+              disabled={createMut.isPending}
+              className="wm-btn wm-btn--primary"
             >
-              <option value="">None</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="submit"
-            disabled={createMut.isPending}
-            style={styles.btnPrimary}
-          >
-            {createMut.isPending ? 'Saving…' : 'Add rule'}
-          </button>
+              {createMut.isPending ? 'Saving…' : 'Add rule'}
+            </button>
+          </div>
         </form>
+
         {createMut.error && (
-          <p style={styles.err}>
+          <p className="wm-error-text">
             {(createMut.error as Error).message ?? 'Could not create rule'}
           </p>
         )}
       </section>
 
-      <section style={styles.section}>
-        <h2 style={styles.h2}>Your rules</h2>
-        {isLoading ? (
-          <p style={styles.muted}>Loading…</p>
-        ) : sorted.length === 0 ? (
-          <p style={styles.muted}>No recurrence rules yet.</p>
-        ) : (
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>Active</th>
-                  <th style={styles.th}>Description</th>
-                  <th style={styles.th}>Kind</th>
-                  <th style={styles.th}>Amount</th>
-                  <th style={styles.th}>Frequency</th>
-                  <th style={styles.th}>Start</th>
-                  <th style={styles.th}>Ends</th>
-                  <th style={styles.th} />
-                </tr>
-              </thead>
-              <tbody>
-                {sorted.map((r) => (
-                  <tr key={r.id} style={styles.tr}>
-                    <td style={styles.td}>
-                      <input
-                        type="checkbox"
-                        checked={r.active}
-                        onChange={(e) =>
-                          patchMut.mutate({ id: r.id, active: e.target.checked })
-                        }
-                      />
-                    </td>
-                    <td style={styles.td}>{r.description}</td>
-                    <td style={styles.td}>{r.kind}</td>
-                    <td style={styles.td}>{formatMoney(r.amount)}</td>
-                    <td style={styles.td}>{r.frequency}</td>
-                    <td style={styles.td}>
-                      {new Date(r.startDate).toLocaleDateString()}
-                    </td>
-                    <td style={styles.td}>
-                      {r.endMode === 'UNTIL_DATE' && r.endDate
-                        ? new Date(r.endDate).toLocaleDateString()
-                        : '—'}
-                    </td>
-                    <td style={styles.td}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              'Delete this rule? Generated transactions stay in the register.',
-                            )
-                          ) {
-                            deleteMut.mutate(r.id)
-                          }
-                        }}
-                        style={styles.btnDanger}
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <section className="wm-panel" style={{ padding: 0, overflow: 'hidden' }}>
+        <header
+          className="wm-panel__header"
+          style={{ padding: 18, paddingBottom: 0 }}
+        >
+          <div>
+            <h2 className="wm-panel__title">Your rules</h2>
+            <p className="wm-panel__sub">
+              {sorted.length === 0
+                ? 'No recurrence rules yet.'
+                : `${sorted.length} total · ${activeCount} active`}
+            </p>
           </div>
-        )}
+        </header>
+
+        <div style={{ padding: '14px 18px 0' }}>
+          {error ? (
+            <p className="wm-error-text">Failed to load recurrences.</p>
+          ) : isLoading ? (
+            <p className="wm-muted">Loading…</p>
+          ) : sorted.length === 0 ? (
+            <div className="wm-empty">
+              <span>Add a recurring template above to get started.</span>
+            </div>
+          ) : (
+            <div style={{ overflow: 'auto', margin: '0 -18px' }}>
+              <table className="wm-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 60 }}>Active</th>
+                    <th>Description</th>
+                    <th>Kind</th>
+                    <th style={{ textAlign: 'right' }}>Amount</th>
+                    <th>Frequency</th>
+                    <th>Start</th>
+                    <th>Ends</th>
+                    <th className="wm-table__actions" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorted.map((r) => (
+                    <tr key={r.id}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          className="wm-check"
+                          checked={r.active}
+                          onChange={(e) =>
+                            patchMut.mutate({
+                              id: r.id,
+                              active: e.target.checked,
+                            })
+                          }
+                        />
+                      </td>
+                      <td>{r.description}</td>
+                      <td>
+                        <span
+                          className={`wm-badge ${
+                            r.kind === 'INCOME'
+                              ? 'wm-badge--positive'
+                              : 'wm-badge--negative'
+                          }`}
+                        >
+                          {r.kind === 'INCOME' ? 'Income' : 'Expense'}
+                        </span>
+                      </td>
+                      <td
+                        className="wm-td--num"
+                        style={{ textAlign: 'right', fontWeight: 600 }}
+                      >
+                        {formatMoney(r.amount)}
+                      </td>
+                      <td>
+                        <span className="wm-badge">{r.frequency}</span>
+                      </td>
+                      <td className="wm-muted">
+                        {formatMediumDate(r.startDate)}
+                      </td>
+                      <td className="wm-muted">
+                        {r.endMode === 'UNTIL_DATE' && r.endDate
+                          ? formatMediumDate(r.endDate)
+                          : '—'}
+                      </td>
+                      <td className="wm-table__actions">
+                        <button
+                          type="button"
+                          className="wm-btn wm-btn--danger"
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                'Delete this rule? Generated transactions stay in the register.',
+                              )
+                            ) {
+                              deleteMut.mutate(r.id)
+                            }
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </section>
     </div>
   )
-}
-
-const styles: Record<string, CSSProperties> = {
-  wrap: { maxWidth: 960 },
-  h1: { fontSize: '1.35rem', marginBottom: '0.35rem' },
-  h2: { fontSize: '1rem', marginBottom: '0.75rem', color: '#ccc' },
-  lead: { color: '#9a9a9a', fontSize: '0.9rem', marginBottom: '1.25rem' },
-  section: { marginBottom: '2rem' },
-  row: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '1rem',
-    alignItems: 'flex-end',
-  },
-  form: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '0.75rem',
-    alignItems: 'flex-end',
-  },
-  label: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-    fontSize: '0.8rem',
-    color: '#aaa',
-  },
-  labelWide: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-    fontSize: '0.8rem',
-    color: '#aaa',
-    minWidth: 200,
-    flex: '1 1 200px',
-  },
-  input: {
-    padding: '0.45rem 0.6rem',
-    borderRadius: 6,
-    border: '1px solid #333',
-    background: '#1a1a1a',
-    color: '#ececec',
-    minWidth: 120,
-  },
-  btnPrimary: {
-    padding: '0.5rem 1rem',
-    borderRadius: 6,
-    border: 'none',
-    background: '#3d5afe',
-    color: '#fff',
-    cursor: 'pointer',
-    fontSize: '0.9rem',
-    alignSelf: 'flex-end',
-  },
-  btnDanger: {
-    padding: '0.25rem 0.5rem',
-    borderRadius: 6,
-    border: '1px solid #633',
-    background: '#2a1818',
-    color: '#ebb',
-    cursor: 'pointer',
-    fontSize: '0.75rem',
-  },
-  err: { color: '#f88', marginTop: '0.5rem' },
-  ok: { color: '#8d8', marginTop: '0.5rem' },
-  muted: { color: '#888', fontSize: '0.9rem' },
-  tableWrap: { overflow: 'auto', border: '1px solid #252525', borderRadius: 8 },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse',
-    fontSize: '0.8rem',
-  },
-  th: {
-    textAlign: 'left',
-    padding: '0.5rem 0.65rem',
-    borderBottom: '1px solid #252525',
-    background: '#161616',
-    color: '#bbb',
-  },
-  tr: { borderBottom: '1px solid #1e1e1e' },
-  td: {
-    padding: '0.45rem 0.65rem',
-    verticalAlign: 'middle',
-    color: '#ddd',
-  },
 }

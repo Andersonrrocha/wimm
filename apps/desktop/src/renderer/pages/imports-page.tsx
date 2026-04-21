@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { CSSProperties } from 'react'
-import { FormEvent, useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState, type FormEvent } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import type {
   Category,
   CommitImportRequest,
@@ -11,6 +11,14 @@ import type {
 } from '@wimm/shared'
 import type { AxiosError } from 'axios'
 import { apiClient } from '../lib/api-client'
+import { PageHeader } from '../components/ui/page-header'
+import { Select } from '../components/ui/select'
+import { formatMediumDate } from '../lib/dates'
+import type { QuickAddTab } from '../components/quick-add-modal'
+
+type OutletCtx = {
+  openQuickAdd: (tab?: QuickAddTab) => void
+}
 
 function formatMoney(amount: string): string {
   const n = Number.parseFloat(amount)
@@ -21,14 +29,9 @@ function formatMoney(amount: string): string {
   })
 }
 
-function formatWhen(iso: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-  }).format(new Date(iso))
-}
-
 export function ImportsPage(): JSX.Element {
   const qc = useQueryClient()
+  const { openQuickAdd } = useOutletContext<OutletCtx>()
   const [sourceId, setSourceId] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<ImportPreviewResponse | null>(null)
@@ -55,9 +58,7 @@ export function ImportsPage(): JSX.Element {
 
   const categoryNameById = useMemo(() => {
     const m = new Map<string, string>()
-    for (const c of categories) {
-      m.set(c.id, c.name)
-    }
+    for (const c of categories) m.set(c.id, c.name)
     return m
   }, [categories])
 
@@ -93,6 +94,7 @@ export function ImportsPage(): JSX.Element {
     onSuccess: async (data) => {
       setLastCommit(data)
       await qc.invalidateQueries({ queryKey: ['transactions'] })
+      await qc.invalidateQueries({ queryKey: ['reports'] })
       setPreview(null)
       setFile(null)
       setIncludeByFingerprint({})
@@ -145,124 +147,206 @@ export function ImportsPage(): JSX.Element {
     }))
   }, [])
 
+  const toggleAll = (select: boolean): void => {
+    if (!preview) return
+    const next: Record<string, boolean> = {}
+    for (const row of preview.rows) {
+      next[row.fingerprint] = select && !row.isDuplicate
+    }
+    setIncludeByFingerprint(next)
+  }
+
   return (
-    <div style={styles.wrap}>
-      <h1 style={styles.h1}>Import</h1>
-      <p style={styles.lead}>
-        Upload a CSV or OFX/QFX file, preview normalized rows, then save new
-        transactions. Active categorization rules (Rules in the nav) suggest
-        categories on preview and apply on import when matched. Duplicates are
-        excluded by default.
-      </p>
+    <div className="wm-page">
+      <PageHeader
+        eyebrow="Batch"
+        title="Import statement"
+        subtitle="Upload a CSV or OFX/QFX file. Rows are normalized, categorization rules are applied, and duplicates are excluded by default."
+      />
 
-      <form onSubmit={handlePreview} style={styles.form}>
-        <label style={styles.label}>
-          Source
-          <select
-            value={sourceId}
-            onChange={(e) => setSourceId(e.target.value)}
-            required
-            style={styles.input}
-          >
-            <option value="">Select a source</option>
-            {sources.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label style={styles.label}>
-          File (.csv, .ofx, .qfx)
-          <input
-            type="file"
-            accept=".csv,.ofx,.qfx,text/csv,application/x-ofx,application/ofx"
-            onChange={(e) => {
-              setPreview(null)
-              setFile(e.target.files?.[0] ?? null)
-            }}
-            style={styles.file}
-          />
-        </label>
-        <button
-          type="submit"
-          disabled={!file || !sourceId || previewMut.isPending}
-          style={styles.btnPrimary}
-        >
-          {previewMut.isPending ? 'Parsing…' : 'Preview'}
-        </button>
-      </form>
+      <section className="wm-panel">
+        <header className="wm-panel__header">
+          <div>
+            <h2 className="wm-panel__title">Upload file</h2>
+            <p className="wm-panel__sub">
+              Need a new source?{' '}
+              <button
+                type="button"
+                className="wm-link"
+                onClick={() => openQuickAdd('source')}
+              >
+                Create one
+              </button>
+              .
+            </p>
+          </div>
+        </header>
 
-      {previewMut.error && (
-        <p style={styles.err}>
-          {previewErrorMessage(previewMut.error)}
-        </p>
-      )}
+        <form onSubmit={handlePreview} className="wm-form-row">
+          <div className="wm-field" style={{ flex: '1 1 220px' }}>
+            <span>Source</span>
+            <Select
+              value={sourceId}
+              onChange={setSourceId}
+              options={[
+                { value: '', label: 'Select a source' },
+                ...sources.map((s) => ({ value: s.id, label: s.name })),
+              ]}
+              placeholder="Select a source"
+              required
+              ariaLabel="Source"
+            />
+          </div>
+          <label className="wm-field" style={{ flex: '2 1 300px' }}>
+            File (.csv, .ofx, .qfx)
+            <input
+              type="file"
+              accept=".csv,.ofx,.qfx,text/csv,application/x-ofx,application/ofx"
+              onChange={(e) => {
+                setPreview(null)
+                setFile(e.target.files?.[0] ?? null)
+              }}
+              className="wm-file"
+            />
+          </label>
+          <div>
+            <button
+              type="submit"
+              className="wm-btn wm-btn--primary"
+              disabled={!file || !sourceId || previewMut.isPending}
+            >
+              {previewMut.isPending ? 'Parsing…' : 'Preview'}
+            </button>
+          </div>
+        </form>
+
+        {previewMut.error && (
+          <p className="wm-error-text">
+            {previewErrorMessage(previewMut.error)}
+          </p>
+        )}
+        {lastCommit && (
+          <p className="wm-ok-text">
+            Saved batch · created {lastCommit.created} · skipped duplicates{' '}
+            {lastCommit.skippedDuplicates}.
+          </p>
+        )}
+      </section>
 
       {preview && (
-        <section style={styles.section}>
-          <div style={styles.summary}>
-            <span>
-              File: <strong>{preview.fileName}</strong> ({preview.format})
-            </span>
-            <span>
-              Rows: {preview.totalParsed} · New: {preview.newCount} · Duplicates:{' '}
-              {preview.duplicateCount}
-            </span>
-          </div>
+        <section className="wm-panel" style={{ padding: 0, overflow: 'hidden' }}>
+          <header
+            className="wm-panel__header"
+            style={{ padding: 18, paddingBottom: 14 }}
+          >
+            <div>
+              <h2 className="wm-panel__title">
+                {preview.fileName}{' '}
+                <span className="wm-badge wm-badge--neutral">
+                  {preview.format}
+                </span>
+              </h2>
+              <p className="wm-panel__sub">
+                {preview.totalParsed} rows parsed ·{' '}
+                <span style={{ color: 'var(--wm-positive)' }}>
+                  {preview.newCount} new
+                </span>{' '}
+                ·{' '}
+                <span style={{ color: 'var(--wm-warning)' }}>
+                  {preview.duplicateCount} duplicates
+                </span>
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                type="button"
+                className="wm-btn wm-btn--subtle"
+                onClick={() => toggleAll(true)}
+              >
+                Select new
+              </button>
+              <button
+                type="button"
+                className="wm-btn wm-btn--subtle"
+                onClick={() => toggleAll(false)}
+              >
+                Clear all
+              </button>
+            </div>
+          </header>
 
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
+          <div style={{ overflow: 'auto', maxHeight: '55vh' }}>
+            <table className="wm-table">
               <thead>
                 <tr>
-                  <th style={styles.th}>Include</th>
-                  <th style={styles.th}>Date</th>
-                  <th style={styles.th}>Kind</th>
-                  <th style={styles.th}>Amount</th>
-                  <th style={styles.th}>Description</th>
-                  <th style={styles.th}>Suggested category</th>
-                  <th style={styles.th}>Status</th>
+                  <th style={{ width: 56 }}>Incl.</th>
+                  <th>Date</th>
+                  <th>Kind</th>
+                  <th style={{ textAlign: 'right' }}>Amount</th>
+                  <th>Description</th>
+                  <th>Suggested</th>
+                  <th>Status</th>
                 </tr>
               </thead>
               <tbody>
                 {preview.rows.map((row) => {
                   const on = includeByFingerprint[row.fingerprint] ?? false
+                  const isIncome = row.kind === 'INCOME'
                   return (
                     <tr
                       key={row.fingerprint}
                       style={{
-                        ...styles.tr,
                         opacity: row.isDuplicate && !on ? 0.55 : 1,
                       }}
                     >
-                      <td style={styles.td}>
+                      <td>
                         <input
                           type="checkbox"
+                          className="wm-check"
                           checked={on}
                           onChange={() => toggleInclude(row)}
                           disabled={row.isDuplicate}
                           title={
                             row.isDuplicate
-                              ? 'Duplicate — cannot import again'
+                              ? 'Duplicate — already in your register'
                               : undefined
                           }
                         />
                       </td>
-                      <td style={styles.td}>{formatWhen(row.occurredAt)}</td>
-                      <td style={styles.td}>{row.kind}</td>
-                      <td style={styles.td}>{formatMoney(row.amount)}</td>
-                      <td style={styles.tdDesc}>{row.description}</td>
-                      <td style={styles.td}>
+                      <td className="wm-muted">{formatMediumDate(row.occurredAt)}</td>
+                      <td>
+                        <span
+                          className={`wm-badge ${
+                            isIncome
+                              ? 'wm-badge--positive'
+                              : 'wm-badge--negative'
+                          }`}
+                        >
+                          {isIncome ? 'Income' : 'Expense'}
+                        </span>
+                      </td>
+                      <td
+                        className="wm-td--num"
+                        style={{ textAlign: 'right', fontWeight: 600 }}
+                      >
+                        {formatMoney(row.amount)}
+                      </td>
+                      <td className="wm-td--desc">{row.description}</td>
+                      <td className="wm-muted">
                         {row.suggestedCategoryId
                           ? categoryNameById.get(row.suggestedCategoryId) ??
                             row.suggestedCategoryId
                           : '—'}
                       </td>
-                      <td style={styles.td}>
+                      <td>
                         {row.isDuplicate ? (
-                          <span style={styles.badgeDup}>Duplicate</span>
+                          <span className="wm-badge wm-badge--warning">
+                            Duplicate
+                          </span>
                         ) : (
-                          <span style={styles.badgeNew}>New</span>
+                          <span className="wm-badge wm-badge--positive">
+                            New
+                          </span>
                         )}
                       </td>
                     </tr>
@@ -272,122 +356,51 @@ export function ImportsPage(): JSX.Element {
             </table>
           </div>
 
-          <div style={styles.actions}>
-            <button
-              type="button"
-              onClick={handleCommit}
-              disabled={!canCommit}
-              style={styles.btnPrimary}
-            >
-              {commitMut.isPending
-                ? 'Saving…'
-                : `Import ${selectedRows.length} transaction(s)`}
-            </button>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '14px 18px',
+              borderTop: '1px solid var(--wm-border-soft)',
+            }}
+          >
+            <span className="wm-muted">
+              {selectedRows.length} selected of {preview.rows.length}
+            </span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                type="button"
+                className="wm-btn wm-btn--ghost"
+                onClick={() => {
+                  setPreview(null)
+                  setFile(null)
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleCommit}
+                disabled={!canCommit}
+                className="wm-btn wm-btn--primary"
+              >
+                {commitMut.isPending
+                  ? 'Saving…'
+                  : `Import ${selectedRows.length}`}
+              </button>
+            </div>
           </div>
 
-          {lastCommit && (
-            <p style={styles.ok}>
-              Saved batch {lastCommit.importBatchId}: created {lastCommit.created}
-              , skipped duplicates {lastCommit.skippedDuplicates}.
-            </p>
-          )}
           {commitMut.isError && (
-            <p style={styles.err}>Import failed. Check the API and try again.</p>
+            <p className="wm-error-text" style={{ padding: '0 18px 14px' }}>
+              Import failed. Check the API and try again.
+            </p>
           )}
         </section>
       )}
     </div>
   )
-}
-
-const styles: Record<string, CSSProperties> = {
-  wrap: { maxWidth: 960 },
-  h1: { fontSize: '1.35rem', marginBottom: '0.5rem' },
-  lead: { color: '#9a9a9a', fontSize: '0.9rem', marginBottom: '1.25rem' },
-  form: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '1rem',
-    alignItems: 'flex-end',
-    marginBottom: '1.5rem',
-  },
-  label: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-    fontSize: '0.8rem',
-    color: '#aaa',
-  },
-  input: {
-    minWidth: 220,
-    padding: '0.45rem 0.6rem',
-    borderRadius: 6,
-    border: '1px solid #333',
-    background: '#1a1a1a',
-    color: '#ececec',
-  },
-  file: { fontSize: '0.85rem' },
-  btnPrimary: {
-    padding: '0.5rem 1rem',
-    borderRadius: 6,
-    border: 'none',
-    background: '#3d5afe',
-    color: '#fff',
-    cursor: 'pointer',
-    fontSize: '0.9rem',
-  },
-  err: { color: '#f88', marginTop: '0.75rem' },
-  ok: { color: '#8d8', marginTop: '0.75rem' },
-  section: { marginTop: '1rem' },
-  summary: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '1rem',
-    fontSize: '0.85rem',
-    color: '#aaa',
-    marginBottom: '0.75rem',
-  },
-  tableWrap: { overflow: 'auto', border: '1px solid #252525', borderRadius: 8 },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse',
-    fontSize: '0.8rem',
-  },
-  th: {
-    textAlign: 'left',
-    padding: '0.5rem 0.65rem',
-    borderBottom: '1px solid #252525',
-    background: '#161616',
-    color: '#bbb',
-  },
-  tr: { borderBottom: '1px solid #1e1e1e' },
-  td: {
-    padding: '0.45rem 0.65rem',
-    verticalAlign: 'top',
-    color: '#ddd',
-  },
-  tdDesc: {
-    padding: '0.45rem 0.65rem',
-    verticalAlign: 'top',
-    color: '#ddd',
-    maxWidth: 360,
-    wordBreak: 'break-word',
-  },
-  badgeDup: {
-    fontSize: '0.7rem',
-    padding: '0.15rem 0.4rem',
-    borderRadius: 4,
-    background: '#4a3020',
-    color: '#ecb',
-  },
-  badgeNew: {
-    fontSize: '0.7rem',
-    padding: '0.15rem 0.4rem',
-    borderRadius: 4,
-    background: '#203a30',
-    color: '#cec',
-  },
-  actions: { marginTop: '1rem' },
 }
 
 function previewErrorMessage(err: unknown): string {

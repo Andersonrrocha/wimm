@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/auth-context'
+import { AuthBrand } from '../components/auth-brand'
 import { AuthForm } from '../components/auth-form'
 
 export function LoginPage(): JSX.Element {
@@ -9,7 +10,10 @@ export function LoginPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  const handleSubmit = async (email: string, password: string): Promise<void> => {
+  const handleSubmit = async (
+    email: string,
+    password: string,
+  ): Promise<void> => {
     setError(null)
     setLoading(true)
     try {
@@ -23,15 +27,27 @@ export function LoginPage(): JSX.Element {
   }
 
   return (
-    <div style={styles.page}>
-      <div style={styles.card}>
-        <h1 style={styles.title}>Wimm</h1>
-        <p style={styles.subtitle}>Sign in to your account</p>
-        <AuthForm onSubmit={handleSubmit} loading={loading} submitLabel="Sign in" />
-        {error && <p style={styles.error}>{error}</p>}
-        <p style={styles.footer}>
+    <div className="wm-auth-screen">
+      <div className="wm-auth-card">
+        <AuthBrand />
+        <h1 className="wm-auth-title">Welcome back</h1>
+        <p className="wm-auth-sub">Sign in to your register.</p>
+        <AuthForm
+          onSubmit={handleSubmit}
+          loading={loading}
+          submitLabel="Sign in"
+        />
+        {error && (
+          <p
+            className="wm-error-text"
+            style={{ textAlign: 'center', margin: 0 }}
+          >
+            {error}
+          </p>
+        )}
+        <p className="wm-auth-footer">
           No account?{' '}
-          <Link to="/register" style={styles.link}>
+          <Link to="/register" className="wm-link">
             Create one
           </Link>
         </p>
@@ -39,52 +55,3 @@ export function LoginPage(): JSX.Element {
     </div>
   )
 }
-
-const styles = {
-  page: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: '100vh',
-    background: '#0f0f0f',
-  },
-  card: {
-    background: '#1a1a1a',
-    border: '1px solid #2a2a2a',
-    borderRadius: 12,
-    padding: '2.5rem 2rem',
-    width: 360,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '0.75rem',
-  },
-  title: {
-    fontSize: '1.75rem',
-    fontWeight: 700,
-    color: '#ececec',
-    margin: 0,
-    textAlign: 'center' as const,
-  },
-  subtitle: {
-    fontSize: '0.875rem',
-    color: '#888',
-    margin: '0 0 0.5rem',
-    textAlign: 'center' as const,
-  },
-  error: {
-    fontSize: '0.8rem',
-    color: '#f87171',
-    margin: 0,
-    textAlign: 'center' as const,
-  },
-  footer: {
-    fontSize: '0.8rem',
-    color: '#666',
-    textAlign: 'center' as const,
-    marginTop: '0.5rem',
-  },
-  link: {
-    color: '#6366f1',
-    textDecoration: 'none',
-  },
-} as const

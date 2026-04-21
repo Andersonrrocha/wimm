@@ -1,13 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
-import type { CSSProperties } from 'react'
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type CSSProperties } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import {
+  Area,
+  AreaChart,
   Bar,
-  BarChart,
   CartesianGrid,
-  Legend,
+  Cell,
+  ComposedChart,
   Line,
-  LineChart,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -15,41 +18,72 @@ import {
 } from 'recharts'
 import type {
   CategoryReportRow,
+  PaginatedResponse,
   ReportByCategoryResponse,
   ReportMonthlyResponse,
   ReportSummaryResponse,
+  Transaction,
 } from '@wimm/shared'
 import { useAuth } from '../context/auth-context'
 import { apiClient } from '../lib/api-client'
+import type { QuickAddTab } from '../components/quick-add-modal'
+import { DatePicker } from '../components/ui/date-picker'
+import { Select } from '../components/ui/select'
+import {
+  computeRange,
+  formatShortDate,
+  type RangePreset,
+} from '../lib/dates'
 
-function currentMonthRange(): { from: string; to: string } {
-  const now = new Date()
-  const y = now.getFullYear()
-  const m = now.getMonth()
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  const lastDay = new Date(y, m + 1, 0).getDate()
-  return {
-    from: `${y}-${pad(m + 1)}-01`,
-    to: `${y}-${pad(m + 1)}-${pad(lastDay)}`,
-  }
+const YEAR_NOW = new Date().getFullYear()
+const yearOptions = Array.from({ length: 7 }, (_, i) => YEAR_NOW - 5 + i).map(
+  (y) => ({ value: String(y), label: String(y) }),
+)
+
+type OutletCtx = {
+  openQuickAdd: (tab?: QuickAddTab) => void
 }
 
-function formatMoney(amount: string): string {
-  const n = Number.parseFloat(amount)
-  if (Number.isNaN(n)) return amount
+type PresetId = RangePreset | 'custom'
+
+type Range = { from: string; to: string; preset: PresetId }
+
+function computePreset(preset: RangePreset): Range {
+  const r = computeRange(preset)
+  return { ...r, preset }
+}
+
+function formatMoney(amount: string | number): string {
+  const n = typeof amount === 'string' ? Number.parseFloat(amount) : amount
+  if (Number.isNaN(n)) return String(amount)
   return n.toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })
 }
 
-const EXPENSE_BAR = '#e57373'
-const INCOME_BAR = '#81c784'
+function formatCompact(n: number): string {
+  if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return Math.round(n).toString()
+}
+
+const DONUT_COLORS = [
+  'var(--wm-chart-1)',
+  'var(--wm-chart-2)',
+  'var(--wm-chart-4)',
+  'var(--wm-chart-6)',
+  'var(--wm-chart-5)',
+  'var(--wm-chart-3)',
+  'var(--wm-chart-other)',
+]
 
 export function DashboardPage(): JSX.Element {
   const { state } = useAuth()
   const user = state.status === 'authenticated' ? state.user : null
-  const [range, setRange] = useState(() => currentMonthRange())
+  const { openQuickAdd } = useOutletContext<OutletCtx>()
+
+  const [range, setRange] = useState<Range>(() => computePreset('mtd'))
   const [trendYear, setTrendYear] = useState(() => new Date().getFullYear())
 
   const params = useMemo(
@@ -90,31 +124,58 @@ export function DashboardPage(): JSX.Element {
     },
   })
 
-  const expenseChartData = useMemo(() => {
-    const items = (byCategory?.items ?? []).filter(
-      (r: CategoryReportRow) => r.kind === 'EXPENSE',
+  const { data: recentList, isLoading: loadingRecent } = useQuery({
+    queryKey: ['transactions', 'recent', params],
+    queryFn: async () => {
+      const { data } = await apiClient.get<PaginatedResponse<Transaction>>(
+        '/transactions',
+        { params: { ...params, page: 1, pageSize: 6 } },
+      )
+      return data
+    },
+  })
+
+  const expensesInRange = useMemo(
+    () => (byCategory?.items ?? []).filter((r) => r.kind === 'EXPENSE'),
+    [byCategory],
+  )
+
+  const donutData = useMemo(() => {
+    if (expensesInRange.length === 0) return []
+    const sorted = [...expensesInRange].sort(
+      (a, b) => Number.parseFloat(b.total) - Number.parseFloat(a.total),
     )
-    return items.slice(0, 12).map((r) => ({
-      name:
-        r.name.length > 18 ? `${r.name.slice(0, 16)}…` : r.name,
-      fullName: r.name,
+    const top = sorted.slice(0, 5)
+    const tail = sorted.slice(5)
+    const base = top.map((r) => ({
+      name: r.name,
       value: Number.parseFloat(r.total),
     }))
-  }, [byCategory])
-
-  const incomeChartData = useMemo(() => {
-    const items = (byCategory?.items ?? []).filter(
-      (r: CategoryReportRow) => r.kind === 'INCOME',
+    if (tail.length === 0) return base
+    const otherTotal = tail.reduce(
+      (s, r) => s + Number.parseFloat(r.total),
+      0,
     )
-    return items.slice(0, 12).map((r) => ({
-      name:
-        r.name.length > 18 ? `${r.name.slice(0, 16)}…` : r.name,
-      fullName: r.name,
-      value: Number.parseFloat(r.total),
-    }))
-  }, [byCategory])
+    return [...base, { name: `Other (${tail.length})`, value: otherTotal }]
+  }, [expensesInRange])
 
-  const monthlyTrendData = useMemo(() => {
+  const topCategories = useMemo(() => {
+    return [...expensesInRange]
+      .sort(
+        (a, b) => Number.parseFloat(b.total) - Number.parseFloat(a.total),
+      )
+      .slice(0, 6)
+  }, [expensesInRange])
+
+  const topCategoriesMax = useMemo(() => {
+    if (topCategories.length === 0) return 0
+    return Math.max(
+      ...topCategories.map((r) => Number.parseFloat(r.total)),
+      0,
+    )
+  }, [topCategories])
+
+  const monthlyData = useMemo(() => {
     return (monthly?.months ?? []).map((m) => ({
       label: m.label,
       income: Number.parseFloat(m.income),
@@ -123,331 +184,945 @@ export function DashboardPage(): JSX.Element {
     }))
   }, [monthly])
 
+  const cumulativeYear = useMemo(() => {
+    let acc = 0
+    return monthlyData.map((m) => {
+      acc += m.net
+      return { label: m.label, cumulative: acc }
+    })
+  }, [monthlyData])
+
+  const summaryIncome = Number.parseFloat(summary?.income ?? '0')
+  const summaryExpense = Number.parseFloat(summary?.expense ?? '0')
+  const summaryNet = Number.parseFloat(summary?.net ?? '0')
+  const savingsRate =
+    summaryIncome > 0 ? (summaryNet / summaryIncome) * 100 : null
+
+  const presetLabel = (id: PresetId): string =>
+    id === 'mtd'
+      ? 'This month'
+      : id === 'last30'
+        ? 'Last 30 days'
+        : id === 'ytd'
+          ? 'Year to date'
+          : 'Custom'
+
+  const applyPreset = (id: Exclude<PresetId, 'custom'>): void => {
+    setRange(computePreset(id))
+  }
+
+  const updateRange = (patch: Partial<Range>): void => {
+    setRange((r) => ({ ...r, ...patch, preset: 'custom' }))
+  }
+
   return (
     <div style={styles.wrap}>
-      <h1 style={styles.h1}>Dashboard</h1>
-      <p style={styles.sub}>
-        Welcome{user ? `, ${user.email}` : ''}. Summary for the selected period.
-      </p>
-
-      <div style={styles.rangeRow}>
-        <label style={styles.label}>
-          From
-          <input
-            type="date"
-            value={range.from}
-            onChange={(e) =>
-              setRange((r) => ({ ...r, from: e.target.value }))
-            }
-            style={styles.input}
-          />
-        </label>
-        <label style={styles.label}>
-          To
-          <input
-            type="date"
-            value={range.to}
-            onChange={(e) => setRange((r) => ({ ...r, to: e.target.value }))}
-            style={styles.input}
-          />
-        </label>
-        <button
-          type="button"
-          onClick={() => setRange(currentMonthRange())}
-          style={styles.btnGhost}
-        >
-          This month
-        </button>
-      </div>
-
-      <section style={styles.trendSection}>
-        <div style={styles.trendHeader}>
-          <h2 style={styles.h2}>Monthly trend</h2>
-          <label style={styles.label}>
-            Year
-            <input
-              type="number"
-              min={2000}
-              max={2100}
-              value={trendYear}
-              onChange={(e) => {
-                const y = Number.parseInt(e.target.value, 10)
-                if (!Number.isNaN(y)) setTrendYear(y)
-              }}
-              style={{ ...styles.input, width: 88 }}
-            />
-          </label>
+      <header style={styles.pageHeader}>
+        <div>
+          <div style={styles.pageEyebrow}>
+            {user
+              ? `Welcome back, ${user.username}`
+              : 'Welcome back'}
+          </div>
+          <h1 style={styles.h1}>Overview</h1>
+          <p style={styles.sub}>
+            {presetLabel(range.preset)} · {formatShortDate(range.from)} →{' '}
+            {formatShortDate(range.to)}
+          </p>
         </div>
-        {loadingMonthly ? (
-          <p style={styles.muted}>Loading…</p>
-        ) : (
-          <div style={styles.chartBox}>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart
-                data={monthlyTrendData}
-                margin={{ top: 8, right: 8, left: 4, bottom: 8 }}
+
+        <div style={styles.controls}>
+          <div role="group" aria-label="Quick range" style={styles.chipsRow}>
+            {(['mtd', 'last30', 'ytd'] as const).map((p) => (
+              <button
+                key={p}
+                type="button"
+                className={`wm-chip${range.preset === p ? ' wm-chip--active' : ''}`}
+                onClick={() => applyPreset(p)}
               >
-                <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" />
-                <XAxis dataKey="label" tick={{ fill: '#888', fontSize: 11 }} />
-                <YAxis tick={{ fill: '#888', fontSize: 11 }} />
-                <Tooltip
-                  contentStyle={{
-                    background: '#1e1e1e',
-                    border: '1px solid #333',
-                    borderRadius: 8,
-                  }}
-                  formatter={(value: number) => formatMoney(String(value))}
-                />
-                <Legend />
-                <Bar
-                  dataKey="income"
-                  name="Income"
-                  fill={INCOME_BAR}
-                  radius={[2, 2, 0, 0]}
-                />
-                <Bar
-                  dataKey="expense"
-                  name="Expense"
-                  fill={EXPENSE_BAR}
-                  radius={[2, 2, 0, 0]}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-            <div style={styles.netChartWrap}>
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart
-                  data={monthlyTrendData}
-                  margin={{ top: 8, right: 8, left: 4, bottom: 8 }}
+                {presetLabel(p)}
+              </button>
+            ))}
+          </div>
+          <div style={styles.rangeInputs}>
+            <DatePicker
+              value={range.from}
+              onChange={(v) => updateRange({ from: v })}
+              ariaLabel="From"
+              minWidth={148}
+            />
+            <span style={styles.dash}>→</span>
+            <DatePicker
+              value={range.to}
+              onChange={(v) => updateRange({ to: v })}
+              ariaLabel="To"
+              minWidth={148}
+            />
+          </div>
+        </div>
+      </header>
+
+      {/* KPIs */}
+      <section style={styles.kpiGrid}>
+        <KpiCard
+          label="Income"
+          value={formatMoney(summaryIncome)}
+          tone="positive"
+          loading={loadingSummary}
+          hint="Sum of incoming transactions"
+        />
+        <KpiCard
+          label="Expense"
+          value={formatMoney(summaryExpense)}
+          tone="negative"
+          loading={loadingSummary}
+          hint="Sum of outgoing transactions"
+        />
+        <KpiCard
+          label="Net"
+          value={formatMoney(summaryNet)}
+          tone={summaryNet >= 0 ? 'positive' : 'negative'}
+          loading={loadingSummary}
+          hint={summaryNet >= 0 ? 'Positive balance' : 'Negative balance'}
+        />
+        <KpiCard
+          label="Savings rate"
+          value={
+            savingsRate == null
+              ? '—'
+              : `${savingsRate.toFixed(1)}%`
+          }
+          tone={
+            savingsRate == null
+              ? 'default'
+              : savingsRate >= 0
+                ? 'accent'
+                : 'negative'
+          }
+          loading={loadingSummary}
+          hint={
+            savingsRate == null
+              ? 'No income in range'
+              : 'Net ÷ Income'
+          }
+        />
+      </section>
+
+      {/* Charts row */}
+      <section style={styles.gridTwoThirds}>
+        <Panel
+          title="Monthly performance"
+          subtitle="Income vs expense, cumulative net line for the year"
+          action={
+            <div style={styles.yearLabel}>
+              <span>Year</span>
+              <Select
+                value={String(trendYear)}
+                onChange={(v) => setTrendYear(Number.parseInt(v, 10))}
+                options={yearOptions}
+                minWidth={100}
+                ariaLabel="Trend year"
+              />
+            </div>
+          }
+        >
+          {loadingMonthly ? (
+            <Empty label="Loading…" />
+          ) : (
+            <div style={{ width: '100%', height: 280 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart
+                  data={monthlyData}
+                  margin={{ top: 12, right: 16, left: 0, bottom: 8 }}
+                  barGap={2}
+                  barCategoryGap={18}
                 >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" />
-                  <XAxis dataKey="label" tick={{ fill: '#888', fontSize: 11 }} />
-                  <YAxis tick={{ fill: '#888', fontSize: 11 }} />
-                  <Tooltip
-                    contentStyle={{
-                      background: '#1e1e1e',
-                      border: '1px solid #333',
-                      borderRadius: 8,
-                    }}
-                    formatter={(value: number) => formatMoney(String(value))}
+                  <CartesianGrid
+                    strokeDasharray="2 4"
+                    stroke="var(--wm-border-soft)"
+                    vertical={false}
                   />
-                  <Legend />
+                  <XAxis
+                    dataKey="label"
+                    tick={axisTick}
+                    axisLine={{ stroke: 'var(--wm-border)' }}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    tick={axisTick}
+                    tickFormatter={formatCompact}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <Tooltip
+                    content={<ChartTooltip />}
+                    cursor={{ fill: 'rgba(255, 255, 255, 0.03)' }}
+                  />
+                  <Bar
+                    dataKey="income"
+                    name="Income"
+                    fill="var(--wm-positive)"
+                    radius={[3, 3, 0, 0]}
+                  />
+                  <Bar
+                    dataKey="expense"
+                    name="Expense"
+                    fill="var(--wm-negative)"
+                    radius={[3, 3, 0, 0]}
+                  />
                   <Line
                     type="monotone"
                     dataKey="net"
                     name="Net"
-                    stroke="#90caf9"
+                    stroke="var(--wm-accent)"
                     strokeWidth={2}
-                    dot={{ r: 3 }}
+                    dot={{ r: 2, fill: 'var(--wm-accent)' }}
+                    activeDot={{ r: 4 }}
                   />
-                </LineChart>
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
-          </div>
-        )}
+          )}
+          <LegendRow>
+            <LegendSwatch color="var(--wm-positive)" label="Income" />
+            <LegendSwatch color="var(--wm-negative)" label="Expense" />
+            <LegendSwatch color="var(--wm-accent)" label="Net" shape="line" />
+          </LegendRow>
+        </Panel>
+
+        <Panel
+          title="Where the money goes"
+          subtitle={`Top ${donutData.length} expense categories in range`}
+        >
+          {loadingByCat ? (
+            <Empty label="Loading…" />
+          ) : donutData.length === 0 ? (
+            <Empty label="No expense data in this range." />
+          ) : (
+            <div style={styles.donutLayout}>
+              <div style={{ flex: '1 1 220px', minHeight: 240 }}>
+                <ResponsiveContainer width="100%" height={240}>
+                  <PieChart>
+                    <Pie
+                      data={donutData}
+                      dataKey="value"
+                      innerRadius={56}
+                      outerRadius={90}
+                      paddingAngle={2}
+                      stroke="var(--wm-bg)"
+                      strokeWidth={2}
+                    >
+                      {donutData.map((_, idx) => (
+                        <Cell
+                          key={idx}
+                          fill={DONUT_COLORS[idx % DONUT_COLORS.length]}
+                        />
+                      ))}
+                    </Pie>
+                    <Tooltip content={<ChartTooltip />} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <ul style={styles.donutLegend}>
+                {donutData.map((d, idx) => {
+                  const total = donutData.reduce((s, x) => s + x.value, 0)
+                  const pct = total > 0 ? (d.value / total) * 100 : 0
+                  return (
+                    <li key={d.name} style={styles.donutLegendItem}>
+                      <span
+                        style={{
+                          ...styles.donutDot,
+                          background:
+                            DONUT_COLORS[idx % DONUT_COLORS.length],
+                        }}
+                      />
+                      <span style={styles.donutLegendName} title={d.name}>
+                        {d.name}
+                      </span>
+                      <span className="wm-num" style={styles.donutLegendValue}>
+                        {formatMoney(d.value)}{' '}
+                        <span style={styles.donutLegendPct}>
+                          {pct.toFixed(1)}%
+                        </span>
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )}
+        </Panel>
       </section>
 
-      <div style={styles.cards}>
-        <div style={styles.card}>
-          <div style={styles.cardLabel}>Income</div>
-          <div style={{ ...styles.cardValue, color: INCOME_BAR }}>
-            {loadingSummary
-              ? '…'
-              : formatMoney(summary?.income ?? '0')}
-          </div>
-        </div>
-        <div style={styles.card}>
-          <div style={styles.cardLabel}>Expense</div>
-          <div style={{ ...styles.cardValue, color: EXPENSE_BAR }}>
-            {loadingSummary
-              ? '…'
-              : formatMoney(summary?.expense ?? '0')}
-          </div>
-        </div>
-        <div style={styles.card}>
-          <div style={styles.cardLabel}>Net</div>
-          <div
-            style={{
-              ...styles.cardValue,
-              color:
-                Number.parseFloat(summary?.net ?? '0') >= 0
-                  ? '#a5d6a7'
-                  : '#ffab91',
-            }}
-          >
-            {loadingSummary ? '…' : formatMoney(summary?.net ?? '0')}
-          </div>
-        </div>
-      </div>
-
-      <div style={styles.charts}>
-        <section style={styles.chartSection}>
-          <h2 style={styles.h2}>Expenses by category</h2>
-          {loadingByCat ? (
-            <p style={styles.muted}>Loading…</p>
-          ) : expenseChartData.length === 0 ? (
-            <p style={styles.muted}>No expense data in this range.</p>
-          ) : (
-            <div style={styles.chartBox}>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart
-                  data={expenseChartData}
-                  margin={{ top: 8, right: 8, left: 4, bottom: 48 }}
+      {/* Recent + Top categories + Cumulative */}
+      <section style={styles.gridHalves}>
+        <Panel
+          title="Recent activity"
+          subtitle="Six latest transactions in range"
+          action={
+            <button
+              type="button"
+              className="wm-btn wm-btn--subtle"
+              onClick={() => openQuickAdd('transaction')}
+            >
+              + New
+            </button>
+          }
+        >
+          {loadingRecent ? (
+            <Empty label="Loading…" />
+          ) : !recentList || recentList.items.length === 0 ? (
+            <Empty
+              label="No transactions in this range yet."
+              action={
+                <button
+                  type="button"
+                  className="wm-btn wm-btn--primary"
+                  onClick={() => openQuickAdd('transaction')}
                 >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" />
+                  Add your first
+                </button>
+              }
+            />
+          ) : (
+            <ul style={styles.txList}>
+              {recentList.items.map((t) => (
+                <TxRow key={t.id} tx={t} />
+              ))}
+            </ul>
+          )}
+        </Panel>
+
+        <Panel
+          title="Top spending"
+          subtitle="Highest expense categories in range"
+        >
+          {loadingByCat ? (
+            <Empty label="Loading…" />
+          ) : topCategories.length === 0 ? (
+            <Empty label="No expense categories to show." />
+          ) : (
+            <ul style={styles.topList}>
+              {topCategories.map((cat, idx) => (
+                <TopCategoryRow
+                  key={`${cat.categoryId ?? 'none'}-${idx}`}
+                  row={cat}
+                  color={DONUT_COLORS[idx % DONUT_COLORS.length]}
+                  max={topCategoriesMax}
+                />
+              ))}
+            </ul>
+          )}
+        </Panel>
+      </section>
+
+      <section>
+        <Panel
+          title="Cumulative net"
+          subtitle={`Running balance through ${trendYear}`}
+        >
+          {loadingMonthly ? (
+            <Empty label="Loading…" />
+          ) : (
+            <div style={{ width: '100%', height: 200 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart
+                  data={cumulativeYear}
+                  margin={{ top: 10, right: 16, left: 0, bottom: 0 }}
+                >
+                  <defs>
+                    <linearGradient id="cumGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop
+                        offset="0%"
+                        stopColor="var(--wm-accent)"
+                        stopOpacity={0.35}
+                      />
+                      <stop
+                        offset="100%"
+                        stopColor="var(--wm-accent)"
+                        stopOpacity={0}
+                      />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid
+                    strokeDasharray="2 4"
+                    stroke="var(--wm-border-soft)"
+                    vertical={false}
+                  />
                   <XAxis
-                    dataKey="name"
-                    tick={{ fill: '#888', fontSize: 11 }}
-                    interval={0}
-                    angle={-35}
-                    textAnchor="end"
-                    height={56}
+                    dataKey="label"
+                    tick={axisTick}
+                    axisLine={{ stroke: 'var(--wm-border)' }}
+                    tickLine={false}
                   />
-                  <YAxis tick={{ fill: '#888', fontSize: 11 }} />
-                  <Tooltip
-                    contentStyle={{
-                      background: '#1e1e1e',
-                      border: '1px solid #333',
-                      borderRadius: 8,
-                    }}
-                    formatter={(value: number) => [
-                      formatMoney(String(value)),
-                      'Total',
-                    ]}
-                    labelFormatter={(_, payload) =>
-                      payload?.[0]?.payload?.fullName ?? ''
-                    }
+                  <YAxis
+                    tick={axisTick}
+                    tickFormatter={formatCompact}
+                    axisLine={false}
+                    tickLine={false}
                   />
-                  <Bar
-                    dataKey="value"
-                    name="Expense"
-                    fill={EXPENSE_BAR}
-                    radius={[4, 4, 0, 0]}
+                  <Tooltip content={<ChartTooltip />} />
+                  <Area
+                    type="monotone"
+                    dataKey="cumulative"
+                    name="Cumulative"
+                    stroke="var(--wm-accent)"
+                    strokeWidth={2}
+                    fill="url(#cumGradient)"
                   />
-                </BarChart>
+                </AreaChart>
               </ResponsiveContainer>
             </div>
           )}
-        </section>
-
-        <section style={styles.chartSection}>
-          <h2 style={styles.h2}>Income by category</h2>
-          {loadingByCat ? (
-            <p style={styles.muted}>Loading…</p>
-          ) : incomeChartData.length === 0 ? (
-            <p style={styles.muted}>No income data in this range.</p>
-          ) : (
-            <div style={styles.chartBox}>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart
-                  data={incomeChartData}
-                  margin={{ top: 8, right: 8, left: 4, bottom: 48 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" />
-                  <XAxis
-                    dataKey="name"
-                    tick={{ fill: '#888', fontSize: 11 }}
-                    interval={0}
-                    angle={-35}
-                    textAnchor="end"
-                    height={56}
-                  />
-                  <YAxis tick={{ fill: '#888', fontSize: 11 }} />
-                  <Tooltip
-                    contentStyle={{
-                      background: '#1e1e1e',
-                      border: '1px solid #333',
-                      borderRadius: 8,
-                    }}
-                    formatter={(value: number) => [
-                      formatMoney(String(value)),
-                      'Total',
-                    ]}
-                    labelFormatter={(_, payload) =>
-                      payload?.[0]?.payload?.fullName ?? ''
-                    }
-                  />
-                  <Bar
-                    dataKey="value"
-                    name="Income"
-                    fill={INCOME_BAR}
-                    radius={[4, 4, 0, 0]}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </section>
-      </div>
+        </Panel>
+      </section>
     </div>
   )
 }
 
+/* ------------------------------------------------------------------ */
+/* Sub components                                                      */
+/* ------------------------------------------------------------------ */
+
+function Panel({
+  title,
+  subtitle,
+  action,
+  children,
+}: {
+  title: string
+  subtitle?: string
+  action?: React.ReactNode
+  children: React.ReactNode
+}): JSX.Element {
+  return (
+    <section className="wm-surface" style={styles.panel}>
+      <header style={styles.panelHeader}>
+        <div style={{ minWidth: 0 }}>
+          <h2 style={styles.panelTitle}>{title}</h2>
+          {subtitle ? <p style={styles.panelSubtitle}>{subtitle}</p> : null}
+        </div>
+        {action}
+      </header>
+      <div>{children}</div>
+    </section>
+  )
+}
+
+function Empty({
+  label,
+  action,
+}: {
+  label: string
+  action?: React.ReactNode
+}): JSX.Element {
+  return (
+    <div style={styles.empty}>
+      <span style={{ color: 'var(--wm-text-muted)' }}>{label}</span>
+      {action}
+    </div>
+  )
+}
+
+type ChartTooltipProps = {
+  active?: boolean
+  payload?: Array<{
+    name?: string
+    value?: number
+    color?: string
+    fill?: string
+  }>
+  label?: string | number
+}
+
+function ChartTooltip({ active, payload, label }: ChartTooltipProps): JSX.Element | null {
+  if (!active || !payload || payload.length === 0) return null
+  return (
+    <div style={styles.tooltip}>
+      {label != null && <div style={styles.tooltipLabel}>{label}</div>}
+      {payload.map((p, idx) => (
+        <div key={idx} style={styles.tooltipRow}>
+          <span
+            style={{
+              ...styles.tooltipDot,
+              background: p.color ?? p.fill ?? 'var(--wm-accent)',
+            }}
+          />
+          <span style={styles.tooltipName}>{p.name}</span>
+          <span className="wm-num" style={styles.tooltipValue}>
+            {typeof p.value === 'number' ? formatMoney(p.value) : p.value}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function LegendRow({
+  children,
+}: {
+  children: React.ReactNode
+}): JSX.Element {
+  return (
+    <div style={styles.legendRow} role="list">
+      {children}
+    </div>
+  )
+}
+
+function LegendSwatch({
+  color,
+  label,
+  shape = 'dot',
+}: {
+  color: string
+  label: string
+  shape?: 'dot' | 'line'
+}): JSX.Element {
+  return (
+    <span style={styles.legendItem} role="listitem">
+      <span
+        style={{
+          background: shape === 'dot' ? color : undefined,
+          border: shape === 'line' ? `2px solid ${color}` : undefined,
+          width: shape === 'dot' ? 10 : 14,
+          height: shape === 'dot' ? 10 : 0,
+          borderRadius: shape === 'dot' ? 3 : 0,
+          display: 'inline-block',
+        }}
+      />
+      <span>{label}</span>
+    </span>
+  )
+}
+
+function TxRow({ tx }: { tx: Transaction }): JSX.Element {
+  const isIncome = tx.kind === 'INCOME'
+  return (
+    <li style={styles.txRow}>
+      <div
+        style={{
+          ...styles.txIcon,
+          color: isIncome ? 'var(--wm-positive)' : 'var(--wm-negative)',
+          background: isIncome
+            ? 'var(--wm-positive-soft)'
+            : 'var(--wm-negative-soft)',
+        }}
+        aria-hidden
+      >
+        {isIncome ? '↑' : '↓'}
+      </div>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={styles.txDesc}>{tx.description || 'Untitled'}</div>
+        <div style={styles.txMeta}>
+          {formatShortDate(tx.occurredAt)} ·{' '}
+          {tx.kind === 'INCOME' ? 'Income' : 'Expense'}
+        </div>
+      </div>
+      <span
+        className="wm-num"
+        style={{
+          ...styles.txAmount,
+          color: isIncome ? 'var(--wm-positive)' : 'var(--wm-text)',
+        }}
+      >
+        {isIncome ? '+' : '−'} {formatMoney(tx.amount)}
+      </span>
+    </li>
+  )
+}
+
+function TopCategoryRow({
+  row,
+  max,
+  color,
+}: {
+  row: CategoryReportRow
+  max: number
+  color: string
+}): JSX.Element {
+  const value = Number.parseFloat(row.total)
+  const pct = max > 0 ? (value / max) * 100 : 0
+  return (
+    <li style={styles.topRow}>
+      <div style={styles.topRowHead}>
+        <span
+          style={{ ...styles.topRowDot, background: color }}
+          aria-hidden
+        />
+        <span style={styles.topRowName} title={row.name}>
+          {row.name}
+        </span>
+        <span className="wm-num" style={styles.topRowValue}>
+          {formatMoney(row.total)}
+        </span>
+      </div>
+      <div style={styles.topRowBar} aria-hidden>
+        <span
+          style={{
+            ...styles.topRowBarFill,
+            width: `${pct}%`,
+            background: color,
+          }}
+        />
+      </div>
+    </li>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* KPI card (inline, small variant)                                    */
+/* ------------------------------------------------------------------ */
+
+function KpiCard({
+  label,
+  value,
+  tone = 'default',
+  hint,
+  loading,
+}: {
+  label: string
+  value: string
+  tone?: 'default' | 'positive' | 'negative' | 'accent'
+  hint?: string
+  loading?: boolean
+}): JSX.Element {
+  const color =
+    tone === 'positive'
+      ? 'var(--wm-positive)'
+      : tone === 'negative'
+        ? 'var(--wm-negative)'
+        : tone === 'accent'
+          ? 'var(--wm-accent)'
+          : 'var(--wm-text)'
+  return (
+    <div className="wm-surface" style={styles.kpi}>
+      <span className="wm-label">{label}</span>
+      <span className="wm-num" style={{ ...styles.kpiValue, color }}>
+        {loading ? '—' : value}
+      </span>
+      {hint ? <span style={styles.kpiHint}>{hint}</span> : null}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Styles                                                               */
+/* ------------------------------------------------------------------ */
+
+const axisTick = { fill: 'var(--wm-text-muted)', fontSize: 11 }
+
 const styles: Record<string, CSSProperties> = {
-  wrap: { maxWidth: 960 },
-  h1: { fontSize: '1.35rem', marginBottom: '0.35rem' },
-  sub: { color: '#888', fontSize: '0.9rem', marginBottom: '1rem' },
-  rangeRow: {
+  wrap: {
     display: 'flex',
-    flexWrap: 'wrap',
-    gap: '1rem',
-    alignItems: 'flex-end',
-    marginBottom: '1.25rem',
+    flexDirection: 'column',
+    gap: 24,
+    maxWidth: 1400,
+    margin: '0 auto',
   },
-  label: {
+  pageHeader: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 16,
+    flexWrap: 'wrap',
+  },
+  pageEyebrow: {
+    fontSize: 'var(--wm-fs-xs)',
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
+    color: 'var(--wm-text-muted)',
+    marginBottom: 6,
+  },
+  h1: {
+    fontSize: 'var(--wm-fs-2xl)',
+    letterSpacing: '-0.02em',
+    margin: 0,
+    fontWeight: 600,
+  },
+  sub: {
+    color: 'var(--wm-text-muted)',
+    fontSize: 'var(--wm-fs-sm)',
+    marginTop: 4,
+  },
+  controls: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    gap: 10,
+  },
+  chipsRow: {
+    display: 'flex',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  rangeInputs: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
+  dash: {
+    color: 'var(--wm-text-soft)',
+    fontSize: 'var(--wm-fs-sm)',
+  },
+  kpiGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+    gap: 14,
+  },
+  kpi: {
+    padding: '16px 18px 14px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  kpiValue: {
+    fontSize: '1.6rem',
+    fontWeight: 600,
+    letterSpacing: '-0.02em',
+    lineHeight: 1.1,
+  },
+  kpiHint: {
+    color: 'var(--wm-text-muted)',
+    fontSize: 'var(--wm-fs-xs)',
+  },
+  gridTwoThirds: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)',
+    gap: 14,
+  },
+  gridHalves: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+    gap: 14,
+  },
+  panel: {
+    padding: 18,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 14,
+    minHeight: 0,
+  },
+  panelHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  panelTitle: {
+    fontSize: 'var(--wm-fs-lg)',
+    fontWeight: 600,
+    letterSpacing: '-0.01em',
+  },
+  panelSubtitle: {
+    fontSize: 'var(--wm-fs-xs)',
+    color: 'var(--wm-text-muted)',
+    marginTop: 2,
+  },
+  empty: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 12,
+    padding: '24px 4px',
+    color: 'var(--wm-text-muted)',
+  },
+  legendRow: {
+    display: 'flex',
+    gap: 16,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  legendItem: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 8,
+    fontSize: 'var(--wm-fs-xs)',
+    color: 'var(--wm-text-muted)',
+  },
+  yearLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    fontSize: 'var(--wm-fs-xs)',
+    color: 'var(--wm-text-muted)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+  },
+  tooltip: {
+    background: 'var(--wm-surface-2)',
+    border: '1px solid var(--wm-border)',
+    borderRadius: 'var(--wm-radius-md)',
+    padding: '10px 12px',
+    boxShadow: 'var(--wm-shadow-soft)',
+    minWidth: 160,
+    color: 'var(--wm-text)',
+  },
+  tooltipLabel: {
+    fontSize: 'var(--wm-fs-xs)',
+    color: 'var(--wm-text-muted)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+    marginBottom: 6,
+  },
+  tooltipRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    fontSize: 'var(--wm-fs-sm)',
+    padding: '2px 0',
+  },
+  tooltipDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 2,
+    display: 'inline-block',
+  },
+  tooltipName: {
+    color: 'var(--wm-text-muted)',
+    flex: 1,
+  },
+  tooltipValue: {
+    color: 'var(--wm-text)',
+    fontWeight: 600,
+  },
+  donutLayout: {
+    display: 'flex',
+    gap: 16,
+    flexWrap: 'wrap',
+    alignItems: 'center',
+  },
+  donutLegend: {
+    flex: '1 1 200px',
+    listStyle: 'none',
+    margin: 0,
+    padding: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  donutLegendItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: '4px 0',
+    fontSize: 'var(--wm-fs-sm)',
+    borderBottom: '1px dashed var(--wm-border-soft)',
+  },
+  donutDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 3,
+    display: 'inline-block',
+  },
+  donutLegendName: {
+    flex: 1,
+    color: 'var(--wm-text)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  donutLegendValue: {
+    color: 'var(--wm-text)',
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: 6,
+  },
+  donutLegendPct: {
+    color: 'var(--wm-text-muted)',
+    fontSize: 'var(--wm-fs-xs)',
+  },
+  txList: {
+    listStyle: 'none',
+    margin: 0,
+    padding: 0,
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  txRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    padding: '10px 0',
+    borderBottom: '1px solid var(--wm-border-soft)',
+  },
+  txIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 14,
+    fontWeight: 700,
+    flexShrink: 0,
+  },
+  txDesc: {
+    color: 'var(--wm-text)',
+    fontSize: 'var(--wm-fs-md)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  txMeta: {
+    color: 'var(--wm-text-muted)',
+    fontSize: 'var(--wm-fs-xs)',
+    marginTop: 1,
+  },
+  txAmount: {
+    fontSize: 'var(--wm-fs-md)',
+    fontWeight: 600,
+    whiteSpace: 'nowrap',
+  },
+  topList: {
+    listStyle: 'none',
+    margin: 0,
+    padding: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 14,
+  },
+  topRow: {
     display: 'flex',
     flexDirection: 'column',
     gap: 6,
-    fontSize: '0.8rem',
-    color: '#aaa',
   },
-  input: {
-    padding: '0.45rem 0.6rem',
-    borderRadius: 6,
-    border: '1px solid #333',
-    background: '#1a1a1a',
-    color: '#ececec',
-  },
-  btnGhost: {
-    padding: '0.45rem 0.85rem',
-    borderRadius: 6,
-    border: '1px solid #444',
-    background: 'transparent',
-    color: '#aaa',
-    cursor: 'pointer',
-    fontSize: '0.85rem',
-    marginBottom: 2,
-  },
-  cards: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-    gap: '0.75rem',
-    marginBottom: '1.5rem',
-  },
-  card: {
-    background: '#161616',
-    border: '1px solid #252525',
-    borderRadius: 10,
-    padding: '1rem',
-  },
-  cardLabel: { fontSize: '0.75rem', color: '#888', marginBottom: '0.35rem' },
-  cardValue: { fontSize: '1.35rem', fontWeight: 600 },
-  charts: {
+  topRowHead: {
     display: 'flex',
-    flexDirection: 'column',
-    gap: '1.5rem',
-  },
-  trendSection: { marginBottom: '1.5rem' },
-  trendHeader: {
-    display: 'flex',
-    flexWrap: 'wrap',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: '1rem',
-    marginBottom: '0.75rem',
+    gap: 8,
+    fontSize: 'var(--wm-fs-sm)',
   },
-  netChartWrap: { marginTop: '1rem' },
-  chartSection: {},
-  h2: { fontSize: '1rem', marginBottom: '0.75rem', color: '#ccc' },
-  chartBox: { width: '100%', minHeight: 280 },
-  muted: { color: '#666', fontSize: '0.9rem' },
+  topRowDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 2,
+    flexShrink: 0,
+  },
+  topRowName: {
+    flex: 1,
+    color: 'var(--wm-text)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  topRowValue: {
+    color: 'var(--wm-text-muted)',
+  },
+  topRowBar: {
+    position: 'relative',
+    height: 5,
+    width: '100%',
+    background: 'var(--wm-surface-3)',
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  topRowBarFill: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    bottom: 0,
+    borderRadius: 999,
+    transition: 'width 240ms ease',
+  },
 }

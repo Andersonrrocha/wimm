@@ -6,7 +6,11 @@ type AuthFormProps = {
   submitLabel: string
 }
 
-export function AuthForm({ onSubmit, loading, submitLabel }: AuthFormProps): JSX.Element {
+export function AuthForm({
+  onSubmit,
+  loading,
+  submitLabel,
+}: AuthFormProps): JSX.Element {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
 
@@ -16,26 +20,25 @@ export function AuthForm({ onSubmit, loading, submitLabel }: AuthFormProps): JSX
   }
 
   return (
-    <form onSubmit={handleSubmit} style={styles.form}>
-      <div style={styles.field}>
-        <label htmlFor="email" style={styles.label}>
-          Email
-        </label>
+    <form
+      onSubmit={handleSubmit}
+      style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
+    >
+      <label className="wm-field">
+        Email
         <input
           id="email"
           type="email"
           required
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          style={styles.input}
           placeholder="you@example.com"
           autoComplete="email"
+          className="wm-input"
         />
-      </div>
-      <div style={styles.field}>
-        <label htmlFor="password" style={styles.label}>
-          Password
-        </label>
+      </label>
+      <label className="wm-field">
+        Password
         <input
           id="password"
           type="password"
@@ -43,51 +46,19 @@ export function AuthForm({ onSubmit, loading, submitLabel }: AuthFormProps): JSX
           minLength={8}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          style={styles.input}
           placeholder="••••••••"
           autoComplete="current-password"
+          className="wm-input"
         />
-      </div>
-      <button type="submit" disabled={loading} style={styles.button}>
+      </label>
+      <button
+        type="submit"
+        disabled={loading}
+        className="wm-btn wm-btn--primary"
+        style={{ marginTop: 4 }}
+      >
         {loading ? 'Please wait…' : submitLabel}
       </button>
     </form>
   )
 }
-
-const styles = {
-  form: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '0.75rem',
-  },
-  field: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '0.3rem',
-  },
-  label: {
-    fontSize: '0.8rem',
-    color: '#aaa',
-  },
-  input: {
-    background: '#0f0f0f',
-    border: '1px solid #2a2a2a',
-    borderRadius: 6,
-    padding: '0.55rem 0.75rem',
-    color: '#ececec',
-    fontSize: '0.9rem',
-    outline: 'none',
-  },
-  button: {
-    marginTop: '0.25rem',
-    padding: '0.65rem',
-    background: '#6366f1',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 6,
-    fontSize: '0.9rem',
-    fontWeight: 600,
-    cursor: 'pointer',
-  },
-} as const

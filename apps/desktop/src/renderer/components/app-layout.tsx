@@ -1,109 +1,209 @@
-import type { CSSProperties } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { useAuth } from '../context/auth-context'
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { useAuth } from "../context/auth-context";
+import wimmLogo from "../assets/images/wimm-logo.png";
+import { QuickAddModal, type QuickAddTab } from "./quick-add-modal";
+
+const NAV_ITEMS: { to: string; label: string; end?: boolean }[] = [
+  { to: "/", label: "Home", end: true },
+  { to: "/transactions", label: "Transactions" },
+  { to: "/imports", label: "Import" },
+  { to: "/recurrences", label: "Recurrences" },
+  { to: "/settings", label: "Settings" },
+];
 
 const navLinkStyle = (active: boolean): CSSProperties => ({
-  color: active ? '#ececec' : '#888',
-  textDecoration: 'none',
-  fontSize: '0.875rem',
-  padding: '0.35rem 0.65rem',
-  borderRadius: 6,
-  background: active ? '#2a2a2a' : 'transparent',
-})
+  color: active ? "var(--wm-text)" : "var(--wm-text-muted)",
+  textDecoration: "none",
+  fontSize: "var(--wm-fs-sm)",
+  padding: "0.38rem 0.7rem",
+  borderRadius: "var(--wm-radius-sm)",
+  background: active ? "var(--wm-surface-2)" : "transparent",
+  transition: "color 140ms, background 140ms",
+  whiteSpace: "nowrap",
+});
 
 export function AppLayout(): JSX.Element {
-  const { logout } = useAuth()
-  const navigate = useNavigate()
+  const { logout, state } = useAuth();
+  const navigate = useNavigate();
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [initialTab, setInitialTab] = useState<QuickAddTab>("transaction");
+
+  const openQuickAdd = useCallback((tab: QuickAddTab = "transaction"): void => {
+    setInitialTab(tab);
+    setQuickAddOpen(true);
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        openQuickAdd("transaction");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return (): void => window.removeEventListener("keydown", onKey);
+  }, [openQuickAdd]);
 
   const handleLogout = async (): Promise<void> => {
-    await logout()
-    navigate('/login')
-  }
+    await logout();
+    navigate("/login");
+  };
+
+  const session = state.status === "authenticated" ? state.user : null;
+  const userBadgeLabel = session?.username ?? "";
+  const userBadgeTitle = session
+    ? `${session.username} · ${session.email}`
+    : "";
 
   return (
     <div style={styles.page}>
       <header style={styles.header}>
-        <span style={styles.logo}>Wimm</span>
-        <nav style={styles.nav}>
-          <NavLink end to="/" style={({ isActive }) => navLinkStyle(isActive)}>
-            Home
-          </NavLink>
-          <NavLink to="/transactions" style={({ isActive }) => navLinkStyle(isActive)}>
-            Transactions
-          </NavLink>
-          <NavLink to="/categories" style={({ isActive }) => navLinkStyle(isActive)}>
-            Categories
-          </NavLink>
-          <NavLink to="/sources" style={({ isActive }) => navLinkStyle(isActive)}>
-            Sources
-          </NavLink>
-          <NavLink to="/imports" style={({ isActive }) => navLinkStyle(isActive)}>
-            Import
-          </NavLink>
-          <NavLink
-            to="/recurrences"
-            style={({ isActive }) => navLinkStyle(isActive)}
-          >
-            Recurrences
-          </NavLink>
-          <NavLink to="/rules" style={({ isActive }) => navLinkStyle(isActive)}>
-            Rules
-          </NavLink>
+        <NavLink
+          to="/"
+          end
+          style={({ isActive }) => ({
+            ...styles.brand,
+            opacity: isActive ? 1 : 0.92,
+          })}
+          title="Wimm — home"
+          aria-label="Wimm home"
+        >
+          <img
+            src={wimmLogo}
+            alt="Wimm"
+            style={styles.logoImg}
+            decoding="async"
+          />
+        </NavLink>
+        <nav style={styles.nav} aria-label="Primary">
+          {NAV_ITEMS.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.end}
+              style={({ isActive }) => navLinkStyle(isActive)}
+            >
+              {item.label}
+            </NavLink>
+          ))}
         </nav>
-        <button type="button" onClick={handleLogout} style={styles.logoutBtn}>
-          Sign out
-        </button>
+        <div style={styles.headerActions}>
+          <button
+            type="button"
+            className="wm-btn wm-btn--primary"
+            onClick={() => openQuickAdd("transaction")}
+            title="Quick add (⌘/Ctrl + K)"
+          >
+            <span aria-hidden style={{ fontWeight: 700 }}>
+              +
+            </span>
+            Add
+            <kbd style={styles.kbd}>⌘K</kbd>
+          </button>
+          {userBadgeLabel ? (
+            <span style={styles.userBadge} title={userBadgeTitle}>
+              @{userBadgeLabel}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="wm-btn wm-btn--subtle"
+          >
+            Sign out
+          </button>
+        </div>
       </header>
       <main style={styles.main}>
-        <Outlet />
+        <Outlet context={{ openQuickAdd }} />
       </main>
+      <QuickAddModal
+        open={quickAddOpen}
+        onClose={() => setQuickAddOpen(false)}
+        initialTab={initialTab}
+      />
     </div>
-  )
+  );
 }
 
-const styles = {
+const styles: Record<string, CSSProperties> = {
   page: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    minHeight: '100vh',
-    background: '#0f0f0f',
-    color: '#ececec',
-    fontFamily: 'system-ui, -apple-system, sans-serif',
+    display: "flex",
+    flexDirection: "column",
+    minHeight: "100vh",
+    background: "var(--wm-bg)",
+    color: "var(--wm-text)",
   },
   header: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '1rem',
-    padding: '0 1.5rem',
-    height: 56,
-    borderBottom: '1px solid #1e1e1e',
-    background: '#141414',
+    display: "flex",
+    alignItems: "center",
+    gap: "1rem",
+    padding: "0 1.25rem",
+    height: "var(--wm-header-h)",
+    borderBottom: "1px solid var(--wm-border-soft)",
+    background: "linear-gradient(180deg, #101014 0%, #0c0c10 100%)",
     flexShrink: 0,
+    position: "sticky",
+    top: 0,
+    zIndex: 10,
   },
-  logo: {
-    fontWeight: 700,
-    fontSize: '1.1rem',
-    color: '#ececec',
-    marginRight: '0.5rem',
+  brand: {
+    display: "flex",
+    alignItems: "center",
+    marginRight: 12,
+    flexShrink: 0,
+    textDecoration: "none",
+    color: "inherit",
+    opacity: 1,
+    transition: "opacity 140ms",
+  },
+  logoImg: {
+    display: "block",
+    height: 32,
+    width: "auto",
+    maxWidth: "min(160px, 38vw)",
+    objectFit: "contain",
+    objectPosition: "left center",
   },
   nav: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.35rem',
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
     flex: 1,
+    minWidth: 0,
+    overflow: "auto",
   },
-  logoutBtn: {
-    background: 'none',
-    border: '1px solid #333',
-    color: '#aaa',
-    borderRadius: 6,
-    padding: '0.3rem 0.8rem',
-    fontSize: '0.8rem',
-    cursor: 'pointer',
+  headerActions: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+  },
+  userBadge: {
+    fontSize: "var(--wm-fs-xs)",
+    color: "var(--wm-text-muted)",
+    padding: "0.3rem 0.55rem",
+    borderRadius: "var(--wm-radius-sm)",
+    background: "var(--wm-surface-1)",
+    border: "1px solid var(--wm-border-soft)",
+    maxWidth: 180,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  kbd: {
+    fontSize: "0.65rem",
+    padding: "1px 5px",
+    borderRadius: 4,
+    background: "rgba(0, 0, 0, 0.25)",
+    color: "#1a1a1a",
+    fontWeight: 600,
+    marginLeft: 2,
   },
   main: {
     flex: 1,
-    padding: '1.5rem',
-    overflow: 'auto',
+    padding: "24px 32px 48px",
+    overflow: "auto",
   },
-} as const
+};
