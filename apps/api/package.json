@@ -3,13 +3,13 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "build": "nest build",
+    "build": "prisma generate && nest build && tsc-alias -p tsconfig.build.json",
     "dev": "nest start --watch",
     "start": "node dist/main",
     "start:debug": "nest start --debug --watch",
     "lint": "tsc --noEmit",
     "test": "jest",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist src/generated",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy"
@@ -21,7 +21,8 @@
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^10.0.0",
-    "@prisma/client": "^6.19.0",
+    "@prisma/adapter-pg": "^7.7.0",
+    "@prisma/client": "^7.7.0",
     "@wimm/shared": "workspace:*",
     "bcrypt": "^6.0.0",
     "class-transformer": "^0.5.1",
@@ -29,6 +30,7 @@
     "papaparse": "^5.5.3",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
+    "pg": "^8.20.0",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1"
   },
@@ -41,7 +43,9 @@
     "@types/node": "^20.0.0",
     "@types/papaparse": "^5.5.2",
     "@types/passport-jwt": "^4.0.1",
-    "prisma": "^6.19.0",
+    "dotenv": "^17.4.2",
+    "prisma": "^7.7.0",
+    "tsc-alias": "^1.8.16",
     "typescript": "^5.5.0"
   }
 }
