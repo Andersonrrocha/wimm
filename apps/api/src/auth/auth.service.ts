@@ -18,6 +18,7 @@ export type AuthResponseBody = {
   user: {
     id: string
     email: string
+    username: string
     createdAt: Date
   }
 }
@@ -31,22 +32,35 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthResponseBody> {
-    const existing = await this.prisma.user.findUnique({
-      where: { email: dto.email.toLowerCase() },
-    })
-    if (existing) {
+    const email = dto.email.toLowerCase()
+    const username = dto.username.toLowerCase()
+
+    const [existingEmail, existingUsername] = await Promise.all([
+      this.prisma.user.findUnique({ where: { email } }),
+      this.prisma.user.findUnique({ where: { username } }),
+    ])
+    if (existingEmail) {
       throw new ConflictException('Email already registered')
+    }
+    if (existingUsername) {
+      throw new ConflictException('Username already taken')
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 12)
     const user = await this.prisma.user.create({
       data: {
-        email: dto.email.toLowerCase(),
+        email,
+        username,
         passwordHash,
       },
     })
 
-    return this.issueTokensForUser(user.id, user.email, user.createdAt)
+    return this.issueTokensForUser(
+      user.id,
+      user.email,
+      user.username,
+      user.createdAt,
+    )
   }
 
   async login(dto: LoginDto): Promise<AuthResponseBody> {
@@ -62,7 +76,12 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials')
     }
 
-    return this.issueTokensForUser(user.id, user.email, user.createdAt)
+    return this.issueTokensForUser(
+      user.id,
+      user.email,
+      user.username,
+      user.createdAt,
+    )
   }
 
   async refresh(dto: RefreshTokenDto): Promise<{
@@ -87,6 +106,7 @@ export class AuthService {
     const { accessToken, refreshToken } = await this.createTokens(
       record.user.id,
       record.user.email,
+      record.user.username,
     )
 
     return { accessToken, refreshToken }
@@ -95,19 +115,25 @@ export class AuthService {
   private async issueTokensForUser(
     userId: string,
     email: string,
+    username: string,
     createdAt: Date,
   ): Promise<AuthResponseBody> {
-    const { accessToken, refreshToken } = await this.createTokens(userId, email)
+    const { accessToken, refreshToken } = await this.createTokens(
+      userId,
+      email,
+      username,
+    )
     return {
       accessToken,
       refreshToken,
-      user: { id: userId, email, createdAt },
+      user: { id: userId, email, username, createdAt },
     }
   }
 
   private async createTokens(
     userId: string,
     email: string,
+    username: string,
   ): Promise<{ accessToken: string; refreshToken: string }> {
     const accessExpiresSec = Number.parseInt(
       this.config.getOrThrow<string>('JWT_ACCESS_EXPIRES_SEC'),
@@ -117,7 +143,7 @@ export class AuthService {
       throw new Error('Invalid JWT_ACCESS_EXPIRES_SEC')
     }
     const accessToken = await this.jwtService.signAsync(
-      { sub: userId, email },
+      { sub: userId, email, username },
       { expiresIn: accessExpiresSec },
     )
 

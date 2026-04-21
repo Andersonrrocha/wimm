@@ -5,7 +5,7 @@ export interface AuthTokens {
 }
 
 export interface AuthResponse extends AuthTokens {
-  user: Pick<User, 'id' | 'email' | 'createdAt'>
+  user: Pick<User, 'id' | 'email' | 'username' | 'createdAt'>
 }
 
 export interface RefreshTokenRequest {
@@ -18,6 +18,7 @@ export interface LoginRequest {
 }
 
 export interface RegisterRequest {
+  username: string
   email: string
   password: string
 }
@@ -26,6 +27,7 @@ export interface RegisterRequest {
 export interface User {
   id: string
   email: string
+  username: string
   createdAt: string
   updatedAt: string
 }
