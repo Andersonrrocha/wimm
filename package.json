@@ -14,7 +14,8 @@
     "clean": "turbo run clean && rm -rf node_modules",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
-    "db:logs": "docker compose logs -f db"
+    "db:logs": "docker compose logs -f db",
+    "package:desktop": "pnpm --filter @wimm/desktop package"
   },
   "devDependencies": {
     "turbo": "^2.0.0",

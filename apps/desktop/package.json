@@ -2,13 +2,16 @@
   "name": "@wimm/desktop",
   "version": "0.0.1",
   "private": true,
+  "description": "WIMM desktop client — personal finance tracking",
+  "author": "WIMM",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "lint": "tsc --noEmit",
-    "clean": "rm -rf out dist"
+    "clean": "rm -rf out dist release",
+    "package": "electron-vite build && electron-builder"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.99.0",
@@ -31,5 +34,42 @@
     "electron-vite": "^2.3.0",
     "typescript": "^5.5.0",
     "vite": "^5.4.0"
+  },
+  "build": {
+    "appId": "com.wimm.desktop",
+    "productName": "Wimm",
+    "copyright": "Copyright © WIMM",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.finance",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Office"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

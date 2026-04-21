@@ -92,12 +92,48 @@ pnpm dev
 
 Configure the desktop with `apps/desktop/.env` from `.env.example` (`VITE_API_URL`).
 
+### Environment variables
+
+| Location | Variable | Purpose |
+|----------|----------|---------|
+| `apps/api/.env` | `DATABASE_URL` | PostgreSQL connection string |
+| `apps/api/.env` | `JWT_ACCESS_SECRET` | Secret for signing access tokens |
+| `apps/api/.env` | `JWT_ACCESS_EXPIRES_SEC` | Access token lifetime (seconds) |
+| `apps/api/.env` | `REFRESH_TOKEN_EXPIRES_DAYS` | Refresh token lifetime (whole days) |
+| `apps/api/.env` | `PORT` | API port (default `3000`) |
+| `apps/desktop/.env` | `VITE_API_URL` | API base URL for the renderer (e.g. `http://localhost:3000/api`). **Baked in at build time** for packaged builds — set it before running `pnpm package:desktop` if the app should talk to a non-default API. |
+
+See `apps/api/.env.example` and `apps/desktop/.env.example`. A root `.env.example` lists the same keys for quick reference.
+
 ### Build
 
 ```bash
 pnpm build
 pnpm lint
 ```
+
+### Desktop release (packaged app)
+
+Build installable artifacts with [electron-builder](https://www.electron.build/) (output under `apps/desktop/release/`):
+
+```bash
+pnpm package:desktop
+```
+
+Equivalent via Turbo (builds workspace dependencies first):
+
+```bash
+pnpm turbo run package --filter=@wimm/desktop
+```
+
+**Artifacts (examples):** macOS — `Wimm-*-arm64.dmg` / `.zip`; Windows — NSIS installer and `.zip`; Linux — `.AppImage` / `.deb` (targets are defined in `apps/desktop/package.json` under `build`).
+
+**Checklist for a real release**
+
+1. Run `pnpm build` and `pnpm lint` at the repo root.
+2. Ensure the API is deployed and reachable; set `apps/desktop/.env` with the correct `VITE_API_URL`, then run `pnpm package:desktop`.
+3. **macOS:** Without an Apple Developer ID certificate, the app is unsigned — users may need to open it via *System Settings → Privacy & Security* or `xattr`. For distribution outside the team, plan code signing and notarization separately.
+4. **Windows / Linux:** Run `pnpm package:desktop` on the target OS (or a CI matrix) so native targets build correctly.
 
 ---
 
@@ -141,4 +177,4 @@ wimm/
 
 ## Status
 
-MVP implementation in progress; core flows (auth, master data, imports, recurrences, reports, rules) are implemented in-repo.
+MVP core flows (auth, master data, imports, recurrences, reports, rules) and a **desktop packaging** path (`pnpm package:desktop`) are implemented in-repo. Production signing, notarization, and CI for releases are optional next steps outside this MVP scope.

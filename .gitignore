@@ -30,6 +30,7 @@ coverage/
 # Electron build artifacts
 apps/desktop/dist/
 apps/desktop/out/
+apps/desktop/release/
 
 # NestJS
 apps/api/dist/

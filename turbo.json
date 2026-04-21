@@ -18,6 +18,11 @@
     },
     "clean": {
       "cache": false
+    },
+    "package": {
+      "dependsOn": ["^build"],
+      "outputs": ["release/**"],
+      "cache": false
     }
   }
 }
