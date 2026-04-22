@@ -1,6 +1,8 @@
 import { BadRequestException } from '@nestjs/common'
-import Papa from 'papaparse'
 import { parseFlexibleAmount, parseFlexibleDate } from './amount-date'
+
+/** papaparse is CJS (`module.exports`); default import is undefined without `esModuleInterop`. */
+import Papa = require('papaparse')
 
 export type ParsedLedgerRow = {
   occurredAt: Date

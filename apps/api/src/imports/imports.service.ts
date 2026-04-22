@@ -8,6 +8,7 @@ import {
   Prisma,
   TransactionKind,
 } from '@prisma/client'
+import { DefaultCategoriesService } from '../categories/default-categories.service'
 import { CategorizationRulesService } from '../categorization-rules/categorization-rules.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { computeImportFingerprint } from './fingerprint'
@@ -56,6 +57,7 @@ export class ImportsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly categorizationRules: CategorizationRulesService,
+    private readonly defaultCategories: DefaultCategoriesService,
   ) {}
 
   async preview(
@@ -105,17 +107,22 @@ export class ImportsService {
       existing.map((e) => e.fingerprint).filter(Boolean) as string[],
     )
 
+    await this.defaultCategories.ensureForUser(userId)
+
     const rules =
       await this.categorizationRules.loadActiveRulesWithCategories(userId)
+    const systemCtx =
+      await this.categorizationRules.loadSystemResolutionContext(userId)
 
     const rows = normalized.map((n, i) => {
       const fingerprint = fingerprints[i]
       const isDuplicate = dupSet.has(fingerprint)
       const suggestedCategoryId =
-        this.categorizationRules.resolveCategoryId(
+        this.categorizationRules.resolveCategoryIdWithSystem(
           n.kind,
           n.description,
           rules,
+          systemCtx,
         ) ?? null
       return {
         occurredAt: n.occurredAt.toISOString(),
@@ -144,8 +151,12 @@ export class ImportsService {
   async commit(userId: string, dto: CommitImportDto) {
     await this.assertSourceOwned(userId, dto.sourceId)
 
+    await this.defaultCategories.ensureForUser(userId)
+
     const rules =
       await this.categorizationRules.loadActiveRulesWithCategories(userId)
+    const systemCtx =
+      await this.categorizationRules.loadSystemResolutionContext(userId)
 
     const result = await this.prisma.$transaction(async (tx) => {
       const batch = await tx.importBatch.create({
@@ -183,10 +194,11 @@ export class ImportsService {
 
         let categoryId: string | null =
           row.categoryId ??
-          this.categorizationRules.resolveCategoryId(
+          this.categorizationRules.resolveCategoryIdWithSystem(
             row.kind,
             row.description,
             rules,
+            systemCtx,
           ) ??
           null
 

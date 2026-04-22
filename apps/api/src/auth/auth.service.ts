@@ -7,6 +7,7 @@ import { ConfigService } from '@nestjs/config'
 import { JwtService } from '@nestjs/jwt'
 import * as bcrypt from 'bcrypt'
 import { createHash, randomBytes } from 'crypto'
+import { DefaultCategoriesService } from '../categories/default-categories.service'
 import { PrismaService } from '../prisma/prisma.service'
 import type { LoginDto } from './dto/login.dto'
 import type { RefreshTokenDto } from './dto/refresh-token.dto'
@@ -20,6 +21,7 @@ export type AuthResponseBody = {
     email: string
     username: string
     createdAt: Date
+    preferredLocale: string
   }
 }
 
@@ -29,6 +31,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
+    private readonly defaultCategories: DefaultCategoriesService,
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthResponseBody> {
@@ -55,12 +58,9 @@ export class AuthService {
       },
     })
 
-    return this.issueTokensForUser(
-      user.id,
-      user.email,
-      user.username,
-      user.createdAt,
-    )
+    await this.defaultCategories.ensureForUser(user.id)
+
+    return this.issueTokensForUser(user.id)
   }
 
   async login(dto: LoginDto): Promise<AuthResponseBody> {
@@ -76,12 +76,9 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials')
     }
 
-    return this.issueTokensForUser(
-      user.id,
-      user.email,
-      user.username,
-      user.createdAt,
-    )
+    await this.defaultCategories.ensureForUser(user.id)
+
+    return this.issueTokensForUser(user.id)
   }
 
   async refresh(dto: RefreshTokenDto): Promise<{
@@ -112,21 +109,35 @@ export class AuthService {
     return { accessToken, refreshToken }
   }
 
-  private async issueTokensForUser(
-    userId: string,
-    email: string,
-    username: string,
-    createdAt: Date,
-  ): Promise<AuthResponseBody> {
+  private async issueTokensForUser(userId: string): Promise<AuthResponseBody> {
+    const row = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        createdAt: true,
+        preferredLocale: true,
+      },
+    })
+    if (!row) {
+      throw new UnauthorizedException('User not found')
+    }
     const { accessToken, refreshToken } = await this.createTokens(
-      userId,
-      email,
-      username,
+      row.id,
+      row.email,
+      row.username,
     )
     return {
       accessToken,
       refreshToken,
-      user: { id: userId, email, username, createdAt },
+      user: {
+        id: row.id,
+        email: row.email,
+        username: row.username,
+        createdAt: row.createdAt,
+        preferredLocale: row.preferredLocale,
+      },
     }
   }
 

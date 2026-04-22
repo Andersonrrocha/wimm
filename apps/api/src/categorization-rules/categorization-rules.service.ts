@@ -9,13 +9,20 @@ import {
   TransactionKind,
   type CategorizationRule,
   type Category,
+  type SystemCategorizationRule,
 } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
+import { resolveFirstSystemCategoryId } from './resolve-system-category'
 import type { CreateCategorizationRuleDto } from './dto/create-categorization-rule.dto'
 import type { UpdateCategorizationRuleDto } from './dto/update-categorization-rule.dto'
 
 export type RuleWithCategory = CategorizationRule & {
   category: Category
+}
+
+export type SystemResolutionContext = {
+  systemRules: SystemCategorizationRule[]
+  categoryIdByKey: Map<string, string>
 }
 
 @Injectable()
@@ -86,7 +93,6 @@ export class CategorizationRulesService {
     await this.prisma.categorizationRule.delete({ where: { id } })
   }
 
-  /** Load active rules with categories, ordered for evaluation. */
   async loadActiveRulesWithCategories(
     userId: string,
   ): Promise<RuleWithCategory[]> {
@@ -97,10 +103,53 @@ export class CategorizationRulesService {
     })
   }
 
-  /**
-   * First matching rule wins. Category type must match transaction kind
-   * (INCOME vs EXPENSE).
-   */
+  /** Active global system rules, ordered for evaluation (bootstrap after user rules). */
+  async loadActiveSystemRulesOrdered(): Promise<SystemCategorizationRule[]> {
+    return this.prisma.systemCategorizationRule.findMany({
+      where: { active: true },
+      orderBy: [{ priority: 'asc' }, { pattern: 'asc' }],
+    })
+  }
+
+  async buildCategoryIdByKeyMap(userId: string): Promise<Map<string, string>> {
+    const rows = await this.prisma.category.findMany({
+      where: { userId, categoryKey: { not: null } },
+      select: { id: true, categoryKey: true },
+    })
+    const m = new Map<string, string>()
+    for (const r of rows) {
+      if (r.categoryKey) m.set(r.categoryKey, r.id)
+    }
+    return m
+  }
+
+  async loadSystemResolutionContext(
+    userId: string,
+  ): Promise<SystemResolutionContext> {
+    const [systemRules, categoryIdByKey] = await Promise.all([
+      this.loadActiveSystemRulesOrdered(),
+      this.buildCategoryIdByKeyMap(userId),
+    ])
+    return { systemRules, categoryIdByKey }
+  }
+
+  resolveCategoryIdWithSystem(
+    kind: TransactionKind,
+    description: string,
+    userRules: RuleWithCategory[],
+    ctx: SystemResolutionContext,
+  ): string | null {
+    const fromUser = this.resolveCategoryId(kind, description, userRules)
+    if (fromUser) return fromUser
+    const normDesc = description.trim().toLowerCase()
+    return resolveFirstSystemCategoryId(
+      kind,
+      normDesc,
+      ctx.systemRules,
+      ctx.categoryIdByKey,
+    )
+  }
+
   resolveCategoryId(
     kind: TransactionKind,
     description: string,

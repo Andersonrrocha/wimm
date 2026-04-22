@@ -81,18 +81,20 @@ export class ReportsService {
 
     const categories = await this.prisma.category.findMany({
       where: { userId, id: { in: categoryIds } },
-      select: { id: true, name: true },
+      select: { id: true, name: true, categoryKey: true },
     })
-    const nameById = new Map(categories.map((c) => [c.id, c.name]))
+    const catById = new Map(categories.map((c) => [c.id, c]))
 
     const items = groups.map((g) => {
       const total = new Prisma.Decimal(g._sum.amount ?? 0)
+      const cat = g.categoryId ? catById.get(g.categoryId) : undefined
       const name =
         g.categoryId == null
           ? 'Uncategorized'
-          : (nameById.get(g.categoryId) ?? 'Unknown category')
+          : (cat?.name ?? 'Unknown category')
       return {
         categoryId: g.categoryId,
+        categoryKey: cat?.categoryKey ?? null,
         name,
         kind: g.kind,
         total: toDecimalString(total),
