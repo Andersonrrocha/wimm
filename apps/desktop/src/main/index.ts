@@ -1,12 +1,21 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
-import { clearTokens, getAccessToken, getRefreshToken, setTokens } from './store'
+import {
+  clearTokens,
+  getAccessToken,
+  getPersistSession,
+  getRefreshToken,
+  setTokens,
+} from './store'
 
 function registerIpcHandlers(): void {
   ipcMain.handle('tokens:getAccess', () => getAccessToken())
   ipcMain.handle('tokens:getRefresh', () => getRefreshToken())
-  ipcMain.handle('tokens:set', (_event, access: string, refresh: string) =>
-    setTokens(access, refresh),
+  ipcMain.handle('tokens:getPersistSession', () => getPersistSession())
+  ipcMain.handle(
+    'tokens:set',
+    (_event, access: string, refresh: string, rememberMe?: boolean) =>
+      setTokens(access, refresh, rememberMe !== false),
   )
   ipcMain.handle('tokens:clear', () => clearTokens())
 }

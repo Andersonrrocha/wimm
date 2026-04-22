@@ -1,6 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Plus } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { Category } from '@wimm/shared'
 import { apiClient } from '../../lib/api-client'
+import { categoryDisplayName } from '../../lib/category-label'
+import { Badge } from '../../components/ui/badge'
+import { Button } from '../../components/ui/button'
+import { EmptyState } from '../../components/ui/empty-state'
+import { Panel } from '../../components/ui/panel'
 
 interface CategoriesTabProps {
   onNewCategory: () => void
@@ -9,6 +16,7 @@ interface CategoriesTabProps {
 export function CategoriesTab({
   onNewCategory,
 }: CategoriesTabProps): JSX.Element {
+  const { t } = useTranslation()
   const qc = useQueryClient()
 
   const {
@@ -34,43 +42,36 @@ export function CategoriesTab({
   const expenseCount = categories.filter((c) => c.type === 'EXPENSE').length
 
   return (
-    <section className="wm-panel">
-      <header className="wm-panel__header">
+    <Panel>
+      <Panel.Header>
         <div>
-          <h2 className="wm-panel__title">Categories</h2>
-          <p className="wm-panel__sub">
+          <Panel.Title>Categories</Panel.Title>
+          <Panel.Subtitle>
             {categories.length === 0
               ? 'No categories yet.'
               : `${categories.length} total · ${incomeCount} income · ${expenseCount} expense`}
-          </p>
+          </Panel.Subtitle>
         </div>
-        <button
-          type="button"
-          className="wm-btn wm-btn--primary"
-          onClick={onNewCategory}
-        >
-          + New category
-        </button>
-      </header>
+        <Button variant="primary" onClick={onNewCategory}>
+          <Plus className="size-4 shrink-0" strokeWidth={2.25} aria-hidden />
+          New category
+        </Button>
+      </Panel.Header>
 
       {error ? (
-        <p className="wm-error-text">Failed to load categories.</p>
+        <p className="text-wm-sm text-negative">Failed to load categories.</p>
       ) : isLoading ? (
-        <p className="wm-muted">Loading…</p>
+        <p className="text-wm-sm text-fg-muted">Loading…</p>
       ) : categories.length === 0 ? (
-        <div className="wm-empty">
+        <EmptyState>
           <span>
             Categories classify transactions as income or expense. They also
             power categorization rules.
           </span>
-          <button
-            type="button"
-            className="wm-btn wm-btn--primary"
-            onClick={onNewCategory}
-          >
+          <Button variant="primary" onClick={onNewCategory}>
             Create your first
-          </button>
-        </div>
+          </Button>
+        </EmptyState>
       ) : (
         <div className="wm-table-wrap">
           <table className="wm-table">
@@ -84,29 +85,31 @@ export function CategoriesTab({
             <tbody>
               {categories.map((c) => (
                 <tr key={c.id}>
-                  <td>{c.name}</td>
+                  <td>{categoryDisplayName(c, t)}</td>
                   <td>
-                    <span
-                      className={`wm-badge wm-badge--${
-                        c.type === 'INCOME' ? 'positive' : 'negative'
-                      }`}
+                    <Badge
+                      variant={c.type === 'INCOME' ? 'positive' : 'negative'}
                     >
                       {c.type === 'INCOME' ? 'Income' : 'Expense'}
-                    </span>
+                    </Badge>
                   </td>
                   <td className="wm-table__actions">
-                    <button
-                      type="button"
-                      className="wm-btn wm-btn--danger"
+                    <Button
+                      variant="danger"
+                      size="sm"
                       onClick={() => {
-                        if (window.confirm(`Delete "${c.name}"?`)) {
+                        if (
+                          window.confirm(
+                            `Delete "${categoryDisplayName(c, t)}"?`,
+                          )
+                        ) {
                           deleteMut.mutate(c.id)
                         }
                       }}
                       disabled={deleteMut.isPending}
                     >
                       Delete
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -114,6 +117,6 @@ export function CategoriesTab({
           </table>
         </div>
       )}
-    </section>
+    </Panel>
   )
 }

@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { endOfMonth, startOfMonth } from 'date-fns'
+import { Plus } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useOutletContext } from 'react-router-dom'
 import type {
   Category,
@@ -10,11 +12,19 @@ import type {
   TransactionKind,
 } from '@wimm/shared'
 import { apiClient } from '../lib/api-client'
+import { categoryDisplayName } from '../lib/category-label'
 import { PageHeader } from '../components/ui/page-header'
 import { DatePicker } from '../components/ui/date-picker'
 import { Select } from '../components/ui/select'
+import { Button } from '../components/ui/button'
+import { Chip } from '../components/ui/chip'
+import { EmptyState } from '../components/ui/empty-state'
+import { Field } from '../components/ui/field'
+import { Panel } from '../components/ui/panel'
 import type { QuickAddTab } from '../components/quick-add-modal'
+import { dateFnsLocaleForLang } from '../lib/date-fns-locale'
 import { formatDateTime, formatShortDate, toIsoDate } from '../lib/dates'
+import { cn } from '../lib/cn'
 
 type OutletCtx = {
   openQuickAdd: (tab?: QuickAddTab) => void
@@ -32,6 +42,11 @@ function formatMoney(amount: string): string {
 }
 
 export function TransactionsPage(): JSX.Element {
+  const { t, i18n } = useTranslation()
+  const dfLocale = useMemo(
+    () => dateFnsLocaleForLang(i18n.language),
+    [i18n.language],
+  )
   const qc = useQueryClient()
   const { openQuickAdd } = useOutletContext<OutletCtx>()
 
@@ -97,9 +112,9 @@ export function TransactionsPage(): JSX.Element {
 
   const categoryNameById = useMemo(() => {
     const m = new Map<string, string>()
-    for (const c of categories) m.set(c.id, c.name)
+    for (const c of categories) m.set(c.id, categoryDisplayName(c, t))
     return m
-  }, [categories])
+  }, [categories, t])
 
   const sourceNameById = useMemo(() => {
     const m = new Map<string, string>()
@@ -116,57 +131,53 @@ export function TransactionsPage(): JSX.Element {
 
   const categoryOptions = useMemo(
     () => [
-      { value: '', label: 'All categories' },
-      ...categories.map((c) => ({ value: c.id, label: c.name })),
+      { value: '', label: t('transactions.allCategories') },
+      ...categories.map((c) => ({
+        value: c.id,
+        label: categoryDisplayName(c, t),
+      })),
     ],
-    [categories],
+    [categories, t],
   )
 
   const sourceOptions = useMemo(
     () => [
-      { value: '', label: 'All sources' },
+      { value: '', label: t('transactions.allSources') },
       ...sources.map((s) => ({ value: s.id, label: s.name })),
     ],
-    [sources],
+    [sources, t],
   )
 
+  const subtitle =
+    list?.total !== undefined
+      ? t('transactions.recordsInRange', {
+          count: list.total,
+          from: formatShortDate(from, dfLocale),
+          to: formatShortDate(to, dfLocale),
+        })
+      : t('transactions.recordsLoading', {
+          from: formatShortDate(from, dfLocale),
+          to: formatShortDate(to, dfLocale),
+        })
+
   return (
-    <div className="wm-page">
+    <div className="mx-auto flex max-w-container flex-col gap-6">
       <PageHeader
-        eyebrow="Register"
-        title="Transactions"
-        subtitle={`${list?.total ?? '…'} records in range · ${formatShortDate(from)} → ${formatShortDate(to)}`}
+        eyebrow={t('transactions.eyebrow')}
+        title={t('transactions.title')}
+        subtitle={subtitle}
         actions={
-          <button
-            type="button"
-            className="wm-btn wm-btn--primary"
-            onClick={() => openQuickAdd('transaction')}
-          >
-            + New transaction
-          </button>
+          <Button variant="primary" onClick={() => openQuickAdd('transaction')}>
+            <Plus className="size-4 shrink-0" strokeWidth={2.25} aria-hidden />
+            {t('transactions.newTransaction')}
+          </Button>
         }
       />
 
-      <section className="wm-panel">
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'flex-end',
-            gap: 12,
-            justifyContent: 'space-between',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'flex-end',
-              gap: 10,
-              flexWrap: 'wrap',
-            }}
-          >
-            <div className="wm-field">
-              <span>From</span>
+      <Panel>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div className="flex flex-wrap items-end gap-2.5">
+            <Field label={t('transactions.from')}>
               <DatePicker
                 value={from}
                 onChange={(v) => {
@@ -175,9 +186,8 @@ export function TransactionsPage(): JSX.Element {
                 }}
                 minWidth={160}
               />
-            </div>
-            <div className="wm-field">
-              <span>To</span>
+            </Field>
+            <Field label={t('transactions.to')}>
               <DatePicker
                 value={to}
                 onChange={(v) => {
@@ -186,9 +196,8 @@ export function TransactionsPage(): JSX.Element {
                 }}
                 minWidth={160}
               />
-            </div>
-            <div className="wm-field">
-              <span>Category</span>
+            </Field>
+            <Field label={t('transactions.category')}>
               <Select
                 value={categoryId}
                 onChange={(v) => {
@@ -196,13 +205,12 @@ export function TransactionsPage(): JSX.Element {
                   resetPage()
                 }}
                 options={categoryOptions}
-                placeholder="All categories"
+                placeholder={t('transactions.allCategories')}
                 minWidth={170}
-                ariaLabel="Category filter"
+                ariaLabel={t('transactions.category')}
               />
-            </div>
-            <div className="wm-field">
-              <span>Source</span>
+            </Field>
+            <Field label={t('transactions.source')}>
               <Select
                 value={sourceId}
                 onChange={(v) => {
@@ -210,125 +218,113 @@ export function TransactionsPage(): JSX.Element {
                   resetPage()
                 }}
                 options={sourceOptions}
-                placeholder="All sources"
+                placeholder={t('transactions.allSources')}
                 minWidth={170}
-                ariaLabel="Source filter"
+                ariaLabel={t('transactions.source')}
               />
-            </div>
+            </Field>
           </div>
 
           <div
             role="group"
-            aria-label="Kind filter"
-            style={{ display: 'flex', gap: 6 }}
+            aria-label={t('transactions.kindFilterAria')}
+            className="flex gap-1.5"
           >
             {(['ALL', 'INCOME', 'EXPENSE'] as const).map((k) => (
-              <button
-                key={k}
-                type="button"
-                onClick={() => setKind(k)}
-                className={`wm-chip${kind === k ? ' wm-chip--active' : ''}`}
-              >
-                {k === 'ALL' ? 'All' : k === 'INCOME' ? 'Income' : 'Expense'}
-              </button>
+              <Chip key={k} active={kind === k} onClick={() => setKind(k)}>
+                {k === 'ALL'
+                  ? t('transactions.kindAll')
+                  : k === 'INCOME'
+                    ? t('transactions.kindIncome')
+                    : t('transactions.kindExpense')}
+              </Chip>
             ))}
           </div>
         </div>
-      </section>
+      </Panel>
 
-      <section className="wm-panel" style={{ padding: 0, overflow: 'hidden' }}>
+      <Panel flush className="overflow-hidden">
         {error ? (
-          <p className="wm-error-text" style={{ padding: 18 }}>
-            Failed to load transactions.
+          <p className="p-[18px] text-wm-sm text-negative">
+            {t('transactions.failedLoad')}
           </p>
         ) : isLoading ? (
-          <p className="wm-muted" style={{ padding: 18 }}>
-            Loading…
+          <p className="p-[18px] text-wm-sm text-fg-muted">
+            {t('common.loading')}
           </p>
         ) : filtered.length === 0 ? (
-          <div className="wm-empty" style={{ padding: 24 }}>
-            <span>No transactions match these filters.</span>
-            <button
-              type="button"
-              className="wm-btn wm-btn--primary"
-              onClick={() => openQuickAdd('transaction')}
-            >
-              Add a transaction
-            </button>
-          </div>
+          <EmptyState className="p-6">
+            <span>{t('transactions.noMatch')}</span>
+            <Button variant="primary" onClick={() => openQuickAdd('transaction')}>
+              {t('transactions.addTransaction')}
+            </Button>
+          </EmptyState>
         ) : (
-          <div style={{ overflow: 'auto' }}>
+          <div className="overflow-auto">
             <table className="wm-table">
               <thead>
                 <tr>
-                  <th>When</th>
-                  <th>Description</th>
-                  <th>Category</th>
-                  <th>Source</th>
-                  <th style={{ textAlign: 'right' }}>Amount</th>
+                  <th>{t('transactions.when')}</th>
+                  <th>{t('transactions.description')}</th>
+                  <th>{t('transactions.categoryCol')}</th>
+                  <th>{t('transactions.sourceCol')}</th>
+                  <th className="text-right">{t('transactions.amount')}</th>
                   <th className="wm-table__actions" />
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((t) => {
-                  const isIncome = t.kind === 'INCOME'
+                {filtered.map((row) => {
+                  const isIncome = row.kind === 'INCOME'
                   return (
-                    <tr key={t.id}>
-                      <td className="wm-muted">{formatDateTime(t.occurredAt)}</td>
+                    <tr key={row.id}>
+                      <td className="wm-muted">
+                        {formatDateTime(row.occurredAt, dfLocale)}
+                      </td>
                       <td>
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span className="flex items-center gap-2">
                           <span
                             aria-hidden
-                            style={{
-                              width: 6,
-                              height: 6,
-                              borderRadius: 2,
-                              background: isIncome
-                                ? 'var(--wm-positive)'
-                                : 'var(--wm-negative)',
-                              flexShrink: 0,
-                            }}
+                            className={cn(
+                              'h-1.5 w-1.5 flex-shrink-0 rounded-[2px]',
+                              isIncome ? 'bg-positive' : 'bg-negative',
+                            )}
                           />
-                          <span className="wm-td--desc" title={t.description}>
-                            {t.description || 'Untitled'}
+                          <span className="wm-td--desc" title={row.description}>
+                            {row.description || t('transactions.untitled')}
                           </span>
                         </span>
                       </td>
                       <td className="wm-muted">
-                        {t.categoryId
-                          ? categoryNameById.get(t.categoryId) ?? '—'
+                        {row.categoryId
+                          ? categoryNameById.get(row.categoryId) ?? '—'
                           : '—'}
                       </td>
                       <td className="wm-muted">
-                        {t.sourceId
-                          ? sourceNameById.get(t.sourceId) ?? '—'
+                        {row.sourceId
+                          ? sourceNameById.get(row.sourceId) ?? '—'
                           : '—'}
                       </td>
                       <td
-                        className="wm-td--num"
-                        style={{
-                          textAlign: 'right',
-                          color: isIncome
-                            ? 'var(--wm-positive)'
-                            : 'var(--wm-text)',
-                          fontWeight: 600,
-                        }}
+                        className={cn(
+                          'wm-td--num text-right font-semibold',
+                          isIncome ? 'text-positive' : 'text-fg',
+                        )}
                       >
-                        {isIncome ? '+' : '−'} {formatMoney(t.amount)}
+                        {isIncome ? '+' : '−'} {formatMoney(row.amount)}
                       </td>
                       <td className="wm-table__actions">
-                        <button
-                          type="button"
-                          className="wm-btn wm-btn--danger"
+                        <Button
+                          variant="danger"
+                          size="sm"
                           onClick={() => {
-                            if (window.confirm('Delete this transaction?')) {
-                              deleteMut.mutate(t.id)
+                            if (window.confirm(t('transactions.deleteConfirm'))) {
+                              deleteMut.mutate(row.id)
                             }
                           }}
                           disabled={deleteMut.isPending}
                         >
-                          Delete
-                        </button>
+                          {t('transactions.delete')}
+                        </Button>
                       </td>
                     </tr>
                   )
@@ -339,40 +335,35 @@ export function TransactionsPage(): JSX.Element {
         )}
 
         {list && totalPages > 1 && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '12px 18px',
-              borderTop: '1px solid var(--wm-border-soft)',
-              fontSize: 'var(--wm-fs-sm)',
-            }}
-          >
-            <span className="wm-muted">
-              Page {page} of {totalPages} · {list.total} total
+          <div className="flex items-center justify-between border-t border-line-soft px-[18px] py-3 text-wm-sm">
+            <span className="text-fg-muted">
+              {t('transactions.pageOf', {
+                page,
+                totalPages,
+                total: list.total,
+              })}
             </span>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button
-                type="button"
-                className="wm-btn wm-btn--ghost"
+            <div className="flex gap-1.5">
+              <Button
+                variant="ghost"
+                size="sm"
                 disabled={page <= 1}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
               >
-                Previous
-              </button>
-              <button
-                type="button"
-                className="wm-btn wm-btn--ghost"
+                {t('transactions.pagePrev')}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 disabled={page >= totalPages}
                 onClick={() => setPage((p) => p + 1)}
               >
-                Next
-              </button>
+                {t('transactions.pageNext')}
+              </Button>
             </div>
           </div>
         )}
-      </section>
+      </Panel>
     </div>
   )
 }

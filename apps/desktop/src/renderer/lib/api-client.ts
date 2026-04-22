@@ -79,7 +79,12 @@ export function createApiClient(): AxiosInstance {
           body,
         )
 
-        await window.tokenStore.setTokens(data.accessToken, data.refreshToken)
+        const rememberMe = await window.tokenStore.getPersistSession()
+        await window.tokenStore.setTokens(
+          data.accessToken,
+          data.refreshToken,
+          rememberMe,
+        )
         drainQueue(data.accessToken)
 
         original.headers.set('Authorization', `Bearer ${data.accessToken}`)

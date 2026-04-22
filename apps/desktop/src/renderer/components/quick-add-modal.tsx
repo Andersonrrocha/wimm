@@ -1,10 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import {
-  useEffect,
-  useState,
-  type CSSProperties,
-  type FormEvent,
-} from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 import type {
   Category,
   CategoryType,
@@ -13,11 +9,16 @@ import type {
   TransactionKind,
 } from '@wimm/shared'
 import { apiClient } from '../lib/api-client'
+import { categoryDisplayName } from '../lib/category-label'
 import { fromIsoDate, toIsoDate } from '../lib/dates'
+import { cn } from '../lib/cn'
 import { Modal } from './ui/modal'
 import { Tabs } from './ui/tabs'
 import { Select } from './ui/select'
 import { DatePicker } from './ui/date-picker'
+import { Button } from './ui/button'
+import { Field } from './ui/field'
+import { Input } from './ui/input'
 
 interface QuickAddModalProps {
   open: boolean
@@ -27,33 +28,21 @@ interface QuickAddModalProps {
 
 export type QuickAddTab = 'transaction' | 'category' | 'source'
 
-const SOURCE_TYPE_OPTIONS = [
-  { value: 'BANK_ACCOUNT', label: 'Bank account' },
-  { value: 'CREDIT_CARD', label: 'Credit card' },
-  { value: 'CASH', label: 'Cash' },
-  { value: 'MANUAL', label: 'Manual' },
-]
-
-const CATEGORY_TYPE_OPTIONS = [
-  { value: 'EXPENSE', label: 'Expense' },
-  { value: 'INCOME', label: 'Income' },
-]
-
 function nowAsTime(): string {
   const d = new Date()
   const pad = (n: number): string => String(n).padStart(2, '0')
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-/**
- * Single surface for creating a transaction, a category, or a source.
- * Keeps friction low: opens from any page, reuses react-query caches.
- */
+const formCls = 'flex flex-col gap-3.5'
+const rowCls = 'flex flex-wrap gap-3'
+
 export function QuickAddModal({
   open,
   onClose,
   initialTab = 'transaction',
 }: QuickAddModalProps): JSX.Element {
+  const { t } = useTranslation()
   const [tab, setTab] = useState<QuickAddTab>(initialTab)
 
   useEffect(() => {
@@ -61,12 +50,19 @@ export function QuickAddModal({
   }, [open, initialTab])
 
   return (
-    <Modal open={open} onClose={onClose} title="Add to your register" maxWidth={620}>
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={t('quickAdd.modalTitle')}
+      maxWidth={620}
+    >
       <Tabs value={tab} onValueChange={(v) => setTab(v as QuickAddTab)} defaultValue={tab}>
-        <Tabs.List ariaLabel="Quick add">
-          <Tabs.Trigger value="transaction">Transaction</Tabs.Trigger>
-          <Tabs.Trigger value="category">Category</Tabs.Trigger>
-          <Tabs.Trigger value="source">Source</Tabs.Trigger>
+        <Tabs.List ariaLabel={t('quickAdd.tabsAria')}>
+          <Tabs.Trigger value="transaction">
+            {t('quickAdd.tabTransaction')}
+          </Tabs.Trigger>
+          <Tabs.Trigger value="category">{t('quickAdd.tabCategory')}</Tabs.Trigger>
+          <Tabs.Trigger value="source">{t('quickAdd.tabSource')}</Tabs.Trigger>
         </Tabs.List>
 
         <Tabs.Panel value="transaction">
@@ -83,11 +79,8 @@ export function QuickAddModal({
   )
 }
 
-/* ------------------------------------------------------------------ */
-/* Forms                                                               */
-/* ------------------------------------------------------------------ */
-
 function TransactionForm({ onDone }: { onDone: () => void }): JSX.Element {
+  const { t } = useTranslation()
   const qc = useQueryClient()
   const [kind, setKind] = useState<TransactionKind>('EXPENSE')
   const [amount, setAmount] = useState('')
@@ -115,14 +108,23 @@ function TransactionForm({ onDone }: { onDone: () => void }): JSX.Element {
 
   const relevantCategories = categories.filter((c) => c.type === kind)
 
-  const sourceOptions = [
-    { value: '', label: 'None' },
-    ...sources.map((s) => ({ value: s.id, label: s.name })),
-  ]
-  const categoryOptions = [
-    { value: '', label: 'None' },
-    ...relevantCategories.map((c) => ({ value: c.id, label: c.name })),
-  ]
+  const sourceOptions = useMemo(
+    () => [
+      { value: '', label: t('common.none') },
+      ...sources.map((s) => ({ value: s.id, label: s.name })),
+    ],
+    [sources, t],
+  )
+  const categoryOptions = useMemo(
+    () => [
+      { value: '', label: t('common.none') },
+      ...relevantCategories.map((c) => ({
+        value: c.id,
+        label: categoryDisplayName(c, t),
+      })),
+    ],
+    [relevantCategories, t],
+  )
 
   const createMut = useMutation({
     mutationFn: async () => {
@@ -155,97 +157,109 @@ function TransactionForm({ onDone }: { onDone: () => void }): JSX.Element {
   }
 
   return (
-    <form onSubmit={handleSubmit} style={formStyle}>
+    <form onSubmit={handleSubmit} className={formCls}>
       <KindToggle value={kind} onChange={setKind} />
 
-      <div style={rowStyle}>
-        <label className="wm-field" style={{ flex: '1 1 180px' }}>
-          Amount
-          <input
-            className="wm-input wm-num"
+      <div className={rowCls}>
+        <Field label={t('quickAdd.amount')} className="basis-[180px] grow">
+          <Input
             type="number"
             step="0.01"
             min="0.01"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
-            placeholder="0.00"
+            placeholder={t('quickAdd.placeholders.amount')}
             required
             autoFocus
+            className="wm-num"
           />
-        </label>
-        <label className="wm-field" style={{ flex: '2 1 260px' }}>
-          Description
-          <input
-            className="wm-input"
+        </Field>
+        <Field label={t('quickAdd.description')} className="basis-[260px] grow-[2]">
+          <Input
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             required
-            placeholder="What was it?"
+            placeholder={t('quickAdd.placeholders.description')}
           />
-        </label>
+        </Field>
       </div>
 
-      <div style={rowStyle}>
-        <div className="wm-field" style={{ flex: '1 1 200px' }}>
-          <span>Date</span>
+      <div className={rowCls}>
+        <Field label={t('quickAdd.date')} className="basis-[200px] grow">
           <DatePicker value={date} onChange={setDate} />
-        </div>
-        <label className="wm-field" style={{ flex: '0 0 120px' }}>
-          Time
-          <input
-            className="wm-input wm-num"
+        </Field>
+        <Field label={t('quickAdd.time')} className="basis-[120px] grow-0">
+          <Input
             type="time"
             value={time}
             onChange={(e) => setTime(e.target.value)}
             required
+            className="wm-num"
           />
-        </label>
-        <div className="wm-field" style={{ flex: '1 1 180px' }}>
-          <span>Source</span>
+        </Field>
+        <Field label={t('quickAdd.source')} className="basis-[180px] grow">
           <Select
             value={sourceId}
             onChange={setSourceId}
             options={sourceOptions}
-            placeholder="None"
-            ariaLabel="Source"
+            placeholder={t('common.none')}
+            ariaLabel={t('quickAdd.source')}
           />
-        </div>
-        <div className="wm-field" style={{ flex: '1 1 180px' }}>
-          <span>Category</span>
+        </Field>
+        <Field label={t('quickAdd.category')} className="basis-[180px] grow">
           <Select
             value={categoryId}
             onChange={setCategoryId}
             options={categoryOptions}
-            placeholder="None"
-            ariaLabel="Category"
+            placeholder={t('common.none')}
+            ariaLabel={t('quickAdd.category')}
           />
-        </div>
+        </Field>
       </div>
 
       <FooterRow>
         {createMut.isError ? (
-          <span style={errStyle}>Could not save.</span>
+          <span className="text-wm-xs text-negative">
+            {t('quickAdd.couldNotSave')}
+          </span>
         ) : (
-          <span style={{ color: 'var(--wm-text-soft)', fontSize: 'var(--wm-fs-xs)' }}>
-            Press ⌘/Ctrl + Enter to save.
+          <span className="text-wm-xs text-fg-soft">
+            {t('quickAdd.hintSaveShortcut')}
           </span>
         )}
-        <button
+        <Button
           type="submit"
-          className="wm-btn wm-btn--primary"
+          variant="primary"
           disabled={createMut.isPending}
         >
-          {createMut.isPending ? 'Saving…' : 'Save transaction'}
-        </button>
+          {createMut.isPending
+            ? t('quickAdd.saving')
+            : t('quickAdd.saveTransaction')}
+        </Button>
       </FooterRow>
     </form>
   )
 }
 
 function CategoryForm({ onDone }: { onDone: () => void }): JSX.Element {
+  const { t } = useTranslation()
   const qc = useQueryClient()
   const [name, setName] = useState('')
   const [type, setType] = useState<CategoryType>('EXPENSE')
+
+  const categoryTypeOptions = useMemo(
+    () => [
+      {
+        value: 'EXPENSE',
+        label: t('quickAdd.categoryType.EXPENSE'),
+      },
+      {
+        value: 'INCOME',
+        label: t('quickAdd.categoryType.INCOME'),
+      },
+    ],
+    [t],
+  )
 
   const createMut = useMutation({
     mutationFn: async () => {
@@ -264,54 +278,65 @@ function CategoryForm({ onDone }: { onDone: () => void }): JSX.Element {
   }
 
   return (
-    <form onSubmit={handleSubmit} style={formStyle}>
-      <div style={rowStyle}>
-        <label className="wm-field" style={{ flex: '2 1 240px' }}>
-          Name
-          <input
-            className="wm-input"
+    <form onSubmit={handleSubmit} className={formCls}>
+      <div className={rowCls}>
+        <Field label={t('categoriesTab.name')} className="basis-[240px] grow-[2]">
+          <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
             autoFocus
-            placeholder="Groceries, Salary…"
+            placeholder={t('quickAdd.placeholders.categoryName')}
           />
-        </label>
-        <div className="wm-field" style={{ flex: '1 1 160px' }}>
-          <span>Type</span>
+        </Field>
+        <Field label={t('categoriesTab.type')} className="basis-[160px] grow">
           <Select
             value={type}
             onChange={(v) => setType(v as CategoryType)}
-            options={CATEGORY_TYPE_OPTIONS}
-            ariaLabel="Category type"
+            options={categoryTypeOptions}
+            ariaLabel={t('quickAdd.selectCategoryTypeAria')}
           />
-        </div>
+        </Field>
       </div>
 
       <FooterRow>
         {createMut.isError ? (
-          <span style={errStyle}>Could not save.</span>
+          <span className="text-wm-xs text-negative">
+            {t('quickAdd.couldNotSave')}
+          </span>
         ) : (
-          <span style={{ color: 'var(--wm-text-soft)', fontSize: 'var(--wm-fs-xs)' }}>
-            Categories classify both income and expense.
+          <span className="text-wm-xs text-fg-soft">
+            {t('quickAdd.hintCategories')}
           </span>
         )}
-        <button
+        <Button
           type="submit"
-          className="wm-btn wm-btn--primary"
+          variant="primary"
           disabled={createMut.isPending}
         >
-          {createMut.isPending ? 'Saving…' : 'Save category'}
-        </button>
+          {createMut.isPending ? t('quickAdd.saving') : t('quickAdd.saveCategory')}
+        </Button>
       </FooterRow>
     </form>
   )
 }
 
 function SourceForm({ onDone }: { onDone: () => void }): JSX.Element {
+  const { t } = useTranslation()
   const qc = useQueryClient()
   const [name, setName] = useState('')
   const [type, setType] = useState<SourceType>('BANK_ACCOUNT')
+
+  const sourceTypeOptions = useMemo(
+    () =>
+      (['BANK_ACCOUNT', 'CREDIT_CARD', 'CASH', 'MANUAL'] as const).map(
+        (value) => ({
+          value,
+          label: t(`quickAdd.sourceType.${value}`),
+        }),
+      ),
+    [t],
+  )
 
   const createMut = useMutation({
     mutationFn: async () => {
@@ -330,53 +355,48 @@ function SourceForm({ onDone }: { onDone: () => void }): JSX.Element {
   }
 
   return (
-    <form onSubmit={handleSubmit} style={formStyle}>
-      <div style={rowStyle}>
-        <label className="wm-field" style={{ flex: '2 1 240px' }}>
-          Name
-          <input
-            className="wm-input"
+    <form onSubmit={handleSubmit} className={formCls}>
+      <div className={rowCls}>
+        <Field label={t('sourcesTab.name')} className="basis-[240px] grow-[2]">
+          <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
             autoFocus
-            placeholder="Itaú checking, Nubank card…"
+            placeholder={t('quickAdd.placeholders.sourceName')}
           />
-        </label>
-        <div className="wm-field" style={{ flex: '1 1 160px' }}>
-          <span>Type</span>
+        </Field>
+        <Field label={t('sourcesTab.type')} className="basis-[160px] grow">
           <Select
             value={type}
             onChange={(v) => setType(v as SourceType)}
-            options={SOURCE_TYPE_OPTIONS}
-            ariaLabel="Source type"
+            options={sourceTypeOptions}
+            ariaLabel={t('quickAdd.selectSourceTypeAria')}
           />
-        </div>
+        </Field>
       </div>
 
       <FooterRow>
         {createMut.isError ? (
-          <span style={errStyle}>Could not save.</span>
+          <span className="text-wm-xs text-negative">
+            {t('quickAdd.couldNotSave')}
+          </span>
         ) : (
-          <span style={{ color: 'var(--wm-text-soft)', fontSize: 'var(--wm-fs-xs)' }}>
-            Sources are where transactions come from.
+          <span className="text-wm-xs text-fg-soft">
+            {t('quickAdd.hintSources')}
           </span>
         )}
-        <button
+        <Button
           type="submit"
-          className="wm-btn wm-btn--primary"
+          variant="primary"
           disabled={createMut.isPending}
         >
-          {createMut.isPending ? 'Saving…' : 'Save source'}
-        </button>
+          {createMut.isPending ? t('quickAdd.saving') : t('quickAdd.saveSource')}
+        </Button>
       </FooterRow>
     </form>
   )
 }
-
-/* ------------------------------------------------------------------ */
-/* Small building blocks                                               */
-/* ------------------------------------------------------------------ */
 
 function KindToggle({
   value,
@@ -385,30 +405,23 @@ function KindToggle({
   value: TransactionKind
   onChange: (v: TransactionKind) => void
 }): JSX.Element {
+  const { t } = useTranslation()
   return (
     <div
       role="group"
-      aria-label="Transaction kind"
-      style={{
-        display: 'inline-flex',
-        padding: 4,
-        background: 'var(--wm-surface-2)',
-        border: '1px solid var(--wm-border-soft)',
-        borderRadius: 'var(--wm-radius-md)',
-      }}
+      aria-label={t('quickAdd.transactionKindAria')}
+      className="inline-flex self-start rounded-md border border-line-soft bg-surface-2 p-1"
     >
       <KindOption
-        kind="EXPENSE"
-        label="Expense"
+        label={t('quickAdd.expense')}
         active={value === 'EXPENSE'}
-        color="var(--wm-negative)"
+        tone="negative"
         onClick={() => onChange('EXPENSE')}
       />
       <KindOption
-        kind="INCOME"
-        label="Income"
+        label={t('quickAdd.income')}
         active={value === 'INCOME'}
-        color="var(--wm-positive)"
+        tone="positive"
         onClick={() => onChange('INCOME')}
       />
     </div>
@@ -418,13 +431,12 @@ function KindToggle({
 function KindOption({
   label,
   active,
-  color,
+  tone,
   onClick,
 }: {
-  kind: TransactionKind
   label: string
   active: boolean
-  color: string
+  tone: 'positive' | 'negative'
   onClick: () => void
 }): JSX.Element {
   return (
@@ -432,15 +444,15 @@ function KindOption({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      style={{
-        padding: '0.45rem 0.9rem',
-        borderRadius: 6,
-        fontSize: 'var(--wm-fs-sm)',
-        color: active ? color : 'var(--wm-text-muted)',
-        background: active ? 'var(--wm-surface-3)' : 'transparent',
-        fontWeight: active ? 600 : 400,
-        transition: 'color 140ms, background 140ms',
-      }}
+      className={cn(
+        'rounded-sm px-3.5 py-1.5 text-wm-sm transition-colors duration-wm-fast',
+        active
+          ? cn(
+              'bg-surface-3 font-semibold',
+              tone === 'negative' ? 'text-negative' : 'text-positive',
+            )
+          : 'text-fg-muted hover:text-fg',
+      )}
     >
       {label}
     </button>
@@ -449,38 +461,8 @@ function KindOption({
 
 function FooterRow({ children }: { children: React.ReactNode }): JSX.Element {
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 16,
-        marginTop: 4,
-        flexWrap: 'wrap',
-      }}
-    >
+    <div className="mt-1 flex flex-wrap items-center justify-between gap-4">
       {children}
     </div>
   )
-}
-
-/* ------------------------------------------------------------------ */
-/* Shared styles                                                       */
-/* ------------------------------------------------------------------ */
-
-const formStyle: CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 14,
-}
-
-const rowStyle: CSSProperties = {
-  display: 'flex',
-  gap: 12,
-  flexWrap: 'wrap',
-}
-
-const errStyle: CSSProperties = {
-  color: 'var(--wm-negative)',
-  fontSize: 'var(--wm-fs-xs)',
 }

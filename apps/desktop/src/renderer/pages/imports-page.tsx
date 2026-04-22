@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useMemo, useState, type FormEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useOutletContext } from 'react-router-dom'
 import type {
   Category,
@@ -11,8 +12,14 @@ import type {
 } from '@wimm/shared'
 import type { AxiosError } from 'axios'
 import { apiClient } from '../lib/api-client'
+import { categoryDisplayName } from '../lib/category-label'
 import { PageHeader } from '../components/ui/page-header'
 import { Select } from '../components/ui/select'
+import { Badge } from '../components/ui/badge'
+import { Button } from '../components/ui/button'
+import { Field } from '../components/ui/field'
+import { Panel } from '../components/ui/panel'
+import { dateFnsLocaleForLang } from '../lib/date-fns-locale'
 import { formatMediumDate } from '../lib/dates'
 import type { QuickAddTab } from '../components/quick-add-modal'
 
@@ -30,6 +37,11 @@ function formatMoney(amount: string): string {
 }
 
 export function ImportsPage(): JSX.Element {
+  const { t, i18n } = useTranslation()
+  const dfLocale = useMemo(
+    () => dateFnsLocaleForLang(i18n.language),
+    [i18n.language],
+  )
   const qc = useQueryClient()
   const { openQuickAdd } = useOutletContext<OutletCtx>()
   const [sourceId, setSourceId] = useState('')
@@ -58,9 +70,9 @@ export function ImportsPage(): JSX.Element {
 
   const categoryNameById = useMemo(() => {
     const m = new Map<string, string>()
-    for (const c of categories) m.set(c.id, c.name)
+    for (const c of categories) m.set(c.id, categoryDisplayName(c, t))
     return m
-  }, [categories])
+  }, [categories, t])
 
   const previewMut = useMutation({
     mutationFn: async (payload: { file: File; sourceId: string }) => {
@@ -157,48 +169,52 @@ export function ImportsPage(): JSX.Element {
   }
 
   return (
-    <div className="wm-page">
+    <div className="mx-auto flex max-w-container flex-col gap-6">
       <PageHeader
-        eyebrow="Batch"
-        title="Import statement"
-        subtitle="Upload a CSV or OFX/QFX file. Rows are normalized, categorization rules are applied, and duplicates are excluded by default."
+        eyebrow={t('imports.eyebrow')}
+        title={t('imports.statementTitle')}
+        subtitle={t('imports.statementSubtitle')}
       />
 
-      <section className="wm-panel">
-        <header className="wm-panel__header">
+      <Panel>
+        <Panel.Header>
           <div>
-            <h2 className="wm-panel__title">Upload file</h2>
-            <p className="wm-panel__sub">
-              Need a new source?{' '}
+            <Panel.Title>{t('imports.uploadTitle')}</Panel.Title>
+            <Panel.Subtitle>
+              {t('imports.needSource')}{' '}
               <button
                 type="button"
                 className="wm-link"
                 onClick={() => openQuickAdd('source')}
               >
-                Create one
+                {t('imports.createOne')}
               </button>
               .
-            </p>
+            </Panel.Subtitle>
           </div>
-        </header>
+        </Panel.Header>
 
-        <form onSubmit={handlePreview} className="wm-form-row">
-          <div className="wm-field" style={{ flex: '1 1 220px' }}>
-            <span>Source</span>
+        <form
+          onSubmit={handlePreview}
+          className="flex flex-wrap items-end gap-3"
+        >
+          <Field label={t('imports.source')} className="basis-[220px] grow">
             <Select
               value={sourceId}
               onChange={setSourceId}
               options={[
-                { value: '', label: 'Select a source' },
+                { value: '', label: t('imports.selectSource') },
                 ...sources.map((s) => ({ value: s.id, label: s.name })),
               ]}
-              placeholder="Select a source"
+              placeholder={t('imports.selectSource')}
               required
-              ariaLabel="Source"
+              ariaLabel={t('imports.source')}
             />
-          </div>
-          <label className="wm-field" style={{ flex: '2 1 300px' }}>
-            File (.csv, .ofx, .qfx)
+          </Field>
+          <Field
+            label={t('imports.fileLabel')}
+            className="basis-[300px] grow-[2]"
+          >
             <input
               type="file"
               accept=".csv,.ofx,.qfx,text/csv,application/x-ofx,application/ofx"
@@ -206,86 +222,76 @@ export function ImportsPage(): JSX.Element {
                 setPreview(null)
                 setFile(e.target.files?.[0] ?? null)
               }}
-              className="wm-file"
+              className="cursor-pointer rounded-sm border border-dashed border-line bg-surface-2 px-2.5 py-2 text-wm-sm normal-case tracking-normal text-fg transition duration-wm-fast ease-wm hover:border-accent hover:bg-accent-soft"
             />
-          </label>
+          </Field>
           <div>
-            <button
+            <Button
               type="submit"
-              className="wm-btn wm-btn--primary"
+              variant="primary"
               disabled={!file || !sourceId || previewMut.isPending}
             >
-              {previewMut.isPending ? 'Parsing…' : 'Preview'}
-            </button>
+              {previewMut.isPending ? t('imports.parsing') : t('imports.preview')}
+            </Button>
           </div>
         </form>
 
         {previewMut.error && (
-          <p className="wm-error-text">
-            {previewErrorMessage(previewMut.error)}
+          <p className="text-wm-sm text-negative">
+            {previewErrorMessage(previewMut.error, t('imports.previewFailed'))}
           </p>
         )}
         {lastCommit && (
-          <p className="wm-ok-text">
-            Saved batch · created {lastCommit.created} · skipped duplicates{' '}
-            {lastCommit.skippedDuplicates}.
+          <p className="text-wm-sm text-positive">
+            {t('imports.commitSuccess', {
+              created: lastCommit.created,
+              skipped: lastCommit.skippedDuplicates,
+            })}
           </p>
         )}
-      </section>
+      </Panel>
 
       {preview && (
-        <section className="wm-panel" style={{ padding: 0, overflow: 'hidden' }}>
-          <header
-            className="wm-panel__header"
-            style={{ padding: 18, paddingBottom: 14 }}
-          >
+        <Panel flush className="overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-3 px-[18px] pb-3.5 pt-[18px]">
             <div>
-              <h2 className="wm-panel__title">
-                {preview.fileName}{' '}
-                <span className="wm-badge wm-badge--neutral">
-                  {preview.format}
+              <Panel.Title>
+                {preview.fileName} <Badge variant="neutral">{preview.format}</Badge>
+              </Panel.Title>
+              <Panel.Subtitle>
+                {t('imports.rowsParsedLead', { parsed: preview.totalParsed })} ·{' '}
+                <span className="text-positive">
+                  {t('imports.rowsParsedNew', { count: preview.newCount })}
                 </span>
-              </h2>
-              <p className="wm-panel__sub">
-                {preview.totalParsed} rows parsed ·{' '}
-                <span style={{ color: 'var(--wm-positive)' }}>
-                  {preview.newCount} new
-                </span>{' '}
-                ·{' '}
-                <span style={{ color: 'var(--wm-warning)' }}>
-                  {preview.duplicateCount} duplicates
+                {' · '}
+                <span className="text-warning">
+                  {t('imports.rowsParsedDup', {
+                    count: preview.duplicateCount,
+                  })}
                 </span>
-              </p>
+              </Panel.Subtitle>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                type="button"
-                className="wm-btn wm-btn--subtle"
-                onClick={() => toggleAll(true)}
-              >
-                Select new
-              </button>
-              <button
-                type="button"
-                className="wm-btn wm-btn--subtle"
-                onClick={() => toggleAll(false)}
-              >
-                Clear all
-              </button>
+            <div className="flex gap-2">
+              <Button variant="subtle" size="sm" onClick={() => toggleAll(true)}>
+                {t('imports.selectNew')}
+              </Button>
+              <Button variant="subtle" size="sm" onClick={() => toggleAll(false)}>
+                {t('imports.clearAll')}
+              </Button>
             </div>
-          </header>
+          </div>
 
-          <div style={{ overflow: 'auto', maxHeight: '55vh' }}>
+          <div className="max-h-[55vh] overflow-auto">
             <table className="wm-table">
               <thead>
                 <tr>
-                  <th style={{ width: 56 }}>Incl.</th>
-                  <th>Date</th>
-                  <th>Kind</th>
-                  <th style={{ textAlign: 'right' }}>Amount</th>
-                  <th>Description</th>
-                  <th>Suggested</th>
-                  <th>Status</th>
+                  <th style={{ width: 56 }}>{t('imports.colInclude')}</th>
+                  <th>{t('imports.colDate')}</th>
+                  <th>{t('imports.colKind')}</th>
+                  <th className="text-right">{t('imports.colAmount')}</th>
+                  <th>{t('imports.colDescription')}</th>
+                  <th>{t('imports.colSuggested')}</th>
+                  <th>{t('imports.colStatus')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -295,9 +301,9 @@ export function ImportsPage(): JSX.Element {
                   return (
                     <tr
                       key={row.fingerprint}
-                      style={{
-                        opacity: row.isDuplicate && !on ? 0.55 : 1,
-                      }}
+                      className={
+                        row.isDuplicate && !on ? 'opacity-55' : undefined
+                      }
                     >
                       <td>
                         <input
@@ -308,27 +314,22 @@ export function ImportsPage(): JSX.Element {
                           disabled={row.isDuplicate}
                           title={
                             row.isDuplicate
-                              ? 'Duplicate — already in your register'
+                              ? t('imports.duplicateTooltip')
                               : undefined
                           }
                         />
                       </td>
-                      <td className="wm-muted">{formatMediumDate(row.occurredAt)}</td>
-                      <td>
-                        <span
-                          className={`wm-badge ${
-                            isIncome
-                              ? 'wm-badge--positive'
-                              : 'wm-badge--negative'
-                          }`}
-                        >
-                          {isIncome ? 'Income' : 'Expense'}
-                        </span>
+                      <td className="wm-muted">
+                        {formatMediumDate(row.occurredAt, dfLocale)}
                       </td>
-                      <td
-                        className="wm-td--num"
-                        style={{ textAlign: 'right', fontWeight: 600 }}
-                      >
+                      <td>
+                        <Badge variant={isIncome ? 'positive' : 'negative'}>
+                          {isIncome
+                            ? t('transactions.kindIncome')
+                            : t('transactions.kindExpense')}
+                        </Badge>
+                      </td>
+                      <td className="wm-td--num text-right font-semibold">
                         {formatMoney(row.amount)}
                       </td>
                       <td className="wm-td--desc">{row.description}</td>
@@ -340,13 +341,11 @@ export function ImportsPage(): JSX.Element {
                       </td>
                       <td>
                         {row.isDuplicate ? (
-                          <span className="wm-badge wm-badge--warning">
-                            Duplicate
-                          </span>
+                          <Badge variant="warning">
+                            {t('imports.badgeDuplicate')}
+                          </Badge>
                         ) : (
-                          <span className="wm-badge wm-badge--positive">
-                            New
-                          </span>
+                          <Badge variant="positive">{t('imports.badgeNew')}</Badge>
                         )}
                       </td>
                     </tr>
@@ -356,54 +355,49 @@ export function ImportsPage(): JSX.Element {
             </table>
           </div>
 
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              padding: '14px 18px',
-              borderTop: '1px solid var(--wm-border-soft)',
-            }}
-          >
-            <span className="wm-muted">
-              {selectedRows.length} selected of {preview.rows.length}
+          <div className="flex items-center justify-between border-t border-line-soft px-[18px] py-3.5">
+            <span className="text-wm-sm text-fg-muted">
+              {t('imports.selectedOf', {
+                selected: selectedRows.length,
+                total: preview.rows.length,
+              })}
             </span>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                type="button"
-                className="wm-btn wm-btn--ghost"
+            <div className="flex gap-2">
+              <Button
+                variant="ghost"
                 onClick={() => {
                   setPreview(null)
                   setFile(null)
                 }}
               >
-                Cancel
-              </button>
-              <button
-                type="button"
+                {t('imports.cancel')}
+              </Button>
+              <Button
+                variant="primary"
                 onClick={handleCommit}
                 disabled={!canCommit}
-                className="wm-btn wm-btn--primary"
               >
                 {commitMut.isPending
-                  ? 'Saving…'
-                  : `Import ${selectedRows.length}`}
-              </button>
+                  ? t('quickAdd.saving')
+                  : t('imports.importCount', {
+                      count: selectedRows.length,
+                    })}
+              </Button>
             </div>
           </div>
 
           {commitMut.isError && (
-            <p className="wm-error-text" style={{ padding: '0 18px 14px' }}>
-              Import failed. Check the API and try again.
+            <p className="px-[18px] pb-3.5 text-wm-sm text-negative">
+              {t('imports.commitError')}
             </p>
           )}
-        </section>
+        </Panel>
       )}
     </div>
   )
 }
 
-function previewErrorMessage(err: unknown): string {
+function previewErrorMessage(err: unknown, fallback: string): string {
   if (err && typeof err === 'object' && 'isAxiosError' in err) {
     const ax = err as AxiosError<{ message?: string | string[] }>
     const m = ax.response?.data?.message
@@ -411,5 +405,5 @@ function previewErrorMessage(err: unknown): string {
     if (typeof m === 'string') return m
   }
   if (err instanceof Error) return err.message
-  return 'Preview failed'
+  return fallback
 }

@@ -15,38 +15,52 @@ export type PasswordRuleState = {
   met: boolean
 }
 
-export function getPasswordRuleStates(password: string): PasswordRuleState[] {
+/** i18n `t` for `auth.passwordRules.*` keys */
+export type PasswordRuleTranslate = (
+  key: string,
+  options?: { count?: number },
+) => string
+
+export function getPasswordRuleStates(
+  password: string,
+  tr: PasswordRuleTranslate,
+): PasswordRuleState[] {
   return [
     {
       id: 'length',
-      label: `At least ${PASSWORD_MIN_LENGTH} characters`,
+      label: tr('auth.passwordRules.length', {
+        count: PASSWORD_MIN_LENGTH,
+      }),
       met: password.length >= PASSWORD_MIN_LENGTH,
     },
     {
       id: 'upper',
-      label: 'One uppercase letter',
+      label: tr('auth.passwordRules.upper'),
       met: /[A-Z]/.test(password),
     },
     {
       id: 'lower',
-      label: 'One lowercase letter',
+      label: tr('auth.passwordRules.lower'),
       met: /[a-z]/.test(password),
     },
     {
       id: 'digit',
-      label: 'One number',
+      label: tr('auth.passwordRules.digit'),
       met: /\d/.test(password),
     },
     {
       id: 'symbol',
-      label: 'One symbol (not a letter or digit)',
+      label: tr('auth.passwordRules.symbol'),
       met: /[^A-Za-z0-9\s]/.test(password),
     },
   ]
 }
 
-export function passwordMeetsAllRules(password: string): boolean {
-  return getPasswordRuleStates(password).every((r) => r.met)
+export function passwordMeetsAllRules(
+  password: string,
+  tr: PasswordRuleTranslate,
+): boolean {
+  return getPasswordRuleStates(password, tr).every((r) => r.met)
 }
 
 /** Username: 3–32 chars, letters, numbers, underscore, hyphen */

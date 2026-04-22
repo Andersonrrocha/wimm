@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState, type CSSProperties } from 'react'
+import { format } from 'date-fns'
+import { useCallback, useMemo, useState, type CSSProperties } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useOutletContext } from 'react-router-dom'
 import {
   Area,
@@ -24,11 +26,16 @@ import type {
   ReportSummaryResponse,
   Transaction,
 } from '@wimm/shared'
+import { Plus } from 'lucide-react'
 import { useAuth } from '../context/auth-context'
 import { apiClient } from '../lib/api-client'
+import { reportCategoryDisplayName } from '../lib/category-label'
 import type { QuickAddTab } from '../components/quick-add-modal'
 import { DatePicker } from '../components/ui/date-picker'
 import { Select } from '../components/ui/select'
+import { Button } from '../components/ui/button'
+import { Chip } from '../components/ui/chip'
+import { dateFnsLocaleForLang } from '../lib/date-fns-locale'
 import {
   computeRange,
   formatShortDate,
@@ -79,6 +86,11 @@ const DONUT_COLORS = [
 ]
 
 export function DashboardPage(): JSX.Element {
+  const { t, i18n } = useTranslation()
+  const dfLocale = useMemo(
+    () => dateFnsLocaleForLang(i18n.language),
+    [i18n.language],
+  )
   const { state } = useAuth()
   const user = state.status === 'authenticated' ? state.user : null
   const { openQuickAdd } = useOutletContext<OutletCtx>()
@@ -148,7 +160,7 @@ export function DashboardPage(): JSX.Element {
     const top = sorted.slice(0, 5)
     const tail = sorted.slice(5)
     const base = top.map((r) => ({
-      name: r.name,
+      name: reportCategoryDisplayName(r, t),
       value: Number.parseFloat(r.total),
     }))
     if (tail.length === 0) return base
@@ -156,8 +168,14 @@ export function DashboardPage(): JSX.Element {
       (s, r) => s + Number.parseFloat(r.total),
       0,
     )
-    return [...base, { name: `Other (${tail.length})`, value: otherTotal }]
-  }, [expensesInRange])
+    return [
+      ...base,
+      {
+        name: t('dashboard.donutOther', { count: tail.length }),
+        value: otherTotal,
+      },
+    ]
+  }, [expensesInRange, t])
 
   const topCategories = useMemo(() => {
     return [...expensesInRange]
@@ -177,12 +195,16 @@ export function DashboardPage(): JSX.Element {
 
   const monthlyData = useMemo(() => {
     return (monthly?.months ?? []).map((m) => ({
-      label: m.label,
+      label: format(
+        new Date(Date.UTC(trendYear, m.month - 1, 1)),
+        'LLL',
+        { locale: dfLocale },
+      ),
       income: Number.parseFloat(m.income),
       expense: Number.parseFloat(m.expense),
       net: Number.parseFloat(m.net),
     }))
-  }, [monthly])
+  }, [monthly, trendYear, dfLocale])
 
   const cumulativeYear = useMemo(() => {
     let acc = 0
@@ -198,14 +220,17 @@ export function DashboardPage(): JSX.Element {
   const savingsRate =
     summaryIncome > 0 ? (summaryNet / summaryIncome) * 100 : null
 
-  const presetLabel = (id: PresetId): string =>
-    id === 'mtd'
-      ? 'This month'
-      : id === 'last30'
-        ? 'Last 30 days'
-        : id === 'ytd'
-          ? 'Year to date'
-          : 'Custom'
+  const presetLabel = useCallback(
+    (id: PresetId): string =>
+      id === 'mtd'
+        ? t('dashboard.range.mtd')
+        : id === 'last30'
+          ? t('dashboard.range.last30')
+          : id === 'ytd'
+            ? t('dashboard.range.ytd')
+            : t('dashboard.range.custom'),
+    [t],
+  )
 
   const applyPreset = (id: Exclude<PresetId, 'custom'>): void => {
     setRange(computePreset(id))
@@ -221,72 +246,79 @@ export function DashboardPage(): JSX.Element {
         <div>
           <div style={styles.pageEyebrow}>
             {user
-              ? `Welcome back, ${user.username}`
-              : 'Welcome back'}
+              ? t('dashboard.welcomeWithName', { name: user.username })
+              : t('dashboard.welcomeBack')}
           </div>
-          <h1 style={styles.h1}>Overview</h1>
+          <h1 style={styles.h1}>{t('dashboard.overview')}</h1>
           <p style={styles.sub}>
-            {presetLabel(range.preset)} · {formatShortDate(range.from)} →{' '}
-            {formatShortDate(range.to)}
+            {presetLabel(range.preset)} ·{' '}
+            {formatShortDate(range.from, dfLocale)} →{' '}
+            {formatShortDate(range.to, dfLocale)}
           </p>
         </div>
 
         <div style={styles.controls}>
-          <div role="group" aria-label="Quick range" style={styles.chipsRow}>
+          <div
+            role="group"
+            aria-label={t('dashboard.quickRangeAria')}
+            style={styles.chipsRow}
+          >
             {(['mtd', 'last30', 'ytd'] as const).map((p) => (
-              <button
+              <Chip
                 key={p}
-                type="button"
-                className={`wm-chip${range.preset === p ? ' wm-chip--active' : ''}`}
+                active={range.preset === p}
                 onClick={() => applyPreset(p)}
               >
                 {presetLabel(p)}
-              </button>
+              </Chip>
             ))}
           </div>
           <div style={styles.rangeInputs}>
             <DatePicker
               value={range.from}
               onChange={(v) => updateRange({ from: v })}
-              ariaLabel="From"
+              ariaLabel={t('transactions.from')}
               minWidth={148}
             />
             <span style={styles.dash}>→</span>
             <DatePicker
               value={range.to}
               onChange={(v) => updateRange({ to: v })}
-              ariaLabel="To"
+              ariaLabel={t('transactions.to')}
               minWidth={148}
             />
           </div>
         </div>
       </header>
 
-      {/* KPIs */}
       <section style={styles.kpiGrid}>
         <KpiCard
-          label="Income"
+          label={t('dashboard.kpi.income')}
           value={formatMoney(summaryIncome)}
           tone="positive"
           loading={loadingSummary}
-          hint="Sum of incoming transactions"
+          hint={t('dashboard.kpi.incomeHint')}
         />
         <KpiCard
-          label="Expense"
+          label={t('dashboard.kpi.expense')}
           value={formatMoney(summaryExpense)}
           tone="negative"
           loading={loadingSummary}
-          hint="Sum of outgoing transactions"
+          hint={t('dashboard.kpi.expenseHint')}
         />
         <KpiCard
-          label="Net"
+          label={t('dashboard.kpi.net')}
           value={formatMoney(summaryNet)}
           tone={summaryNet >= 0 ? 'positive' : 'negative'}
           loading={loadingSummary}
-          hint={summaryNet >= 0 ? 'Positive balance' : 'Negative balance'}
+          hint={
+            summaryNet >= 0
+              ? t('dashboard.kpi.netHintPositive')
+              : t('dashboard.kpi.netHintNegative')
+          }
         />
         <KpiCard
-          label="Savings rate"
+          label={t('dashboard.kpi.savingsRate')}
           value={
             savingsRate == null
               ? '—'
@@ -302,32 +334,31 @@ export function DashboardPage(): JSX.Element {
           loading={loadingSummary}
           hint={
             savingsRate == null
-              ? 'No income in range'
-              : 'Net ÷ Income'
+              ? t('dashboard.kpi.savingsNoIncome')
+              : t('dashboard.kpi.savingsHint')
           }
         />
       </section>
 
-      {/* Charts row */}
       <section style={styles.gridTwoThirds}>
         <Panel
-          title="Monthly performance"
-          subtitle="Income vs expense, cumulative net line for the year"
+          title={t('dashboard.monthlyPerformance')}
+          subtitle={t('dashboard.monthlyPerformanceSub')}
           action={
             <div style={styles.yearLabel}>
-              <span>Year</span>
+              <span>{t('dashboard.year')}</span>
               <Select
                 value={String(trendYear)}
                 onChange={(v) => setTrendYear(Number.parseInt(v, 10))}
                 options={yearOptions}
                 minWidth={100}
-                ariaLabel="Trend year"
+                ariaLabel={t('dashboard.trendYearAria')}
               />
             </div>
           }
         >
           {loadingMonthly ? (
-            <Empty label="Loading…" />
+            <Empty label={t('common.loading')} />
           ) : (
             <div style={{ width: '100%', height: 280 }}>
               <ResponsiveContainer width="100%" height="100%">
@@ -360,20 +391,20 @@ export function DashboardPage(): JSX.Element {
                   />
                   <Bar
                     dataKey="income"
-                    name="Income"
+                    name={t('dashboard.chart.income')}
                     fill="var(--wm-positive)"
                     radius={[3, 3, 0, 0]}
                   />
                   <Bar
                     dataKey="expense"
-                    name="Expense"
+                    name={t('dashboard.chart.expense')}
                     fill="var(--wm-negative)"
                     radius={[3, 3, 0, 0]}
                   />
                   <Line
                     type="monotone"
                     dataKey="net"
-                    name="Net"
+                    name={t('dashboard.chart.net')}
                     stroke="var(--wm-accent)"
                     strokeWidth={2}
                     dot={{ r: 2, fill: 'var(--wm-accent)' }}
@@ -384,20 +415,32 @@ export function DashboardPage(): JSX.Element {
             </div>
           )}
           <LegendRow>
-            <LegendSwatch color="var(--wm-positive)" label="Income" />
-            <LegendSwatch color="var(--wm-negative)" label="Expense" />
-            <LegendSwatch color="var(--wm-accent)" label="Net" shape="line" />
+            <LegendSwatch
+              color="var(--wm-positive)"
+              label={t('dashboard.chart.income')}
+            />
+            <LegendSwatch
+              color="var(--wm-negative)"
+              label={t('dashboard.chart.expense')}
+            />
+            <LegendSwatch
+              color="var(--wm-accent)"
+              label={t('dashboard.chart.net')}
+              shape="line"
+            />
           </LegendRow>
         </Panel>
 
         <Panel
-          title="Where the money goes"
-          subtitle={`Top ${donutData.length} expense categories in range`}
+          title={t('dashboard.whereMoneyGoes')}
+          subtitle={t('dashboard.whereMoneyGoesSub', {
+            count: donutData.length,
+          })}
         >
           {loadingByCat ? (
-            <Empty label="Loading…" />
+            <Empty label={t('common.loading')} />
           ) : donutData.length === 0 ? (
-            <Empty label="No expense data in this range." />
+            <Empty label={t('dashboard.noExpenseData')} />
           ) : (
             <div style={styles.donutLayout}>
               <div style={{ flex: '1 1 220px', minHeight: 240 }}>
@@ -454,53 +497,48 @@ export function DashboardPage(): JSX.Element {
         </Panel>
       </section>
 
-      {/* Recent + Top categories + Cumulative */}
       <section style={styles.gridHalves}>
         <Panel
-          title="Recent activity"
-          subtitle="Six latest transactions in range"
+          title={t('dashboard.recentActivity')}
+          subtitle={t('dashboard.recentActivitySub')}
           action={
-            <button
-              type="button"
-              className="wm-btn wm-btn--subtle"
-              onClick={() => openQuickAdd('transaction')}
-            >
-              + New
-            </button>
+            <Button variant="subtle" onClick={() => openQuickAdd('transaction')}>
+              <Plus className="size-3.5 shrink-0" strokeWidth={2.25} aria-hidden />
+              {t('dashboard.newShort')}
+            </Button>
           }
         >
           {loadingRecent ? (
-            <Empty label="Loading…" />
+            <Empty label={t('common.loading')} />
           ) : !recentList || recentList.items.length === 0 ? (
             <Empty
-              label="No transactions in this range yet."
+              label={t('dashboard.noTransactionsRange')}
               action={
-                <button
-                  type="button"
-                  className="wm-btn wm-btn--primary"
+                <Button
+                  variant="primary"
                   onClick={() => openQuickAdd('transaction')}
                 >
-                  Add your first
-                </button>
+                  {t('dashboard.addYourFirst')}
+                </Button>
               }
             />
           ) : (
             <ul style={styles.txList}>
-              {recentList.items.map((t) => (
-                <TxRow key={t.id} tx={t} />
+              {recentList.items.map((tx) => (
+                <TxRow key={tx.id} tx={tx} />
               ))}
             </ul>
           )}
         </Panel>
 
         <Panel
-          title="Top spending"
-          subtitle="Highest expense categories in range"
+          title={t('dashboard.topSpending')}
+          subtitle={t('dashboard.topSpendingSub')}
         >
           {loadingByCat ? (
-            <Empty label="Loading…" />
+            <Empty label={t('common.loading')} />
           ) : topCategories.length === 0 ? (
-            <Empty label="No expense categories to show." />
+            <Empty label={t('dashboard.noExpenseCategories')} />
           ) : (
             <ul style={styles.topList}>
               {topCategories.map((cat, idx) => (
@@ -509,6 +547,7 @@ export function DashboardPage(): JSX.Element {
                   row={cat}
                   color={DONUT_COLORS[idx % DONUT_COLORS.length]}
                   max={topCategoriesMax}
+                  label={reportCategoryDisplayName(cat, t)}
                 />
               ))}
             </ul>
@@ -518,11 +557,11 @@ export function DashboardPage(): JSX.Element {
 
       <section>
         <Panel
-          title="Cumulative net"
-          subtitle={`Running balance through ${trendYear}`}
+          title={t('dashboard.cumulativeNet')}
+          subtitle={t('dashboard.cumulativeNetSub', { year: trendYear })}
         >
           {loadingMonthly ? (
-            <Empty label="Loading…" />
+            <Empty label={t('common.loading')} />
           ) : (
             <div style={{ width: '100%', height: 200 }}>
               <ResponsiveContainer width="100%" height="100%">
@@ -565,7 +604,7 @@ export function DashboardPage(): JSX.Element {
                   <Area
                     type="monotone"
                     dataKey="cumulative"
-                    name="Cumulative"
+                    name={t('dashboard.chart.cumulative')}
                     stroke="var(--wm-accent)"
                     strokeWidth={2}
                     fill="url(#cumGradient)"
@@ -580,10 +619,6 @@ export function DashboardPage(): JSX.Element {
   )
 }
 
-/* ------------------------------------------------------------------ */
-/* Sub components                                                      */
-/* ------------------------------------------------------------------ */
-
 function Panel({
   title,
   subtitle,
@@ -596,7 +631,10 @@ function Panel({
   children: React.ReactNode
 }): JSX.Element {
   return (
-    <section className="wm-surface" style={styles.panel}>
+    <section
+      className="rounded-md border border-line-soft bg-surface-1"
+      style={styles.panel}
+    >
       <header style={styles.panelHeader}>
         <div style={{ minWidth: 0 }}>
           <h2 style={styles.panelTitle}>{title}</h2>
@@ -697,6 +735,11 @@ function LegendSwatch({
 }
 
 function TxRow({ tx }: { tx: Transaction }): JSX.Element {
+  const { t, i18n } = useTranslation()
+  const dfLocale = useMemo(
+    () => dateFnsLocaleForLang(i18n.language),
+    [i18n.language],
+  )
   const isIncome = tx.kind === 'INCOME'
   return (
     <li style={styles.txRow}>
@@ -713,10 +756,14 @@ function TxRow({ tx }: { tx: Transaction }): JSX.Element {
         {isIncome ? '↑' : '↓'}
       </div>
       <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={styles.txDesc}>{tx.description || 'Untitled'}</div>
+        <div style={styles.txDesc}>
+          {tx.description || t('transactions.untitled')}
+        </div>
         <div style={styles.txMeta}>
-          {formatShortDate(tx.occurredAt)} ·{' '}
-          {tx.kind === 'INCOME' ? 'Income' : 'Expense'}
+          {formatShortDate(tx.occurredAt, dfLocale)} ·{' '}
+          {tx.kind === 'INCOME'
+            ? t('transactions.kindIncome')
+            : t('transactions.kindExpense')}
         </div>
       </div>
       <span
@@ -736,10 +783,12 @@ function TopCategoryRow({
   row,
   max,
   color,
+  label,
 }: {
   row: CategoryReportRow
   max: number
   color: string
+  label: string
 }): JSX.Element {
   const value = Number.parseFloat(row.total)
   const pct = max > 0 ? (value / max) * 100 : 0
@@ -750,8 +799,8 @@ function TopCategoryRow({
           style={{ ...styles.topRowDot, background: color }}
           aria-hidden
         />
-        <span style={styles.topRowName} title={row.name}>
-          {row.name}
+        <span style={styles.topRowName} title={label}>
+          {label}
         </span>
         <span className="wm-num" style={styles.topRowValue}>
           {formatMoney(row.total)}
@@ -769,10 +818,6 @@ function TopCategoryRow({
     </li>
   )
 }
-
-/* ------------------------------------------------------------------ */
-/* KPI card (inline, small variant)                                    */
-/* ------------------------------------------------------------------ */
 
 function KpiCard({
   label,
@@ -796,7 +841,10 @@ function KpiCard({
           ? 'var(--wm-accent)'
           : 'var(--wm-text)'
   return (
-    <div className="wm-surface" style={styles.kpi}>
+    <div
+      className="rounded-md border border-line-soft bg-surface-1"
+      style={styles.kpi}
+    >
       <span className="wm-label">{label}</span>
       <span className="wm-num" style={{ ...styles.kpiValue, color }}>
         {loading ? '—' : value}
@@ -805,10 +853,6 @@ function KpiCard({
     </div>
   )
 }
-
-/* ------------------------------------------------------------------ */
-/* Styles                                                               */
-/* ------------------------------------------------------------------ */
 
 const axisTick = { fill: 'var(--wm-text-muted)', fontSize: 11 }
 

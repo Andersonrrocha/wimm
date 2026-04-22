@@ -1,7 +1,16 @@
 import { FormEvent, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { Button } from './ui/button'
+import { Field } from './ui/field'
+import { Input } from './ui/input'
+import { PasswordInput } from './ui/password-input'
 
 type AuthFormProps = {
-  onSubmit: (email: string, password: string) => Promise<void>
+  onSubmit: (
+    email: string,
+    password: string,
+    rememberMe: boolean,
+  ) => Promise<void>
   loading: boolean
   submitLabel: string
 }
@@ -11,22 +20,20 @@ export function AuthForm({
   loading,
   submitLabel,
 }: AuthFormProps): JSX.Element {
+  const { t } = useTranslation()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [rememberMe, setRememberMe] = useState(true)
 
   const handleSubmit = (e: FormEvent<HTMLFormElement>): void => {
     e.preventDefault()
-    void onSubmit(email, password)
+    void onSubmit(email, password, rememberMe)
   }
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
-    >
-      <label className="wm-field">
-        Email
-        <input
+    <form onSubmit={handleSubmit} className="flex flex-col gap-3.5">
+      <Field label={t('auth.email')}>
+        <Input
           id="email"
           type="email"
           required
@@ -34,31 +41,37 @@ export function AuthForm({
           onChange={(e) => setEmail(e.target.value)}
           placeholder="you@example.com"
           autoComplete="email"
-          className="wm-input"
         />
-      </label>
-      <label className="wm-field">
-        Password
-        <input
+      </Field>
+      <Field label={t('auth.password')}>
+        <PasswordInput
           id="password"
-          type="password"
           required
           minLength={8}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="••••••••"
           autoComplete="current-password"
-          className="wm-input"
         />
+      </Field>
+      <label className="flex cursor-pointer items-center gap-2 text-wm-sm text-fg-muted">
+        <input
+          type="checkbox"
+          className="wm-check"
+          checked={rememberMe}
+          onChange={(e) => setRememberMe(e.target.checked)}
+        />
+        {t('auth.rememberMe')}
       </label>
-      <button
+      <Button
         type="submit"
+        variant="primary"
         disabled={loading}
-        className="wm-btn wm-btn--primary"
-        style={{ marginTop: 4 }}
+        block
+        className="mt-1"
       >
-        {loading ? 'Please wait…' : submitLabel}
-      </button>
+        {loading ? t('common.pleaseWait') : submitLabel}
+      </Button>
     </form>
   )
 }

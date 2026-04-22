@@ -3,15 +3,21 @@ import { contextBridge, ipcRenderer } from 'electron'
 export type TokenStore = {
   getAccessToken: () => Promise<string | undefined>
   getRefreshToken: () => Promise<string | undefined>
-  setTokens: (accessToken: string, refreshToken: string) => Promise<void>
+  getPersistSession: () => Promise<boolean>
+  setTokens: (
+    accessToken: string,
+    refreshToken: string,
+    rememberMe?: boolean,
+  ) => Promise<void>
   clearTokens: () => Promise<void>
 }
 
 const tokenStore: TokenStore = {
   getAccessToken: () => ipcRenderer.invoke('tokens:getAccess'),
   getRefreshToken: () => ipcRenderer.invoke('tokens:getRefresh'),
-  setTokens: (accessToken, refreshToken) =>
-    ipcRenderer.invoke('tokens:set', accessToken, refreshToken),
+  getPersistSession: () => ipcRenderer.invoke('tokens:getPersistSession'),
+  setTokens: (accessToken, refreshToken, rememberMe = true) =>
+    ipcRenderer.invoke('tokens:set', accessToken, refreshToken, rememberMe),
   clearTokens: () => ipcRenderer.invoke('tokens:clear'),
 }
 

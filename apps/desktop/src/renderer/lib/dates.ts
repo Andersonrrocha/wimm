@@ -8,6 +8,8 @@ import {
   startOfYear,
   subDays,
 } from 'date-fns'
+import type { Locale } from 'date-fns/locale'
+import { enUS } from 'date-fns/locale/en-US'
 
 /** Canonical ISO (YYYY-MM-DD) used in query params and inputs. */
 export const ISO_DATE = 'yyyy-MM-dd'
@@ -31,22 +33,31 @@ export function parseFlexibleDate(value: string): Date | null {
   return Number.isNaN(iso.getTime()) ? null : iso
 }
 
-export function formatShortDate(value: string | Date): string {
+export function formatShortDate(
+  value: string | Date,
+  locale: Locale = enUS,
+): string {
   const d = value instanceof Date ? value : parseFlexibleDate(value)
   if (!d) return typeof value === 'string' ? value : ''
-  return format(d, 'MMM d')
+  return format(d, 'MMM d', { locale })
 }
 
-export function formatMediumDate(value: string | Date): string {
+export function formatMediumDate(
+  value: string | Date,
+  locale: Locale = enUS,
+): string {
   const d = value instanceof Date ? value : parseFlexibleDate(value)
   if (!d) return typeof value === 'string' ? value : ''
-  return format(d, 'MMM d, yyyy')
+  return format(d, 'MMM d, yyyy', { locale })
 }
 
-export function formatDateTime(value: string | Date): string {
+export function formatDateTime(
+  value: string | Date,
+  locale: Locale = enUS,
+): string {
   const d = value instanceof Date ? value : parseFlexibleDate(value)
   if (!d) return typeof value === 'string' ? value : ''
-  return format(d, 'MMM d, yyyy · HH:mm')
+  return format(d, 'MMM d, yyyy · HH:mm', { locale })
 }
 
 /** Range presets used by reports and the dashboard. */

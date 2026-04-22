@@ -1,6 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Plus } from 'lucide-react'
 import type { Source, SourceType } from '@wimm/shared'
 import { apiClient } from '../../lib/api-client'
+import { Badge, type BadgeVariant } from '../../components/ui/badge'
+import { Button } from '../../components/ui/button'
+import { EmptyState } from '../../components/ui/empty-state'
+import { Panel } from '../../components/ui/panel'
 
 const SOURCE_TYPE_LABEL: Record<SourceType, string> = {
   BANK_ACCOUNT: 'Bank account',
@@ -9,11 +14,11 @@ const SOURCE_TYPE_LABEL: Record<SourceType, string> = {
   MANUAL: 'Manual',
 }
 
-const SOURCE_TYPE_BADGE: Record<SourceType, string> = {
-  BANK_ACCOUNT: 'wm-badge--neutral',
-  CREDIT_CARD: 'wm-badge--accent',
-  CASH: 'wm-badge--positive',
-  MANUAL: '',
+const SOURCE_TYPE_VARIANT: Record<SourceType, BadgeVariant> = {
+  BANK_ACCOUNT: 'neutral',
+  CREDIT_CARD: 'accent',
+  CASH: 'positive',
+  MANUAL: 'neutral',
 }
 
 interface SourcesTabProps {
@@ -43,42 +48,35 @@ export function SourcesTab({ onNewSource }: SourcesTabProps): JSX.Element {
   })
 
   return (
-    <section className="wm-panel">
-      <header className="wm-panel__header">
+    <Panel>
+      <Panel.Header>
         <div>
-          <h2 className="wm-panel__title">Sources</h2>
-          <p className="wm-panel__sub">
+          <Panel.Title>Sources</Panel.Title>
+          <Panel.Subtitle>
             Where transactions come from — accounts, cards, cash wallets, or
             manual entries.
-          </p>
+          </Panel.Subtitle>
         </div>
-        <button
-          type="button"
-          className="wm-btn wm-btn--primary"
-          onClick={onNewSource}
-        >
-          + New source
-        </button>
-      </header>
+        <Button variant="primary" onClick={onNewSource}>
+          <Plus className="size-4 shrink-0" strokeWidth={2.25} aria-hidden />
+          New source
+        </Button>
+      </Panel.Header>
 
       {error ? (
-        <p className="wm-error-text">Failed to load sources.</p>
+        <p className="text-wm-sm text-negative">Failed to load sources.</p>
       ) : isLoading ? (
-        <p className="wm-muted">Loading…</p>
+        <p className="text-wm-sm text-fg-muted">Loading…</p>
       ) : sources.length === 0 ? (
-        <div className="wm-empty">
+        <EmptyState>
           <span>
             Sources group transactions by origin. Add one before importing a
             statement.
           </span>
-          <button
-            type="button"
-            className="wm-btn wm-btn--primary"
-            onClick={onNewSource}
-          >
+          <Button variant="primary" onClick={onNewSource}>
             Create your first
-          </button>
-        </div>
+          </Button>
+        </EmptyState>
       ) : (
         <div className="wm-table-wrap">
           <table className="wm-table">
@@ -94,16 +92,14 @@ export function SourcesTab({ onNewSource }: SourcesTabProps): JSX.Element {
                 <tr key={s.id}>
                   <td>{s.name}</td>
                   <td>
-                    <span
-                      className={`wm-badge ${SOURCE_TYPE_BADGE[s.type] ?? ''}`.trim()}
-                    >
+                    <Badge variant={SOURCE_TYPE_VARIANT[s.type]}>
                       {SOURCE_TYPE_LABEL[s.type]}
-                    </span>
+                    </Badge>
                   </td>
                   <td className="wm-table__actions">
-                    <button
-                      type="button"
-                      className="wm-btn wm-btn--danger"
+                    <Button
+                      variant="danger"
+                      size="sm"
                       onClick={() => {
                         if (window.confirm(`Delete "${s.name}"?`)) {
                           deleteMut.mutate(s.id)
@@ -112,7 +108,7 @@ export function SourcesTab({ onNewSource }: SourcesTabProps): JSX.Element {
                       disabled={deleteMut.isPending}
                     >
                       Delete
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -120,6 +116,6 @@ export function SourcesTab({ onNewSource }: SourcesTabProps): JSX.Element {
           </table>
         </div>
       )}
-    </section>
+    </Panel>
   )
 }

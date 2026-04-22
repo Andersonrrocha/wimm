@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState, type FormEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 import type {
   Category,
   MaterializeRequest,
@@ -12,26 +13,18 @@ import type {
 } from '@wimm/shared'
 import { addMonths } from 'date-fns'
 import { apiClient } from '../lib/api-client'
+import { categoryDisplayName } from '../lib/category-label'
 import { PageHeader } from '../components/ui/page-header'
 import { DatePicker } from '../components/ui/date-picker'
 import { Select } from '../components/ui/select'
+import { Badge } from '../components/ui/badge'
+import { Button } from '../components/ui/button'
+import { EmptyState } from '../components/ui/empty-state'
+import { Field } from '../components/ui/field'
+import { Input } from '../components/ui/input'
+import { Panel } from '../components/ui/panel'
+import { dateFnsLocaleForLang } from '../lib/date-fns-locale'
 import { formatMediumDate, toIsoDate } from '../lib/dates'
-
-const KIND_OPTIONS = [
-  { value: 'EXPENSE', label: 'Expense' },
-  { value: 'INCOME', label: 'Income' },
-]
-
-const FREQ_OPTIONS = [
-  { value: 'WEEKLY', label: 'Weekly' },
-  { value: 'MONTHLY', label: 'Monthly' },
-  { value: 'YEARLY', label: 'Yearly' },
-]
-
-const END_MODE_OPTIONS = [
-  { value: 'INDEFINITE', label: 'Never' },
-  { value: 'UNTIL_DATE', label: 'On date' },
-]
 
 function formatMoney(amount: string): string {
   const n = Number.parseFloat(amount)
@@ -47,7 +40,35 @@ function defaultUntilDate(): string {
 }
 
 export function RecurrencesPage(): JSX.Element {
+  const { t, i18n } = useTranslation()
+  const dfLocale = useMemo(
+    () => dateFnsLocaleForLang(i18n.language),
+    [i18n.language],
+  )
   const qc = useQueryClient()
+
+  const kindOptions = useMemo(
+    () => [
+      { value: 'EXPENSE' as const, label: t('recurrences.kindExpense') },
+      { value: 'INCOME' as const, label: t('recurrences.kindIncome') },
+    ],
+    [t],
+  )
+  const freqOptions = useMemo(
+    () => [
+      { value: 'WEEKLY' as const, label: t('recurrences.freqWeekly') },
+      { value: 'MONTHLY' as const, label: t('recurrences.freqMonthly') },
+      { value: 'YEARLY' as const, label: t('recurrences.freqYearly') },
+    ],
+    [t],
+  )
+  const endModeOptions = useMemo(
+    () => [
+      { value: 'INDEFINITE' as const, label: t('recurrences.endNever') },
+      { value: 'UNTIL_DATE' as const, label: t('recurrences.endOnDate') },
+    ],
+    [t],
+  )
   const [kind, setKind] = useState<TransactionKind>('EXPENSE')
   const [amount, setAmount] = useState('')
   const [description, setDescription] = useState('')
@@ -88,7 +109,7 @@ export function RecurrencesPage(): JSX.Element {
     mutationFn: async () => {
       const amt = Number.parseFloat(amount)
       if (Number.isNaN(amt) || amt < 0.01) {
-        throw new Error('Enter a valid amount')
+        throw new Error(t('recurrences.invalidAmount'))
       }
       const body = {
         kind,
@@ -172,216 +193,220 @@ export function RecurrencesPage(): JSX.Element {
   const activeCount = sorted.filter((r) => r.active).length
 
   return (
-    <div className="wm-page">
+    <div className="mx-auto flex max-w-container flex-col gap-6">
       <PageHeader
-        eyebrow="Automation"
-        title="Recurring transactions"
-        subtitle="Rules are stored on the server. Generating materializes transactions up to a date; generated rows are never overwritten."
+        eyebrow={t('recurrences.eyebrow')}
+        title={t('recurrences.pageTitle')}
+        subtitle={t('recurrences.pageSubtitle')}
       />
 
-      <section className="wm-panel">
-        <header className="wm-panel__header">
+      <Panel>
+        <Panel.Header>
           <div>
-            <h2 className="wm-panel__title">Generate transactions</h2>
-            <p className="wm-panel__sub">
-              Create real transactions from active rules up to a given date.
-            </p>
+            <Panel.Title>{t('recurrences.generateTitle')}</Panel.Title>
+            <Panel.Subtitle>
+              {t('recurrences.generateSubtitle')}
+            </Panel.Subtitle>
           </div>
-        </header>
+        </Panel.Header>
 
-        <div className="wm-form-row">
-          <div className="wm-field" style={{ flex: '1 1 200px' }}>
-            <span>Until (inclusive)</span>
+        <div className="flex flex-wrap items-end gap-3">
+          <Field label={t('recurrences.until')} className="basis-[200px] grow">
             <DatePicker value={until} onChange={setUntil} />
-          </div>
-          <div className="wm-field" style={{ flex: '2 1 260px' }}>
-            <span>Only this rule (optional)</span>
+          </Field>
+          <Field
+            label={t('recurrences.ruleScope')}
+            className="basis-[260px] grow-[2]"
+          >
             <Select
               value={materializeRecurrenceId}
               onChange={setMaterializeRecurrenceId}
               options={[
-                { value: '', label: 'All active rules' },
+                { value: '', label: t('recurrences.allRules') },
                 ...sorted.map((r) => ({
                   value: r.id,
                   label: `${r.description} (${r.frequency})`,
                 })),
               ]}
-              placeholder="All active rules"
-              ariaLabel="Scope"
+              placeholder={t('recurrences.allRules')}
+              ariaLabel={t('recurrences.scopeAria')}
             />
-          </div>
+          </Field>
           <div>
-            <button
-              type="button"
+            <Button
+              variant="primary"
               onClick={handleMaterialize}
               disabled={materializeMut.isPending}
-              className="wm-btn wm-btn--primary"
             >
-              {materializeMut.isPending ? 'Generating…' : 'Generate'}
-            </button>
+              {materializeMut.isPending
+                ? t('recurrences.generating')
+                : t('recurrences.generate')}
+            </Button>
           </div>
         </div>
 
-        {materializeMut.isSuccess && (
-          <p className="wm-ok-text">
-            Created {materializeMut.data.created} transaction(s).
+        {materializeMut.isSuccess && materializeMut.data && (
+          <p className="text-wm-sm text-positive">
+            {t('recurrences.materializeSuccess', {
+              count: materializeMut.data.created,
+            })}
           </p>
         )}
         {materializeMut.isError && (
-          <p className="wm-error-text">Generation failed.</p>
+          <p className="text-wm-sm text-negative">
+            {t('recurrences.materializeError')}
+          </p>
         )}
-      </section>
+      </Panel>
 
-      <section className="wm-panel">
-        <header className="wm-panel__header">
+      <Panel>
+        <Panel.Header>
           <div>
-            <h2 className="wm-panel__title">New rule</h2>
-            <p className="wm-panel__sub">
-              Templates that generate recurring transactions on a schedule.
-            </p>
+            <Panel.Title>{t('recurrences.newRuleTitle')}</Panel.Title>
+            <Panel.Subtitle>
+              {t('recurrences.newRuleSubtitle')}
+            </Panel.Subtitle>
           </div>
-        </header>
+        </Panel.Header>
 
-        <form onSubmit={handleCreate} className="wm-form-grid">
-          <div className="wm-field">
-            <span>Kind</span>
+        <form
+          onSubmit={handleCreate}
+          className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] items-end gap-3"
+        >
+          <Field label={t('recurrences.kind')}>
             <Select
               value={kind}
               onChange={(v) => setKind(v as TransactionKind)}
-              options={KIND_OPTIONS}
-              ariaLabel="Kind"
+              options={kindOptions}
+              ariaLabel={t('recurrences.kind')}
             />
-          </div>
-          <label className="wm-field">
-            Amount
-            <input
+          </Field>
+          <Field label={t('recurrences.amount')}>
+            <Input
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               inputMode="decimal"
-              placeholder="0.00"
-              className="wm-input wm-num"
+              placeholder={t('quickAdd.placeholders.amount')}
+              className="wm-num"
             />
-          </label>
-          <label className="wm-field" style={{ gridColumn: 'span 2' }}>
-            Description
-            <input
+          </Field>
+          <Field label={t('recurrences.description')} className="col-span-2">
+            <Input
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               required
-              className="wm-input"
-              placeholder="Rent, Netflix, Salary…"
+              placeholder={t('recurrences.descPlaceholder')}
             />
-          </label>
-          <div className="wm-field">
-            <span>Frequency</span>
+          </Field>
+          <Field label={t('recurrences.frequency')}>
             <Select
               value={frequency}
               onChange={(v) => setFrequency(v as RecurrenceFrequency)}
-              options={FREQ_OPTIONS}
-              ariaLabel="Frequency"
+              options={freqOptions}
+              ariaLabel={t('recurrences.frequency')}
             />
-          </div>
-          <div className="wm-field">
-            <span>Start date</span>
+          </Field>
+          <Field label={t('recurrences.startDate')}>
             <DatePicker value={startDate} onChange={setStartDate} />
-          </div>
-          <div className="wm-field">
-            <span>Ends</span>
+          </Field>
+          <Field label={t('recurrences.ends')}>
             <Select
               value={endMode}
               onChange={(v) => setEndMode(v as RecurrenceEndMode)}
-              options={END_MODE_OPTIONS}
-              ariaLabel="End mode"
+              options={endModeOptions}
+              ariaLabel={t('recurrences.endModeAria')}
             />
-          </div>
+          </Field>
           {endMode === 'UNTIL_DATE' && (
-            <div className="wm-field">
-              <span>End date</span>
+            <Field label={t('recurrences.endDate')}>
               <DatePicker value={endDate} onChange={setEndDate} />
-            </div>
+            </Field>
           )}
-          <div className="wm-field">
-            <span>Source</span>
+          <Field label={t('recurrences.source')}>
             <Select
               value={sourceId}
               onChange={setSourceId}
               options={[
-                { value: '', label: 'None' },
+                { value: '', label: t('common.none') },
                 ...sources.map((s) => ({ value: s.id, label: s.name })),
               ]}
-              placeholder="None"
-              ariaLabel="Source"
+              placeholder={t('common.none')}
+              ariaLabel={t('recurrences.source')}
             />
-          </div>
-          <div className="wm-field">
-            <span>Category</span>
+          </Field>
+          <Field label={t('recurrences.category')}>
             <Select
               value={categoryId}
               onChange={setCategoryId}
               options={[
-                { value: '', label: 'None' },
+                { value: '', label: t('common.none') },
                 ...categories
                   .filter((c) => c.type === kind)
-                  .map((c) => ({ value: c.id, label: c.name })),
+                  .map((c) => ({
+                    value: c.id,
+                    label: categoryDisplayName(c, t),
+                  })),
               ]}
-              placeholder="None"
-              ariaLabel="Category"
+              placeholder={t('common.none')}
+              ariaLabel={t('recurrences.category')}
             />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'end' }}>
-            <button
+          </Field>
+          <div className="flex items-end">
+            <Button
               type="submit"
+              variant="primary"
               disabled={createMut.isPending}
-              className="wm-btn wm-btn--primary"
             >
-              {createMut.isPending ? 'Saving…' : 'Add rule'}
-            </button>
+              {createMut.isPending
+                ? t('quickAdd.saving')
+                : t('recurrences.addRule')}
+            </Button>
           </div>
         </form>
 
         {createMut.error && (
-          <p className="wm-error-text">
-            {(createMut.error as Error).message ?? 'Could not create rule'}
+          <p className="text-wm-sm text-negative">
+            {(createMut.error as Error).message ?? t('recurrences.createError')}
           </p>
         )}
-      </section>
+      </Panel>
 
-      <section className="wm-panel" style={{ padding: 0, overflow: 'hidden' }}>
-        <header
-          className="wm-panel__header"
-          style={{ padding: 18, paddingBottom: 0 }}
-        >
-          <div>
-            <h2 className="wm-panel__title">Your rules</h2>
-            <p className="wm-panel__sub">
-              {sorted.length === 0
-                ? 'No recurrence rules yet.'
-                : `${sorted.length} total · ${activeCount} active`}
-            </p>
-          </div>
-        </header>
+      <Panel flush className="overflow-hidden">
+        <div className="px-[18px] pt-[18px]">
+          <Panel.Title>{t('recurrences.rulesTitle')}</Panel.Title>
+          <Panel.Subtitle>
+            {sorted.length === 0
+              ? t('recurrences.rulesEmptySubtitle')
+              : t('recurrences.rulesSubtitle', {
+                  total: sorted.length,
+                  active: activeCount,
+                })}
+          </Panel.Subtitle>
+        </div>
 
-        <div style={{ padding: '14px 18px 0' }}>
+        <div className="px-[18px] pt-3.5">
           {error ? (
-            <p className="wm-error-text">Failed to load recurrences.</p>
+            <p className="text-wm-sm text-negative">
+              {t('recurrences.loadError')}
+            </p>
           ) : isLoading ? (
-            <p className="wm-muted">Loading…</p>
+            <p className="text-wm-sm text-fg-muted">{t('common.loading')}</p>
           ) : sorted.length === 0 ? (
-            <div className="wm-empty">
-              <span>Add a recurring template above to get started.</span>
-            </div>
+            <EmptyState>
+              <span>{t('recurrences.emptyHint')}</span>
+            </EmptyState>
           ) : (
-            <div style={{ overflow: 'auto', margin: '0 -18px' }}>
+            <div className="-mx-[18px] overflow-auto">
               <table className="wm-table">
                 <thead>
                   <tr>
-                    <th style={{ width: 60 }}>Active</th>
-                    <th>Description</th>
-                    <th>Kind</th>
-                    <th style={{ textAlign: 'right' }}>Amount</th>
-                    <th>Frequency</th>
-                    <th>Start</th>
-                    <th>Ends</th>
+                    <th style={{ width: 60 }}>{t('recurrences.colActive')}</th>
+                    <th>{t('recurrences.colDescription')}</th>
+                    <th>{t('recurrences.colKind')}</th>
+                    <th className="text-right">{t('recurrences.colAmount')}</th>
+                    <th>{t('recurrences.colFrequency')}</th>
+                    <th>{t('recurrences.colStart')}</th>
+                    <th>{t('recurrences.colEnds')}</th>
                     <th className="wm-table__actions" />
                   </tr>
                 </thead>
@@ -403,49 +428,48 @@ export function RecurrencesPage(): JSX.Element {
                       </td>
                       <td>{r.description}</td>
                       <td>
-                        <span
-                          className={`wm-badge ${
-                            r.kind === 'INCOME'
-                              ? 'wm-badge--positive'
-                              : 'wm-badge--negative'
-                          }`}
+                        <Badge
+                          variant={r.kind === 'INCOME' ? 'positive' : 'negative'}
                         >
-                          {r.kind === 'INCOME' ? 'Income' : 'Expense'}
-                        </span>
+                          {r.kind === 'INCOME'
+                            ? t('recurrences.kindIncome')
+                            : t('recurrences.kindExpense')}
+                        </Badge>
                       </td>
-                      <td
-                        className="wm-td--num"
-                        style={{ textAlign: 'right', fontWeight: 600 }}
-                      >
+                      <td className="wm-td--num text-right font-semibold">
                         {formatMoney(r.amount)}
                       </td>
                       <td>
-                        <span className="wm-badge">{r.frequency}</span>
+                        <Badge>
+                          {r.frequency === 'WEEKLY'
+                            ? t('recurrences.freqWeekly')
+                            : r.frequency === 'MONTHLY'
+                              ? t('recurrences.freqMonthly')
+                              : t('recurrences.freqYearly')}
+                        </Badge>
                       </td>
                       <td className="wm-muted">
-                        {formatMediumDate(r.startDate)}
+                        {formatMediumDate(r.startDate, dfLocale)}
                       </td>
                       <td className="wm-muted">
                         {r.endMode === 'UNTIL_DATE' && r.endDate
-                          ? formatMediumDate(r.endDate)
+                          ? formatMediumDate(r.endDate, dfLocale)
                           : '—'}
                       </td>
                       <td className="wm-table__actions">
-                        <button
-                          type="button"
-                          className="wm-btn wm-btn--danger"
+                        <Button
+                          variant="danger"
+                          size="sm"
                           onClick={() => {
                             if (
-                              window.confirm(
-                                'Delete this rule? Generated transactions stay in the register.',
-                              )
+                              window.confirm(t('recurrences.deleteConfirm'))
                             ) {
                               deleteMut.mutate(r.id)
                             }
                           }}
                         >
-                          Delete
-                        </button>
+                          {t('recurrences.delete')}
+                        </Button>
                       </td>
                     </tr>
                   ))}
@@ -454,7 +478,7 @@ export function RecurrencesPage(): JSX.Element {
             </div>
           )}
         </div>
-      </section>
+      </Panel>
     </div>
   )
 }

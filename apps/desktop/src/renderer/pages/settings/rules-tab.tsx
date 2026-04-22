@@ -1,12 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, type FormEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 import type {
   CategorizationMatchType,
   CategorizationRule,
   Category,
 } from '@wimm/shared'
 import { apiClient } from '../../lib/api-client'
+import { categoryDisplayName } from '../../lib/category-label'
 import { Select } from '../../components/ui/select'
+import { Badge } from '../../components/ui/badge'
+import { Button } from '../../components/ui/button'
+import { EmptyState } from '../../components/ui/empty-state'
+import { Field } from '../../components/ui/field'
+import { Input } from '../../components/ui/input'
+import { Panel } from '../../components/ui/panel'
 
 const MATCH_TYPES = [
   { value: 'CONTAINS', label: 'Contains' },
@@ -14,6 +22,7 @@ const MATCH_TYPES = [
 ]
 
 export function RulesTab(): JSX.Element {
+  const { t } = useTranslation()
   const qc = useQueryClient()
   const [priority, setPriority] = useState(10)
   const [matchType, setMatchType] =
@@ -83,51 +92,49 @@ export function RulesTab(): JSX.Element {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <section className="wm-panel">
-        <header className="wm-panel__header">
+    <div className="flex flex-col gap-4">
+      <Panel>
+        <Panel.Header>
           <div>
-            <h2 className="wm-panel__title">New rule</h2>
-            <p className="wm-panel__sub">
+            <Panel.Title>New rule</Panel.Title>
+            <Panel.Subtitle>
               Rules apply on import and can be re-run anytime. Lowest priority
               number wins. Matching is case-insensitive.
-            </p>
+            </Panel.Subtitle>
           </div>
-        </header>
-        <form onSubmit={handleSubmit} className="wm-form-grid">
-          <label className="wm-field">
-            Priority
-            <input
+        </Panel.Header>
+        <form
+          onSubmit={handleSubmit}
+          className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] items-end gap-3"
+        >
+          <Field label="Priority">
+            <Input
               type="number"
               min={0}
               value={priority}
               onChange={(e) =>
                 setPriority(Number.parseInt(e.target.value, 10) || 0)
               }
-              className="wm-input wm-num"
+              className="wm-num"
             />
-          </label>
-          <div className="wm-field">
-            <span>Match</span>
+          </Field>
+          <Field label="Match">
             <Select
               value={matchType}
               onChange={(v) => setMatchType(v as CategorizationMatchType)}
               options={MATCH_TYPES}
               ariaLabel="Match type"
             />
-          </div>
-          <label className="wm-field" style={{ gridColumn: 'span 2' }}>
-            Pattern
-            <input
+          </Field>
+          <Field label="Pattern" className="col-span-2">
+            <Input
               value={pattern}
               onChange={(e) => setPattern(e.target.value)}
               placeholder="Text in description"
-              className="wm-input"
               required
             />
-          </label>
-          <div className="wm-field" style={{ gridColumn: 'span 2' }}>
-            <span>Category</span>
+          </Field>
+          <Field label="Category" className="col-span-2">
             <Select
               value={categoryId}
               onChange={setCategoryId}
@@ -135,51 +142,51 @@ export function RulesTab(): JSX.Element {
                 { value: '', label: 'Select…' },
                 ...categories.map((c) => ({
                   value: c.id,
-                  label: `${c.name} (${c.type === 'INCOME' ? 'income' : 'expense'})`,
+                  label: `${categoryDisplayName(c, t)} (${c.type === 'INCOME' ? 'income' : 'expense'})`,
                 })),
               ]}
               placeholder="Select…"
               required
               ariaLabel="Category"
             />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'end' }}>
-            <button
+          </Field>
+          <div className="flex items-end">
+            <Button
               type="submit"
-              className="wm-btn wm-btn--primary"
+              variant="primary"
               disabled={createMut.isPending || !categoryId}
             >
               {createMut.isPending ? 'Saving…' : 'Add rule'}
-            </button>
+            </Button>
           </div>
         </form>
         {createMut.isError && (
-          <p className="wm-error-text">Could not create rule.</p>
+          <p className="text-wm-sm text-negative">Could not create rule.</p>
         )}
-      </section>
+      </Panel>
 
-      <section className="wm-panel">
-        <header className="wm-panel__header">
+      <Panel>
+        <Panel.Header>
           <div>
-            <h2 className="wm-panel__title">Your rules</h2>
-            <p className="wm-panel__sub">
+            <Panel.Title>Your rules</Panel.Title>
+            <Panel.Subtitle>
               {rules.length === 0
                 ? 'No rules yet.'
                 : `${rules.length} rule${rules.length === 1 ? '' : 's'} — ${
                     rules.filter((r) => r.active).length
                   } active`}
-            </p>
+            </Panel.Subtitle>
           </div>
-        </header>
+        </Panel.Header>
 
         {error ? (
-          <p className="wm-error-text">Failed to load rules.</p>
+          <p className="text-wm-sm text-negative">Failed to load rules.</p>
         ) : isLoading ? (
-          <p className="wm-muted">Loading…</p>
+          <p className="text-wm-sm text-fg-muted">Loading…</p>
         ) : rules.length === 0 ? (
-          <div className="wm-empty">
+          <EmptyState>
             <span>Add rules to auto-categorize imported transactions.</span>
-          </div>
+          </EmptyState>
         ) : (
           <div className="wm-table-wrap">
             <table className="wm-table">
@@ -211,14 +218,14 @@ export function RulesTab(): JSX.Element {
                     </td>
                     <td className="wm-td--num">{r.priority}</td>
                     <td>
-                      <span className="wm-badge">{r.matchType}</span>
+                      <Badge>{r.matchType}</Badge>
                     </td>
                     <td className="wm-td--desc">{r.pattern}</td>
-                    <td>{r.category.name}</td>
+                    <td>{categoryDisplayName(r.category, t)}</td>
                     <td className="wm-table__actions">
-                      <button
-                        type="button"
-                        className="wm-btn wm-btn--danger"
+                      <Button
+                        variant="danger"
+                        size="sm"
                         onClick={() => {
                           if (window.confirm('Delete this rule?')) {
                             deleteMut.mutate(r.id)
@@ -226,7 +233,7 @@ export function RulesTab(): JSX.Element {
                         }}
                       >
                         Delete
-                      </button>
+                      </Button>
                     </td>
                   </tr>
                 ))}
@@ -234,7 +241,7 @@ export function RulesTab(): JSX.Element {
             </table>
           </div>
         )}
-      </section>
+      </Panel>
     </div>
   )
 }

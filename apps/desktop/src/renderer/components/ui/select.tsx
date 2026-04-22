@@ -2,6 +2,21 @@ import * as RadixSelect from '@radix-ui/react-select'
 import type { ReactNode } from 'react'
 import { forwardRef } from 'react'
 
+/**
+ * Radix Select.Item must not use an empty string as `value`. Several forms
+ * use `''` for "None" / "All" / "not chosen"; map that to an internal token so
+ * opening the dropdown (e.g. Quick Add → Transaction) does not crash the tree.
+ */
+const WIMM_SELECT_EMPTY = '__wimm_select_empty__'
+
+function toRadixItemValue(optionValue: string): string {
+  return optionValue === '' ? WIMM_SELECT_EMPTY : optionValue
+}
+
+function fromRadixValue(radixValue: string): string {
+  return radixValue === WIMM_SELECT_EMPTY ? '' : radixValue
+}
+
 export interface SelectOption {
   value: string
   label: ReactNode
@@ -39,10 +54,12 @@ export function Select({
   triggerClassName,
   minWidth,
 }: SelectProps): JSX.Element {
+  const radixValue = toRadixItemValue(value)
+
   return (
     <RadixSelect.Root
-      value={value || undefined}
-      onValueChange={onChange}
+      value={radixValue}
+      onValueChange={(v) => onChange(fromRadixValue(v))}
       disabled={disabled}
       required={required}
     >
@@ -70,16 +87,19 @@ export function Select({
             ▲
           </RadixSelect.ScrollUpButton>
           <RadixSelect.Viewport className="wm-select-viewport">
-            {options.map((o) => (
-              <SelectItem
-                key={o.value}
-                value={o.value}
-                disabled={o.disabled}
-                description={o.description}
-              >
-                {o.label}
-              </SelectItem>
-            ))}
+            {options.map((o) => {
+              const itemValue = toRadixItemValue(o.value)
+              return (
+                <SelectItem
+                  key={itemValue}
+                  value={itemValue}
+                  disabled={o.disabled}
+                  description={o.description}
+                >
+                  {o.label}
+                </SelectItem>
+              )
+            })}
           </RadixSelect.Viewport>
           <RadixSelect.ScrollDownButton className="wm-select-scroll">
             ▼
