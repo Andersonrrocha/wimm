@@ -13,6 +13,8 @@ model User {
   email                String                @unique
   username             String                @unique
   passwordHash         String
+  /** UI language: `en` | `pt` */
+  preferredLocale      String                @default("pt")
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   refreshTokens        RefreshToken[]
@@ -74,6 +76,7 @@ model Category {
   user                 User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   name                 String
   type                 CategoryType
+  categoryKey          String?
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
   transactions         Transaction[]
@@ -81,7 +84,23 @@ model Category {
   categorizationRules  CategorizationRule[]
 
   @@unique([userId, name])
+  @@unique([userId, categoryKey])
   @@index([userId])
+}
+
+model SystemCategorizationRule {
+  id          String            @id @default(uuid())
+  pattern     String
+  categoryKey String
+  kind        TransactionKind
+  priority    Int
+  ruleGroup   String
+  active      Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@unique([pattern])
+  @@index([active, priority, pattern])
 }
 
 enum CategorizationMatchType {
