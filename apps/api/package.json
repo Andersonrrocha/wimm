@@ -4,9 +4,9 @@
   "private": true,
   "scripts": {
     "build": "prisma generate && nest build && tsc-alias -p tsconfig.build.json",
-    "dev": "nest start --watch",
+    "dev": "prisma generate && nest start --watch --exec \"node -r ./scripts/register-prisma-paths.js\"",
     "start": "node dist/main",
-    "start:debug": "nest start --debug --watch",
+    "start:debug": "nest start --debug --watch --exec \"node -r ./scripts/register-prisma-paths.js\"",
     "lint": "tsc --noEmit",
     "test": "jest",
     "clean": "rm -rf dist src/generated",
@@ -39,13 +39,17 @@
     "@nestjs/schematics": "^10.0.0",
     "@nestjs/testing": "^10.0.0",
     "@types/bcrypt": "^6.0.0",
+    "@types/jest": "^30.0.0",
     "@types/multer": "^2.1.0",
     "@types/node": "^20.0.0",
     "@types/papaparse": "^5.5.2",
     "@types/passport-jwt": "^4.0.1",
     "dotenv": "^17.4.2",
+    "jest": "^30.3.0",
     "prisma": "^7.7.0",
+    "ts-jest": "^29.4.9",
     "tsc-alias": "^1.8.16",
+    "tsconfig-paths": "^4.2.0",
     "typescript": "^5.5.0"
   }
 }
