@@ -4,8 +4,10 @@ export interface AuthTokens {
   refreshToken: string
 }
 
+export type AppLocale = 'en' | 'pt'
+
 export interface AuthResponse extends AuthTokens {
-  user: Pick<User, 'id' | 'email' | 'username' | 'createdAt'>
+  user: Pick<User, 'id' | 'email' | 'username' | 'createdAt' | 'preferredLocale'>
 }
 
 export interface RefreshTokenRequest {
@@ -28,8 +30,13 @@ export interface User {
   id: string
   email: string
   username: string
+  preferredLocale: AppLocale
   createdAt: string
   updatedAt: string
+}
+
+export interface UpdateUserMeRequest {
+  preferredLocale?: AppLocale
 }
 
 // Generic API wrappers
@@ -75,11 +82,11 @@ export interface Category {
   userId: string
   name: string
   type: CategoryType
+  categoryKey?: string | null
   createdAt: string
   updatedAt: string
 }
 
-/** amount is a decimal string in API JSON */
 export interface Transaction {
   id: string
   userId: string
@@ -168,7 +175,6 @@ export interface CommitImportResponse {
   skippedDuplicates: number
 }
 
-// Reports (Phase 7)
 export interface ReportSummaryResponse {
   income: string
   expense: string
@@ -177,6 +183,7 @@ export interface ReportSummaryResponse {
 
 export interface CategoryReportRow {
   categoryId: string | null
+  categoryKey?: string | null
   name: string
   kind: TransactionKind
   total: string
