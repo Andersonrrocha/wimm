@@ -68,12 +68,12 @@ export class AuthService {
       where: { email: dto.email.toLowerCase() },
     })
     if (!user) {
-      throw new UnauthorizedException('Invalid credentials')
+      throw new UnauthorizedException('USER_NOT_FOUND')
     }
 
     const ok = await bcrypt.compare(dto.password, user.passwordHash)
     if (!ok) {
-      throw new UnauthorizedException('Invalid credentials')
+      throw new UnauthorizedException('INVALID_CREDENTIALS')
     }
 
     await this.defaultCategories.ensureForUser(user.id)
