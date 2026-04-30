@@ -2,17 +2,18 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useMemo, useState, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useOutletContext } from 'react-router-dom'
-import type {
-  Category,
-  CommitImportRequest,
-  CommitImportResponse,
-  ImportPreviewResponse,
-  ImportPreviewRow,
-  Source,
+import {
+  groupSourcesForImportSelect,
+  type Category,
+  type CommitImportRequest,
+  type CommitImportResponse,
+  type ImportPreviewResponse,
+  type ImportPreviewRow,
+  type Source,
 } from '@wimm/shared'
 import type { AxiosError } from 'axios'
 import { apiClient } from '../lib/api-client'
-import { categoryDisplayName } from '../lib/category-label'
+import { buildCategoryOptionGroups } from '../lib/category-label'
 import { PageHeader } from '../components/ui/page-header'
 import { Select } from '../components/ui/select'
 import { Badge } from '../components/ui/badge'
@@ -50,6 +51,9 @@ export function ImportsPage(): JSX.Element {
   const [includeByFingerprint, setIncludeByFingerprint] = useState<
     Record<string, boolean>
   >({})
+  const [categoryByFingerprint, setCategoryByFingerprint] = useState<
+    Record<string, string>
+  >({})
   const [lastCommit, setLastCommit] = useState<CommitImportResponse | null>(null)
 
   const { data: sources = [] } = useQuery({
@@ -68,11 +72,58 @@ export function ImportsPage(): JSX.Element {
     },
   })
 
-  const categoryNameById = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const c of categories) m.set(c.id, categoryDisplayName(c, t))
-    return m
-  }, [categories, t])
+  const { leadingOptions: importCatLeadingExpense, optionGroups: importCatExpenseGroups } = useMemo(
+    () =>
+      buildCategoryOptionGroups(categories, t, {
+        filterType: 'EXPENSE',
+        leadingLabel: t('transactions.uncategorized'),
+      }),
+    [categories, t],
+  )
+  const { leadingOptions: importCatLeadingIncome, optionGroups: importCatIncomeGroups } = useMemo(
+    () =>
+      buildCategoryOptionGroups(categories, t, {
+        filterType: 'INCOME',
+        leadingLabel: t('transactions.uncategorized'),
+      }),
+    [categories, t],
+  )
+
+  const { bankAccounts, creditCards, other } = useMemo(
+    () => groupSourcesForImportSelect(sources),
+    [sources],
+  )
+
+  const sourceSelectGroups = useMemo(() => {
+    const toOpt = (s: Source) => ({ value: s.id, label: s.name })
+    const groups: { label: string; options: { value: string; label: string }[] }[] =
+      []
+    if (bankAccounts.length > 0) {
+      groups.push({
+        label: t('imports.sourceGroupBank'),
+        options: bankAccounts.map(toOpt),
+      })
+    }
+    if (creditCards.length > 0) {
+      groups.push({
+        label: t('imports.sourceGroupCreditCard'),
+        options: creditCards.map(toOpt),
+      })
+    }
+    if (other.length > 0) {
+      groups.push({
+        label: t('imports.sourceGroupOther'),
+        options: other.map(toOpt),
+      })
+    }
+    return groups
+  }, [bankAccounts, creditCards, other, t])
+
+  const selectedSource = useMemo(
+    () => sources.find((s) => s.id === sourceId),
+    [sources, sourceId],
+  )
+  const showCreditCardImportNote = selectedSource?.type === 'CREDIT_CARD'
 
   const previewMut = useMutation({
     mutationFn: async (payload: { file: File; sourceId: string }) => {
@@ -88,10 +139,13 @@ export function ImportsPage(): JSX.Element {
     onSuccess: (data) => {
       setPreview(data)
       const next: Record<string, boolean> = {}
+      const nextCat: Record<string, string> = {}
       for (const row of data.rows) {
         next[row.fingerprint] = !row.isDuplicate
+        nextCat[row.fingerprint] = row.suggestedCategoryId ?? ''
       }
       setIncludeByFingerprint(next)
+      setCategoryByFingerprint(nextCat)
     },
   })
 
@@ -110,6 +164,7 @@ export function ImportsPage(): JSX.Element {
       setPreview(null)
       setFile(null)
       setIncludeByFingerprint({})
+      setCategoryByFingerprint({})
     },
   })
 
@@ -133,21 +188,31 @@ export function ImportsPage(): JSX.Element {
 
   const handleCommit = (): void => {
     if (!preview || !sourceId) return
-    const rows = selectedRows.map((r) => ({
-      occurredAt: r.occurredAt,
-      kind: r.kind,
-      amount: Number.parseFloat(r.amount),
-      description: r.description,
-      ...(r.suggestedCategoryId
-        ? { categoryId: r.suggestedCategoryId }
-        : {}),
-    }))
+    const rows = selectedRows.map((r) => {
+      const categoryId = categoryByFingerprint[r.fingerprint] ?? ''
+      return {
+        occurredAt: r.occurredAt,
+        kind: r.kind,
+        amount: Number.parseFloat(r.amount),
+        description: r.description,
+        ...(categoryId ? { categoryId } : {}),
+        ...(r.installmentCurrent != null && r.installmentTotal != null
+          ? {
+              installmentCurrent: r.installmentCurrent,
+              installmentTotal: r.installmentTotal,
+            }
+          : {}),
+      }
+    })
     if (rows.length === 0) return
     const body: CommitImportRequest = {
       sourceId,
       fileName: preview.fileName,
       format: preview.format,
       rows,
+      ...(preview.statementBilling
+        ? { statementBilling: preview.statementBilling }
+        : {}),
     }
     commitMut.mutate(body)
   }
@@ -194,46 +259,55 @@ export function ImportsPage(): JSX.Element {
           </div>
         </Panel.Header>
 
-        <form
-          onSubmit={handlePreview}
-          className="flex flex-wrap items-end gap-3"
-        >
-          <Field label={t('imports.source')} className="basis-[220px] grow">
-            <Select
-              value={sourceId}
-              onChange={setSourceId}
-              options={[
-                { value: '', label: t('imports.selectSource') },
-                ...sources.map((s) => ({ value: s.id, label: s.name })),
-              ]}
-              placeholder={t('imports.selectSource')}
-              required
-              ariaLabel={t('imports.source')}
-            />
-          </Field>
-          <Field
-            label={t('imports.fileLabel')}
-            className="basis-[300px] grow-[2]"
-          >
-            <input
-              type="file"
-              accept=".csv,.ofx,.qfx,text/csv,application/x-ofx,application/ofx"
-              onChange={(e) => {
-                setPreview(null)
-                setFile(e.target.files?.[0] ?? null)
-              }}
-              className="cursor-pointer rounded-sm border border-dashed border-line bg-surface-2 px-2.5 py-2 text-wm-sm normal-case tracking-normal text-fg transition duration-wm-fast ease-wm hover:border-accent hover:bg-accent-soft"
-            />
-          </Field>
-          <div>
-            <Button
-              type="submit"
-              variant="primary"
-              disabled={!file || !sourceId || previewMut.isPending}
-            >
-              {previewMut.isPending ? t('imports.parsing') : t('imports.preview')}
-            </Button>
+        <form onSubmit={handlePreview} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:gap-3">
+            <div className="min-w-0 flex-1">
+              <Field label={t('imports.source')}>
+                <Select
+                  value={sourceId}
+                  onChange={setSourceId}
+                  leadingOptions={[
+                    { value: '', label: t('imports.selectSource') },
+                  ]}
+                  optionGroups={sourceSelectGroups}
+                  placeholder={t('imports.selectSource')}
+                  required
+                  ariaLabel={t('imports.source')}
+                />
+              </Field>
+            </div>
+            <div className="min-w-0 flex-1">
+              <Field label={t('imports.fileLabel')}>
+                <input
+                  type="file"
+                  accept=".csv,.ofx,.qfx,.pdf,application/pdf,text/csv,application/x-ofx,application/ofx"
+                  onChange={(e) => {
+                    setPreview(null)
+                    setCategoryByFingerprint({})
+                    setFile(e.target.files?.[0] ?? null)
+                  }}
+                  className="w-full cursor-pointer rounded-sm border border-dashed border-line bg-surface-2 px-2.5 py-2 text-wm-sm normal-case tracking-normal text-fg transition duration-wm-fast ease-wm hover:border-accent hover:bg-accent-soft"
+                />
+              </Field>
+            </div>
+            <div className="flex shrink-0 sm:pb-px">
+              <Button
+                type="submit"
+                variant="primary"
+                disabled={!file || !sourceId || previewMut.isPending}
+                className="w-full sm:w-auto"
+              >
+                {previewMut.isPending
+                  ? t('imports.parsing')
+                  : t('imports.preview')}
+              </Button>
+            </div>
           </div>
+          {showCreditCardImportNote ? (
+            <p className="max-w-2xl text-wm-sm leading-relaxed text-fg-muted">
+              {t('imports.creditCardImportDisclaimer')}
+            </p>
+          ) : null}
         </form>
 
         {previewMut.error && (
@@ -281,6 +355,43 @@ export function ImportsPage(): JSX.Element {
             </div>
           </div>
 
+          {preview.parserWarnings && preview.parserWarnings.length > 0 ? (
+            <details
+              className="border-b border-line bg-surface-2 px-[18px] py-3"
+              open
+            >
+              <summary className="cursor-pointer select-none text-wm-sm font-medium text-fg marker:text-fg">
+                {t('imports.parserWarningsTitle')}{' '}
+                <span className="font-normal text-fg-muted">
+                  ({preview.parserWarnings.length})
+                </span>
+              </summary>
+              <ul className="mt-3 list-disc space-y-2 pl-5 text-wm-sm">
+                {preview.parserWarnings.map((w, i) => {
+                  const severity = w.severity ?? 'warning'
+                  return (
+                    <li
+                      key={`${w.code}-${i}`}
+                      className={
+                        severity === 'info' ? 'text-fg-muted' : 'text-warning'
+                      }
+                    >
+                      <span className="font-mono text-[0.7rem] opacity-90">
+                        [{t(`imports.parserSeverity.${severity}`)}] {w.code}
+                      </span>
+                      <div className="mt-0.5 text-fg">{w.message}</div>
+                      {w.rawBlock ?? w.rawLine ? (
+                        <pre className="mt-1 max-w-full overflow-x-auto whitespace-pre-wrap break-all font-mono text-[0.65rem] text-fg-muted">
+                          {w.rawBlock ?? w.rawLine}
+                        </pre>
+                      ) : null}
+                    </li>
+                  )
+                })}
+              </ul>
+            </details>
+          ) : null}
+
           <div className="max-h-[55vh] overflow-auto">
             <table className="wm-table">
               <thead>
@@ -290,7 +401,7 @@ export function ImportsPage(): JSX.Element {
                   <th>{t('imports.colKind')}</th>
                   <th className="text-right">{t('imports.colAmount')}</th>
                   <th>{t('imports.colDescription')}</th>
-                  <th>{t('imports.colSuggested')}</th>
+                  <th>{t('imports.colCategory')}</th>
                   <th>{t('imports.colStatus')}</th>
                 </tr>
               </thead>
@@ -333,11 +444,22 @@ export function ImportsPage(): JSX.Element {
                         {formatMoney(row.amount)}
                       </td>
                       <td className="wm-td--desc">{row.description}</td>
-                      <td className="wm-muted">
-                        {row.suggestedCategoryId
-                          ? categoryNameById.get(row.suggestedCategoryId) ??
-                            row.suggestedCategoryId
-                          : '—'}
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <Select
+                          value={categoryByFingerprint[row.fingerprint] ?? ''}
+                          onChange={(v) => {
+                            setCategoryByFingerprint((prev) => ({
+                              ...prev,
+                              [row.fingerprint]: v,
+                            }))
+                          }}
+                          leadingOptions={isIncome ? importCatLeadingIncome : importCatLeadingExpense}
+                          optionGroups={isIncome ? importCatIncomeGroups : importCatExpenseGroups}
+                          placeholder={t('transactions.uncategorized')}
+                          disabled={row.isDuplicate}
+                          ariaLabel={t('transactions.categorySelectRowAria')}
+                          minWidth={200}
+                        />
                       </td>
                       <td>
                         {row.isDuplicate ? (
@@ -368,6 +490,7 @@ export function ImportsPage(): JSX.Element {
                 onClick={() => {
                   setPreview(null)
                   setFile(null)
+                  setCategoryByFingerprint({})
                 }}
               >
                 {t('imports.cancel')}

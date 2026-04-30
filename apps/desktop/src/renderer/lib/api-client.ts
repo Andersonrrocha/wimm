@@ -23,6 +23,16 @@ function rejectQueue(error: unknown): void {
   pendingQueue = []
 }
 
+/** Do not run refresh-token flow for these calls — 401 is part of normal API semantics. */
+function isPublicAuthRequest(config: InternalAxiosRequestConfig | undefined): boolean {
+  const url = config?.url ?? ''
+  return (
+    url.includes('/auth/login') ||
+    url.includes('/auth/register') ||
+    url.includes('/auth/refresh')
+  )
+}
+
 export function createApiClient(): AxiosInstance {
   const client = axios.create({
     baseURL: API_BASE_URL,
@@ -49,7 +59,11 @@ export function createApiClient(): AxiosInstance {
         _retried?: boolean
       }
 
-      if (error.response?.status !== 401 || original._retried) {
+      if (
+        error.response?.status !== 401 ||
+        original._retried ||
+        isPublicAuthRequest(original)
+      ) {
         return Promise.reject(error)
       }
 

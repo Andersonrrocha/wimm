@@ -24,10 +24,27 @@ export interface SelectOption {
   description?: ReactNode
 }
 
+export interface SelectOptionGroup {
+  label: string
+  options: SelectOption[]
+}
+
 interface SelectProps {
   value: string
   onChange: (value: string) => void
-  options: SelectOption[]
+  /**
+   * Flat list. Used when `optionGroups` is not passed.
+   */
+  options?: SelectOption[]
+  /**
+   * Optional items rendered before grouped sections (e.g. placeholder).
+   * Only used when `optionGroups` is passed.
+   */
+  leadingOptions?: SelectOption[]
+  /**
+   * When set, renders Radix Select groups with labels instead of a flat list.
+   */
+  optionGroups?: SelectOptionGroup[]
   placeholder?: string
   disabled?: boolean
   required?: boolean
@@ -45,7 +62,9 @@ interface SelectProps {
 export function Select({
   value,
   onChange,
-  options,
+  options = [],
+  leadingOptions = [],
+  optionGroups,
   placeholder = 'Select…',
   disabled,
   required,
@@ -55,6 +74,20 @@ export function Select({
   minWidth,
 }: SelectProps): JSX.Element {
   const radixValue = toRadixItemValue(value)
+
+  const renderOption = (o: SelectOption) => {
+    const itemValue = toRadixItemValue(o.value)
+    return (
+      <SelectItem
+        key={itemValue}
+        value={itemValue}
+        disabled={o.disabled}
+        description={o.description}
+      >
+        {o.label}
+      </SelectItem>
+    )
+  }
 
   return (
     <RadixSelect.Root
@@ -87,19 +120,23 @@ export function Select({
             ▲
           </RadixSelect.ScrollUpButton>
           <RadixSelect.Viewport className="wm-select-viewport">
-            {options.map((o) => {
-              const itemValue = toRadixItemValue(o.value)
-              return (
-                <SelectItem
-                  key={itemValue}
-                  value={itemValue}
-                  disabled={o.disabled}
-                  description={o.description}
-                >
-                  {o.label}
-                </SelectItem>
-              )
-            })}
+            {optionGroups !== undefined ? (
+              <>
+                {leadingOptions.map((o) => renderOption(o))}
+                {optionGroups.map((g, i) => (
+                  <RadixSelect.Group key={g.label || `__ungrouped_${i}`}>
+                    {g.label ? (
+                      <RadixSelect.Label className="wm-select-group__label">
+                        {g.label}
+                      </RadixSelect.Label>
+                    ) : null}
+                    {g.options.map((o) => renderOption(o))}
+                  </RadixSelect.Group>
+                ))}
+              </>
+            ) : (
+              options.map((o) => renderOption(o))
+            )}
           </RadixSelect.Viewport>
           <RadixSelect.ScrollDownButton className="wm-select-scroll">
             ▼

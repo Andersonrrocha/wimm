@@ -7,9 +7,9 @@ import type {
 import { cn } from '../../lib/cn'
 
 const base =
-  'w-full rounded-sm border border-line bg-surface-2 px-2.5 py-2 text-wm-md text-fg ' +
+  'wm-text-field w-full rounded-sm border border-line bg-surface-2 px-2.5 py-2 text-wm-md text-fg ' +
   'normal-case tracking-normal transition duration-wm-fast ease-wm ' +
-  'placeholder:text-fg-soft ' +
+  'placeholder:text-fg-muted ' +
   'hover:border-line-strong ' +
   'focus:border-accent focus:bg-surface-3 focus:outline-none ' +
   'disabled:opacity-60 disabled:cursor-not-allowed'

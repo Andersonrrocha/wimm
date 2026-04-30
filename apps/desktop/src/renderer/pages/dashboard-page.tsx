@@ -1,8 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
-import { format } from 'date-fns'
-import { useCallback, useMemo, useState, type CSSProperties } from 'react'
-import { useTranslation } from 'react-i18next'
-import { useOutletContext } from 'react-router-dom'
+import { useQuery } from "@tanstack/react-query";
+import { format } from "date-fns";
+import { useCallback, useMemo, useState, type CSSProperties } from "react";
+import { useTranslation } from "react-i18next";
+import { useOutletContext } from "react-router-dom";
 import {
   Area,
   AreaChart,
@@ -17,228 +17,258 @@ import {
   Tooltip,
   XAxis,
   YAxis,
-} from 'recharts'
+} from "recharts";
 import type {
   CategoryReportRow,
   PaginatedResponse,
   ReportByCategoryResponse,
+  ReportFutureCommitmentsResponse,
   ReportMonthlyResponse,
   ReportSummaryResponse,
   Transaction,
-} from '@wimm/shared'
-import { Plus } from 'lucide-react'
-import { useAuth } from '../context/auth-context'
-import { apiClient } from '../lib/api-client'
-import { reportCategoryDisplayName } from '../lib/category-label'
-import type { QuickAddTab } from '../components/quick-add-modal'
-import { DatePicker } from '../components/ui/date-picker'
-import { Select } from '../components/ui/select'
-import { Button } from '../components/ui/button'
-import { Chip } from '../components/ui/chip'
-import { dateFnsLocaleForLang } from '../lib/date-fns-locale'
-import {
-  computeRange,
-  formatShortDate,
-  type RangePreset,
-} from '../lib/dates'
+} from "@wimm/shared";
+import { Plus } from "lucide-react";
+import { useAuth } from "../context/auth-context";
+import { apiClient } from "../lib/api-client";
+import { reportCategoryDisplayName } from "../lib/category-label";
+import type { QuickAddTab } from "../components/quick-add-modal";
+import { DatePicker } from "../components/ui/date-picker";
+import { Select } from "../components/ui/select";
+import { Button } from "../components/ui/button";
+import { Chip } from "../components/ui/chip";
+import { dateFnsLocaleForLang } from "../lib/date-fns-locale";
+import { formatTransactionDescriptionForDisplay } from "../lib/format-transaction-description";
+import { computeRange, formatShortDate, type RangePreset } from "../lib/dates";
 
-const YEAR_NOW = new Date().getFullYear()
+const YEAR_NOW = new Date().getFullYear();
 const yearOptions = Array.from({ length: 7 }, (_, i) => YEAR_NOW - 5 + i).map(
   (y) => ({ value: String(y), label: String(y) }),
-)
+);
 
 type OutletCtx = {
-  openQuickAdd: (tab?: QuickAddTab) => void
-}
+  openQuickAdd: (tab?: QuickAddTab) => void;
+};
 
-type PresetId = RangePreset | 'custom'
+type PresetId = RangePreset | "custom";
 
-type Range = { from: string; to: string; preset: PresetId }
+type Range = { from: string; to: string; preset: PresetId };
 
 function computePreset(preset: RangePreset): Range {
-  const r = computeRange(preset)
-  return { ...r, preset }
+  const r = computeRange(preset);
+  return { ...r, preset };
 }
 
 function formatMoney(amount: string | number): string {
-  const n = typeof amount === 'string' ? Number.parseFloat(amount) : amount
-  if (Number.isNaN(n)) return String(amount)
+  const n = typeof amount === "string" ? Number.parseFloat(amount) : amount;
+  if (Number.isNaN(n)) return String(amount);
   return n.toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  })
+  });
 }
 
 function formatCompact(n: number): string {
-  if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}k`
-  return Math.round(n).toString()
+  if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return Math.round(n).toString();
 }
 
 const DONUT_COLORS = [
-  'var(--wm-chart-1)',
-  'var(--wm-chart-2)',
-  'var(--wm-chart-4)',
-  'var(--wm-chart-6)',
-  'var(--wm-chart-5)',
-  'var(--wm-chart-3)',
-  'var(--wm-chart-other)',
-]
+  "var(--wm-chart-1)",
+  "var(--wm-chart-2)",
+  "var(--wm-chart-4)",
+  "var(--wm-chart-6)",
+  "var(--wm-chart-5)",
+  "var(--wm-chart-3)",
+  "var(--wm-chart-other)",
+];
 
 export function DashboardPage(): JSX.Element {
-  const { t, i18n } = useTranslation()
+  const { t, i18n } = useTranslation();
   const dfLocale = useMemo(
     () => dateFnsLocaleForLang(i18n.language),
     [i18n.language],
-  )
-  const { state } = useAuth()
-  const user = state.status === 'authenticated' ? state.user : null
-  const { openQuickAdd } = useOutletContext<OutletCtx>()
+  );
+  const { state } = useAuth();
+  const user = state.status === "authenticated" ? state.user : null;
+  const { openQuickAdd } = useOutletContext<OutletCtx>();
 
-  const [range, setRange] = useState<Range>(() => computePreset('mtd'))
-  const [trendYear, setTrendYear] = useState(() => new Date().getFullYear())
+  const [range, setRange] = useState<Range>(() => computePreset("mtd"));
+  const [trendYear, setTrendYear] = useState(() => new Date().getFullYear());
+  const forecastMonthOptions = useMemo(() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const mo = now.getMonth();
+    return Array.from({ length: 12 }, (_, i) => {
+      const d = new Date(y, mo + i + 1, 15);
+      const yy = d.getFullYear();
+      const mm = d.getMonth() + 1;
+      return {
+        value: `${yy}-${mm}`,
+        year: yy,
+        month: mm,
+        label: format(d, "LLLL yyyy", { locale: dfLocale }),
+      };
+    });
+  }, [dfLocale]);
+  const [forecastKey, setForecastKey] = useState<string | null>(null);
+  const selectedForecast = useMemo(() => {
+    const key = forecastKey ?? forecastMonthOptions[0]?.value ?? "";
+    return (
+      forecastMonthOptions.find((o) => o.value === key) ??
+      forecastMonthOptions[0] ?? { year: 0, month: 0, value: "", label: "" }
+    );
+  }, [forecastKey, forecastMonthOptions]);
 
   const params = useMemo(
     () => ({ from: range.from, to: range.to }),
     [range.from, range.to],
-  )
+  );
 
   const { data: summary, isLoading: loadingSummary } = useQuery({
-    queryKey: ['reports', 'summary', params],
+    queryKey: ["reports", "summary", params],
     queryFn: async () => {
       const { data } = await apiClient.get<ReportSummaryResponse>(
-        '/reports/summary',
+        "/reports/summary",
         { params },
-      )
-      return data
+      );
+      return data;
     },
-  })
+  });
 
   const { data: byCategory, isLoading: loadingByCat } = useQuery({
-    queryKey: ['reports', 'by-category', params],
+    queryKey: ["reports", "by-category", params],
     queryFn: async () => {
       const { data } = await apiClient.get<ReportByCategoryResponse>(
-        '/reports/by-category',
+        "/reports/by-category",
         { params },
-      )
-      return data
+      );
+      return data;
     },
-  })
+  });
 
   const { data: monthly, isLoading: loadingMonthly } = useQuery({
-    queryKey: ['reports', 'monthly', trendYear],
+    queryKey: ["reports", "monthly", trendYear],
     queryFn: async () => {
       const { data } = await apiClient.get<ReportMonthlyResponse>(
-        '/reports/monthly',
+        "/reports/monthly",
         { params: { year: trendYear } },
-      )
-      return data
+      );
+      return data;
     },
-  })
+  });
+
+  const fcParams = useMemo(
+    () => ({ year: selectedForecast.year, month: selectedForecast.month }),
+    [selectedForecast.month, selectedForecast.year],
+  );
+
+  const { data: futureCommitments, isLoading: loadingFutureCommitments } =
+    useQuery({
+      queryKey: ["reports", "future-commitments", fcParams],
+      queryFn: async () => {
+        const { data } = await apiClient.get<ReportFutureCommitmentsResponse>(
+          "/reports/future-commitments",
+          { params: fcParams },
+        );
+        return data;
+      },
+      enabled: selectedForecast.year > 0 && selectedForecast.month > 0,
+    });
 
   const { data: recentList, isLoading: loadingRecent } = useQuery({
-    queryKey: ['transactions', 'recent', params],
+    queryKey: ["transactions", "recent", params],
     queryFn: async () => {
       const { data } = await apiClient.get<PaginatedResponse<Transaction>>(
-        '/transactions',
+        "/transactions",
         { params: { ...params, page: 1, pageSize: 6 } },
-      )
-      return data
+      );
+      return data;
     },
-  })
+  });
 
   const expensesInRange = useMemo(
-    () => (byCategory?.items ?? []).filter((r) => r.kind === 'EXPENSE'),
+    () => (byCategory?.items ?? []).filter((r) => r.kind === "EXPENSE"),
     [byCategory],
-  )
+  );
 
   const donutData = useMemo(() => {
-    if (expensesInRange.length === 0) return []
+    if (expensesInRange.length === 0) return [];
     const sorted = [...expensesInRange].sort(
       (a, b) => Number.parseFloat(b.total) - Number.parseFloat(a.total),
-    )
-    const top = sorted.slice(0, 5)
-    const tail = sorted.slice(5)
+    );
+    const top = sorted.slice(0, 5);
+    const tail = sorted.slice(5);
     const base = top.map((r) => ({
       name: reportCategoryDisplayName(r, t),
       value: Number.parseFloat(r.total),
-    }))
-    if (tail.length === 0) return base
-    const otherTotal = tail.reduce(
-      (s, r) => s + Number.parseFloat(r.total),
-      0,
-    )
+    }));
+    if (tail.length === 0) return base;
+    const otherTotal = tail.reduce((s, r) => s + Number.parseFloat(r.total), 0);
     return [
       ...base,
       {
-        name: t('dashboard.donutOther', { count: tail.length }),
+        name: t("dashboard.donutOther", { count: tail.length }),
         value: otherTotal,
       },
-    ]
-  }, [expensesInRange, t])
+    ];
+  }, [expensesInRange, t]);
 
   const topCategories = useMemo(() => {
     return [...expensesInRange]
-      .sort(
-        (a, b) => Number.parseFloat(b.total) - Number.parseFloat(a.total),
-      )
-      .slice(0, 6)
-  }, [expensesInRange])
+      .sort((a, b) => Number.parseFloat(b.total) - Number.parseFloat(a.total))
+      .slice(0, 6);
+  }, [expensesInRange]);
 
   const topCategoriesMax = useMemo(() => {
-    if (topCategories.length === 0) return 0
-    return Math.max(
-      ...topCategories.map((r) => Number.parseFloat(r.total)),
-      0,
-    )
-  }, [topCategories])
+    if (topCategories.length === 0) return 0;
+    return Math.max(...topCategories.map((r) => Number.parseFloat(r.total)), 0);
+  }, [topCategories]);
 
   const monthlyData = useMemo(() => {
     return (monthly?.months ?? []).map((m) => ({
-      label: format(
-        new Date(Date.UTC(trendYear, m.month - 1, 1)),
-        'LLL',
-        { locale: dfLocale },
-      ),
+      label: format(new Date(trendYear, m.month - 1, 15), "LLL", {
+        locale: dfLocale,
+      }),
       income: Number.parseFloat(m.income),
       expense: Number.parseFloat(m.expense),
       net: Number.parseFloat(m.net),
-    }))
-  }, [monthly, trendYear, dfLocale])
+    }));
+  }, [monthly, trendYear, dfLocale]);
 
   const cumulativeYear = useMemo(() => {
-    let acc = 0
+    let acc = 0;
     return monthlyData.map((m) => {
-      acc += m.net
-      return { label: m.label, cumulative: acc }
-    })
-  }, [monthlyData])
+      acc += m.net;
+      return { label: m.label, cumulative: acc };
+    });
+  }, [monthlyData]);
 
-  const summaryIncome = Number.parseFloat(summary?.income ?? '0')
-  const summaryExpense = Number.parseFloat(summary?.expense ?? '0')
-  const summaryNet = Number.parseFloat(summary?.net ?? '0')
+  const summaryIncome = Number.parseFloat(summary?.income ?? "0");
+  const summaryExpense = Number.parseFloat(summary?.expense ?? "0");
+  const summaryNet = Number.parseFloat(summary?.net ?? "0");
   const savingsRate =
-    summaryIncome > 0 ? (summaryNet / summaryIncome) * 100 : null
+    summaryIncome > 0 ? (summaryNet / summaryIncome) * 100 : null;
 
   const presetLabel = useCallback(
     (id: PresetId): string =>
-      id === 'mtd'
-        ? t('dashboard.range.mtd')
-        : id === 'last30'
-          ? t('dashboard.range.last30')
-          : id === 'ytd'
-            ? t('dashboard.range.ytd')
-            : t('dashboard.range.custom'),
+      id === "mtd"
+        ? t("dashboard.range.mtd")
+        : id === "last30"
+          ? t("dashboard.range.last30")
+          : id === "ytd"
+            ? t("dashboard.range.ytd")
+            : t("dashboard.range.custom"),
     [t],
-  )
+  );
 
-  const applyPreset = (id: Exclude<PresetId, 'custom'>): void => {
-    setRange(computePreset(id))
-  }
+  const applyPreset = (id: Exclude<PresetId, "custom">): void => {
+    setRange(computePreset(id));
+  };
 
   const updateRange = (patch: Partial<Range>): void => {
-    setRange((r) => ({ ...r, ...patch, preset: 'custom' }))
-  }
+    setRange((r) => ({ ...r, ...patch, preset: "custom" }));
+  };
 
   return (
     <div style={styles.wrap}>
@@ -246,13 +276,13 @@ export function DashboardPage(): JSX.Element {
         <div>
           <div style={styles.pageEyebrow}>
             {user
-              ? t('dashboard.welcomeWithName', { name: user.username })
-              : t('dashboard.welcomeBack')}
+              ? t("dashboard.welcomeWithName", { name: user.username })
+              : t("dashboard.welcomeBack")}
           </div>
-          <h1 style={styles.h1}>{t('dashboard.overview')}</h1>
+          <h1 style={styles.h1}>{t("dashboard.overview")}</h1>
           <p style={styles.sub}>
-            {presetLabel(range.preset)} ·{' '}
-            {formatShortDate(range.from, dfLocale)} →{' '}
+            {presetLabel(range.preset)} ·{" "}
+            {formatShortDate(range.from, dfLocale)} →{" "}
             {formatShortDate(range.to, dfLocale)}
           </p>
         </div>
@@ -260,10 +290,10 @@ export function DashboardPage(): JSX.Element {
         <div style={styles.controls}>
           <div
             role="group"
-            aria-label={t('dashboard.quickRangeAria')}
+            aria-label={t("dashboard.quickRangeAria")}
             style={styles.chipsRow}
           >
-            {(['mtd', 'last30', 'ytd'] as const).map((p) => (
+            {(["mtd", "last30", "ytd"] as const).map((p) => (
               <Chip
                 key={p}
                 active={range.preset === p}
@@ -277,14 +307,14 @@ export function DashboardPage(): JSX.Element {
             <DatePicker
               value={range.from}
               onChange={(v) => updateRange({ from: v })}
-              ariaLabel={t('transactions.from')}
+              ariaLabel={t("transactions.from")}
               minWidth={148}
             />
             <span style={styles.dash}>→</span>
             <DatePicker
               value={range.to}
               onChange={(v) => updateRange({ to: v })}
-              ariaLabel={t('transactions.to')}
+              ariaLabel={t("transactions.to")}
               minWidth={148}
             />
           </div>
@@ -293,74 +323,206 @@ export function DashboardPage(): JSX.Element {
 
       <section style={styles.kpiGrid}>
         <KpiCard
-          label={t('dashboard.kpi.income')}
+          label={t("dashboard.kpi.income")}
           value={formatMoney(summaryIncome)}
           tone="positive"
           loading={loadingSummary}
-          hint={t('dashboard.kpi.incomeHint')}
+          hint={t("dashboard.kpi.incomeHint")}
         />
         <KpiCard
-          label={t('dashboard.kpi.expense')}
+          label={t("dashboard.kpi.expense")}
           value={formatMoney(summaryExpense)}
           tone="negative"
           loading={loadingSummary}
-          hint={t('dashboard.kpi.expenseHint')}
+          hint={t("dashboard.kpi.expenseHint")}
         />
         <KpiCard
-          label={t('dashboard.kpi.net')}
+          label={t("dashboard.kpi.net")}
           value={formatMoney(summaryNet)}
-          tone={summaryNet >= 0 ? 'positive' : 'negative'}
+          tone={summaryNet >= 0 ? "positive" : "negative"}
           loading={loadingSummary}
           hint={
             summaryNet >= 0
-              ? t('dashboard.kpi.netHintPositive')
-              : t('dashboard.kpi.netHintNegative')
+              ? t("dashboard.kpi.netHintPositive")
+              : t("dashboard.kpi.netHintNegative")
           }
         />
         <KpiCard
-          label={t('dashboard.kpi.savingsRate')}
-          value={
-            savingsRate == null
-              ? '—'
-              : `${savingsRate.toFixed(1)}%`
-          }
+          label={t("dashboard.kpi.savingsRate")}
+          value={savingsRate == null ? "—" : `${savingsRate.toFixed(1)}%`}
           tone={
             savingsRate == null
-              ? 'default'
+              ? "default"
               : savingsRate >= 0
-                ? 'accent'
-                : 'negative'
+                ? "accent"
+                : "negative"
           }
           loading={loadingSummary}
           hint={
             savingsRate == null
-              ? t('dashboard.kpi.savingsNoIncome')
-              : t('dashboard.kpi.savingsHint')
+              ? t("dashboard.kpi.savingsNoIncome")
+              : t("dashboard.kpi.savingsHint")
           }
         />
       </section>
 
+      <section style={styles.commitmentsSection}>
+        <Panel
+          title={t("dashboard.commitments.title")}
+          subtitle={t("dashboard.commitments.subtitle")}
+          action={
+            <Select
+              value={
+                forecastKey ??
+                forecastMonthOptions[0]?.value ??
+                selectedForecast.value
+              }
+              onChange={(v) => setForecastKey(v)}
+              options={forecastMonthOptions.map((o) => ({
+                value: o.value,
+                label: o.label,
+              }))}
+              minWidth={168}
+              ariaLabel={t("dashboard.commitments.monthAria")}
+            />
+          }
+        >
+          {loadingFutureCommitments ? (
+            <Empty label={t("common.loading")} />
+          ) : (
+            <div>
+              <div style={styles.commitmentsStats}>
+                <div style={styles.commitmentStat}>
+                  <div style={styles.commitmentStatLabel}>
+                    {t("dashboard.commitments.recurringExpense")}
+                  </div>
+                  <div
+                    className="wm-num"
+                    style={{
+                      ...styles.commitmentStatValue,
+                      color: "var(--wm-negative)",
+                    }}
+                  >
+                    {formatMoney(
+                      futureCommitments?.recurringExpenseTotal ?? "0",
+                    )}
+                  </div>
+                </div>
+                <div style={styles.commitmentStat}>
+                  <div style={styles.commitmentStatLabel}>
+                    {t("dashboard.commitments.cardInstallments")}
+                  </div>
+                  <div
+                    className="wm-num"
+                    style={{
+                      ...styles.commitmentStatValue,
+                      color: "var(--wm-negative)",
+                    }}
+                  >
+                    {formatMoney(
+                      futureCommitments?.cardInstallmentsTotal ?? "0",
+                    )}
+                  </div>
+                </div>
+                <div style={styles.commitmentStat}>
+                  <div style={styles.commitmentStatLabel}>
+                    {t("dashboard.commitments.totalExpense")}
+                  </div>
+                  <div
+                    className="wm-num"
+                    style={{
+                      ...styles.commitmentStatValue,
+                      color: "var(--wm-text)",
+                    }}
+                  >
+                    {formatMoney(
+                      futureCommitments?.totalCommittedExpense ?? "0",
+                    )}
+                  </div>
+                </div>
+                <div style={styles.commitmentStat}>
+                  <div style={styles.commitmentStatLabel}>
+                    {t("dashboard.commitments.recurringIncome")}
+                  </div>
+                  <div
+                    className="wm-num"
+                    style={{
+                      ...styles.commitmentStatValue,
+                      color: "var(--wm-positive)",
+                    }}
+                  >
+                    {formatMoney(
+                      futureCommitments?.recurringIncomeTotal ?? "0",
+                    )}
+                  </div>
+                </div>
+              </div>
+              {futureCommitments &&
+              futureCommitments.cardBySource.length > 0 ? (
+                <div style={{ marginTop: 16 }}>
+                  <div
+                    style={{
+                      ...styles.commitmentStatLabel,
+                      marginBottom: 8,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.04em",
+                    }}
+                  >
+                    {t("dashboard.commitments.byCard")}
+                  </div>
+                  <ul style={styles.commitmentCardList}>
+                    {futureCommitments.cardBySource.map((row) => (
+                      <li key={row.sourceId} style={styles.commitmentCardRow}>
+                        <span style={styles.commitmentCardName}>
+                          {row.sourceName}
+                        </span>
+                        <span
+                          className="wm-num"
+                          style={styles.commitmentCardAmount}
+                        >
+                          {formatMoney(row.total)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {futureCommitments &&
+              Number.parseFloat(
+                futureCommitments.totalCommittedExpense,
+              ) === 0 &&
+              Number.parseFloat(futureCommitments.recurringIncomeTotal) ===
+                0 ? (
+                <p style={styles.commitmentsEmptyHint}>
+                  {t("dashboard.commitments.none")}
+                </p>
+              ) : null}
+            </div>
+          )}
+        </Panel>
+      </section>
+
       <section style={styles.gridTwoThirds}>
         <Panel
-          title={t('dashboard.monthlyPerformance')}
-          subtitle={t('dashboard.monthlyPerformanceSub')}
+          title={t("dashboard.monthlyPerformance")}
+          subtitle={t("dashboard.monthlyPerformanceSub")}
           action={
             <div style={styles.yearLabel}>
-              <span>{t('dashboard.year')}</span>
+              <span>{t("dashboard.year")}</span>
               <Select
                 value={String(trendYear)}
                 onChange={(v) => setTrendYear(Number.parseInt(v, 10))}
                 options={yearOptions}
                 minWidth={100}
-                ariaLabel={t('dashboard.trendYearAria')}
+                ariaLabel={t("dashboard.trendYearAria")}
               />
             </div>
           }
         >
           {loadingMonthly ? (
-            <Empty label={t('common.loading')} />
+            <Empty label={t("common.loading")} />
           ) : (
-            <div style={{ width: '100%', height: 280 }}>
+            <div style={{ width: "100%", height: 280 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart
                   data={monthlyData}
@@ -376,7 +538,7 @@ export function DashboardPage(): JSX.Element {
                   <XAxis
                     dataKey="label"
                     tick={axisTick}
-                    axisLine={{ stroke: 'var(--wm-border)' }}
+                    axisLine={{ stroke: "var(--wm-border)" }}
                     tickLine={false}
                   />
                   <YAxis
@@ -387,27 +549,27 @@ export function DashboardPage(): JSX.Element {
                   />
                   <Tooltip
                     content={<ChartTooltip />}
-                    cursor={{ fill: 'rgba(255, 255, 255, 0.03)' }}
+                    cursor={{ fill: "rgba(255, 255, 255, 0.03)" }}
                   />
                   <Bar
                     dataKey="income"
-                    name={t('dashboard.chart.income')}
+                    name={t("dashboard.chart.income")}
                     fill="var(--wm-positive)"
                     radius={[3, 3, 0, 0]}
                   />
                   <Bar
                     dataKey="expense"
-                    name={t('dashboard.chart.expense')}
+                    name={t("dashboard.chart.expense")}
                     fill="var(--wm-negative)"
                     radius={[3, 3, 0, 0]}
                   />
                   <Line
                     type="monotone"
                     dataKey="net"
-                    name={t('dashboard.chart.net')}
+                    name={t("dashboard.chart.net")}
                     stroke="var(--wm-accent)"
                     strokeWidth={2}
-                    dot={{ r: 2, fill: 'var(--wm-accent)' }}
+                    dot={{ r: 2, fill: "var(--wm-accent)" }}
                     activeDot={{ r: 4 }}
                   />
                 </ComposedChart>
@@ -417,33 +579,33 @@ export function DashboardPage(): JSX.Element {
           <LegendRow>
             <LegendSwatch
               color="var(--wm-positive)"
-              label={t('dashboard.chart.income')}
+              label={t("dashboard.chart.income")}
             />
             <LegendSwatch
               color="var(--wm-negative)"
-              label={t('dashboard.chart.expense')}
+              label={t("dashboard.chart.expense")}
             />
             <LegendSwatch
               color="var(--wm-accent)"
-              label={t('dashboard.chart.net')}
+              label={t("dashboard.chart.net")}
               shape="line"
             />
           </LegendRow>
         </Panel>
 
         <Panel
-          title={t('dashboard.whereMoneyGoes')}
-          subtitle={t('dashboard.whereMoneyGoesSub', {
+          title={t("dashboard.whereMoneyGoes")}
+          subtitle={t("dashboard.whereMoneyGoesSub", {
             count: donutData.length,
           })}
         >
           {loadingByCat ? (
-            <Empty label={t('common.loading')} />
+            <Empty label={t("common.loading")} />
           ) : donutData.length === 0 ? (
-            <Empty label={t('dashboard.noExpenseData')} />
+            <Empty label={t("dashboard.noExpenseData")} />
           ) : (
             <div style={styles.donutLayout}>
-              <div style={{ flex: '1 1 220px', minHeight: 240 }}>
+              <div style={{ flex: "1 1 220px", minHeight: 240 }}>
                 <ResponsiveContainer width="100%" height={240}>
                   <PieChart>
                     <Pie
@@ -468,28 +630,27 @@ export function DashboardPage(): JSX.Element {
               </div>
               <ul style={styles.donutLegend}>
                 {donutData.map((d, idx) => {
-                  const total = donutData.reduce((s, x) => s + x.value, 0)
-                  const pct = total > 0 ? (d.value / total) * 100 : 0
+                  const total = donutData.reduce((s, x) => s + x.value, 0);
+                  const pct = total > 0 ? (d.value / total) * 100 : 0;
                   return (
                     <li key={d.name} style={styles.donutLegendItem}>
                       <span
                         style={{
                           ...styles.donutDot,
-                          background:
-                            DONUT_COLORS[idx % DONUT_COLORS.length],
+                          background: DONUT_COLORS[idx % DONUT_COLORS.length],
                         }}
                       />
                       <span style={styles.donutLegendName} title={d.name}>
                         {d.name}
                       </span>
                       <span className="wm-num" style={styles.donutLegendValue}>
-                        {formatMoney(d.value)}{' '}
+                        {formatMoney(d.value)}{" "}
                         <span style={styles.donutLegendPct}>
                           {pct.toFixed(1)}%
                         </span>
                       </span>
                     </li>
-                  )
+                  );
                 })}
               </ul>
             </div>
@@ -499,26 +660,33 @@ export function DashboardPage(): JSX.Element {
 
       <section style={styles.gridHalves}>
         <Panel
-          title={t('dashboard.recentActivity')}
-          subtitle={t('dashboard.recentActivitySub')}
+          title={t("dashboard.recentActivity")}
+          subtitle={t("dashboard.recentActivitySub")}
           action={
-            <Button variant="subtle" onClick={() => openQuickAdd('transaction')}>
-              <Plus className="size-3.5 shrink-0" strokeWidth={2.25} aria-hidden />
-              {t('dashboard.newShort')}
+            <Button
+              variant="subtle"
+              onClick={() => openQuickAdd("transaction")}
+            >
+              <Plus
+                className="size-3.5 shrink-0"
+                strokeWidth={2.25}
+                aria-hidden
+              />
+              {t("dashboard.newShort")}
             </Button>
           }
         >
           {loadingRecent ? (
-            <Empty label={t('common.loading')} />
+            <Empty label={t("common.loading")} />
           ) : !recentList || recentList.items.length === 0 ? (
             <Empty
-              label={t('dashboard.noTransactionsRange')}
+              label={t("dashboard.noTransactionsRange")}
               action={
                 <Button
                   variant="primary"
-                  onClick={() => openQuickAdd('transaction')}
+                  onClick={() => openQuickAdd("transaction")}
                 >
-                  {t('dashboard.addYourFirst')}
+                  {t("dashboard.addYourFirst")}
                 </Button>
               }
             />
@@ -532,18 +700,18 @@ export function DashboardPage(): JSX.Element {
         </Panel>
 
         <Panel
-          title={t('dashboard.topSpending')}
-          subtitle={t('dashboard.topSpendingSub')}
+          title={t("dashboard.topSpending")}
+          subtitle={t("dashboard.topSpendingSub")}
         >
           {loadingByCat ? (
-            <Empty label={t('common.loading')} />
+            <Empty label={t("common.loading")} />
           ) : topCategories.length === 0 ? (
-            <Empty label={t('dashboard.noExpenseCategories')} />
+            <Empty label={t("dashboard.noExpenseCategories")} />
           ) : (
             <ul style={styles.topList}>
               {topCategories.map((cat, idx) => (
                 <TopCategoryRow
-                  key={`${cat.categoryId ?? 'none'}-${idx}`}
+                  key={`${cat.categoryId ?? "none"}-${idx}`}
                   row={cat}
                   color={DONUT_COLORS[idx % DONUT_COLORS.length]}
                   max={topCategoriesMax}
@@ -557,20 +725,26 @@ export function DashboardPage(): JSX.Element {
 
       <section>
         <Panel
-          title={t('dashboard.cumulativeNet')}
-          subtitle={t('dashboard.cumulativeNetSub', { year: trendYear })}
+          title={t("dashboard.cumulativeNet")}
+          subtitle={t("dashboard.cumulativeNetSub", { year: trendYear })}
         >
           {loadingMonthly ? (
-            <Empty label={t('common.loading')} />
+            <Empty label={t("common.loading")} />
           ) : (
-            <div style={{ width: '100%', height: 200 }}>
+            <div style={{ width: "100%", height: 200 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart
                   data={cumulativeYear}
                   margin={{ top: 10, right: 16, left: 0, bottom: 0 }}
                 >
                   <defs>
-                    <linearGradient id="cumGradient" x1="0" y1="0" x2="0" y2="1">
+                    <linearGradient
+                      id="cumGradient"
+                      x1="0"
+                      y1="0"
+                      x2="0"
+                      y2="1"
+                    >
                       <stop
                         offset="0%"
                         stopColor="var(--wm-accent)"
@@ -591,7 +765,7 @@ export function DashboardPage(): JSX.Element {
                   <XAxis
                     dataKey="label"
                     tick={axisTick}
-                    axisLine={{ stroke: 'var(--wm-border)' }}
+                    axisLine={{ stroke: "var(--wm-border)" }}
                     tickLine={false}
                   />
                   <YAxis
@@ -604,7 +778,7 @@ export function DashboardPage(): JSX.Element {
                   <Area
                     type="monotone"
                     dataKey="cumulative"
-                    name={t('dashboard.chart.cumulative')}
+                    name={t("dashboard.chart.cumulative")}
                     stroke="var(--wm-accent)"
                     strokeWidth={2}
                     fill="url(#cumGradient)"
@@ -616,7 +790,7 @@ export function DashboardPage(): JSX.Element {
         </Panel>
       </section>
     </div>
-  )
+  );
 }
 
 function Panel({
@@ -625,10 +799,10 @@ function Panel({
   action,
   children,
 }: {
-  title: string
-  subtitle?: string
-  action?: React.ReactNode
-  children: React.ReactNode
+  title: string;
+  subtitle?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
 }): JSX.Element {
   return (
     <section
@@ -644,37 +818,41 @@ function Panel({
       </header>
       <div>{children}</div>
     </section>
-  )
+  );
 }
 
 function Empty({
   label,
   action,
 }: {
-  label: string
-  action?: React.ReactNode
+  label: string;
+  action?: React.ReactNode;
 }): JSX.Element {
   return (
     <div style={styles.empty}>
-      <span style={{ color: 'var(--wm-text-muted)' }}>{label}</span>
+      <span style={{ color: "var(--wm-text-muted)" }}>{label}</span>
       {action}
     </div>
-  )
+  );
 }
 
 type ChartTooltipProps = {
-  active?: boolean
+  active?: boolean;
   payload?: Array<{
-    name?: string
-    value?: number
-    color?: string
-    fill?: string
-  }>
-  label?: string | number
-}
+    name?: string;
+    value?: number;
+    color?: string;
+    fill?: string;
+  }>;
+  label?: string | number;
+};
 
-function ChartTooltip({ active, payload, label }: ChartTooltipProps): JSX.Element | null {
-  if (!active || !payload || payload.length === 0) return null
+function ChartTooltip({
+  active,
+  payload,
+  label,
+}: ChartTooltipProps): JSX.Element | null {
+  if (!active || !payload || payload.length === 0) return null;
   return (
     <div style={styles.tooltip}>
       {label != null && <div style={styles.tooltipLabel}>{label}</div>}
@@ -683,100 +861,100 @@ function ChartTooltip({ active, payload, label }: ChartTooltipProps): JSX.Elemen
           <span
             style={{
               ...styles.tooltipDot,
-              background: p.color ?? p.fill ?? 'var(--wm-accent)',
+              background: p.color ?? p.fill ?? "var(--wm-accent)",
             }}
           />
           <span style={styles.tooltipName}>{p.name}</span>
           <span className="wm-num" style={styles.tooltipValue}>
-            {typeof p.value === 'number' ? formatMoney(p.value) : p.value}
+            {typeof p.value === "number" ? formatMoney(p.value) : p.value}
           </span>
         </div>
       ))}
     </div>
-  )
+  );
 }
 
-function LegendRow({
-  children,
-}: {
-  children: React.ReactNode
-}): JSX.Element {
+function LegendRow({ children }: { children: React.ReactNode }): JSX.Element {
   return (
     <div style={styles.legendRow} role="list">
       {children}
     </div>
-  )
+  );
 }
 
 function LegendSwatch({
   color,
   label,
-  shape = 'dot',
+  shape = "dot",
 }: {
-  color: string
-  label: string
-  shape?: 'dot' | 'line'
+  color: string;
+  label: string;
+  shape?: "dot" | "line";
 }): JSX.Element {
   return (
     <span style={styles.legendItem} role="listitem">
       <span
         style={{
-          background: shape === 'dot' ? color : undefined,
-          border: shape === 'line' ? `2px solid ${color}` : undefined,
-          width: shape === 'dot' ? 10 : 14,
-          height: shape === 'dot' ? 10 : 0,
-          borderRadius: shape === 'dot' ? 3 : 0,
-          display: 'inline-block',
+          background: shape === "dot" ? color : undefined,
+          border: shape === "line" ? `2px solid ${color}` : undefined,
+          width: shape === "dot" ? 10 : 14,
+          height: shape === "dot" ? 10 : 0,
+          borderRadius: shape === "dot" ? 3 : 0,
+          display: "inline-block",
         }}
       />
       <span>{label}</span>
     </span>
-  )
+  );
 }
 
 function TxRow({ tx }: { tx: Transaction }): JSX.Element {
-  const { t, i18n } = useTranslation()
+  const { t, i18n } = useTranslation();
   const dfLocale = useMemo(
     () => dateFnsLocaleForLang(i18n.language),
     [i18n.language],
-  )
-  const isIncome = tx.kind === 'INCOME'
+  );
+  const isIncome = tx.kind === "INCOME";
   return (
     <li style={styles.txRow}>
       <div
         style={{
           ...styles.txIcon,
-          color: isIncome ? 'var(--wm-positive)' : 'var(--wm-negative)',
+          color: isIncome ? "var(--wm-positive)" : "var(--wm-negative)",
           background: isIncome
-            ? 'var(--wm-positive-soft)'
-            : 'var(--wm-negative-soft)',
+            ? "var(--wm-positive-soft)"
+            : "var(--wm-negative-soft)",
         }}
         aria-hidden
       >
-        {isIncome ? '↑' : '↓'}
+        {isIncome ? "↑" : "↓"}
       </div>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={styles.txDesc}>
-          {tx.description || t('transactions.untitled')}
+          {formatTransactionDescriptionForDisplay(
+            tx.description,
+            tx.isProjected,
+            t,
+          )}
         </div>
         <div style={styles.txMeta}>
-          {formatShortDate(tx.occurredAt, dfLocale)} ·{' '}
-          {tx.kind === 'INCOME'
-            ? t('transactions.kindIncome')
-            : t('transactions.kindExpense')}
+          {formatShortDate(tx.occurredAt, dfLocale)} ·{" "}
+          {tx.kind === "INCOME"
+            ? t("transactions.kindIncome")
+            : t("transactions.kindExpense")}
         </div>
       </div>
       <span
         className="wm-num"
         style={{
           ...styles.txAmount,
-          color: isIncome ? 'var(--wm-positive)' : 'var(--wm-text)',
+          color: isIncome ? "var(--wm-positive)" : "var(--wm-text)",
         }}
       >
-        {isIncome ? '+' : '−'} {formatMoney(tx.amount)}
+        {isIncome ? "+" : "−"} {formatMoney(tx.amount)}
       </span>
     </li>
-  )
+  );
 }
 
 function TopCategoryRow({
@@ -785,20 +963,17 @@ function TopCategoryRow({
   color,
   label,
 }: {
-  row: CategoryReportRow
-  max: number
-  color: string
-  label: string
+  row: CategoryReportRow;
+  max: number;
+  color: string;
+  label: string;
 }): JSX.Element {
-  const value = Number.parseFloat(row.total)
-  const pct = max > 0 ? (value / max) * 100 : 0
+  const value = Number.parseFloat(row.total);
+  const pct = max > 0 ? (value / max) * 100 : 0;
   return (
     <li style={styles.topRow}>
       <div style={styles.topRowHead}>
-        <span
-          style={{ ...styles.topRowDot, background: color }}
-          aria-hidden
-        />
+        <span style={{ ...styles.topRowDot, background: color }} aria-hidden />
         <span style={styles.topRowName} title={label}>
           {label}
         </span>
@@ -816,30 +991,30 @@ function TopCategoryRow({
         />
       </div>
     </li>
-  )
+  );
 }
 
 function KpiCard({
   label,
   value,
-  tone = 'default',
+  tone = "default",
   hint,
   loading,
 }: {
-  label: string
-  value: string
-  tone?: 'default' | 'positive' | 'negative' | 'accent'
-  hint?: string
-  loading?: boolean
+  label: string;
+  value: string;
+  tone?: "default" | "positive" | "negative" | "accent";
+  hint?: string;
+  loading?: boolean;
 }): JSX.Element {
   const color =
-    tone === 'positive'
-      ? 'var(--wm-positive)'
-      : tone === 'negative'
-        ? 'var(--wm-negative)'
-        : tone === 'accent'
-          ? 'var(--wm-accent)'
-          : 'var(--wm-text)'
+    tone === "positive"
+      ? "var(--wm-positive)"
+      : tone === "negative"
+        ? "var(--wm-negative)"
+        : tone === "accent"
+          ? "var(--wm-accent)"
+          : "var(--wm-text)";
   return (
     <div
       className="rounded-md border border-line-soft bg-surface-1"
@@ -847,295 +1022,349 @@ function KpiCard({
     >
       <span className="wm-label">{label}</span>
       <span className="wm-num" style={{ ...styles.kpiValue, color }}>
-        {loading ? '—' : value}
+        {loading ? "—" : value}
       </span>
       {hint ? <span style={styles.kpiHint}>{hint}</span> : null}
     </div>
-  )
+  );
 }
 
-const axisTick = { fill: 'var(--wm-text-muted)', fontSize: 11 }
+const axisTick = { fill: "var(--wm-text-muted)", fontSize: 11 };
 
 const styles: Record<string, CSSProperties> = {
   wrap: {
-    display: 'flex',
-    flexDirection: 'column',
+    display: "flex",
+    flexDirection: "column",
     gap: 24,
     maxWidth: 1400,
-    margin: '0 auto',
+    margin: "0 auto",
   },
   pageHeader: {
-    display: 'flex',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
     gap: 16,
-    flexWrap: 'wrap',
+    flexWrap: "wrap",
   },
   pageEyebrow: {
-    fontSize: 'var(--wm-fs-xs)',
-    letterSpacing: '0.08em',
-    textTransform: 'uppercase',
-    color: 'var(--wm-text-muted)',
+    fontSize: "var(--wm-fs-xs)",
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "var(--wm-text-muted)",
     marginBottom: 6,
   },
   h1: {
-    fontSize: 'var(--wm-fs-2xl)',
-    letterSpacing: '-0.02em',
+    fontSize: "var(--wm-fs-2xl)",
+    letterSpacing: "-0.02em",
     margin: 0,
     fontWeight: 600,
   },
   sub: {
-    color: 'var(--wm-text-muted)',
-    fontSize: 'var(--wm-fs-sm)',
+    color: "var(--wm-text-muted)",
+    fontSize: "var(--wm-fs-sm)",
     marginTop: 4,
   },
   controls: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'flex-end',
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-end",
     gap: 10,
   },
   chipsRow: {
-    display: 'flex',
+    display: "flex",
     gap: 6,
-    flexWrap: 'wrap',
+    flexWrap: "wrap",
   },
   rangeInputs: {
-    display: 'flex',
-    alignItems: 'center',
+    display: "flex",
+    alignItems: "center",
     gap: 8,
   },
   dash: {
-    color: 'var(--wm-text-soft)',
-    fontSize: 'var(--wm-fs-sm)',
+    color: "var(--wm-text-soft)",
+    fontSize: "var(--wm-fs-sm)",
   },
   kpiGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
     gap: 14,
   },
+  commitmentsSection: {
+    marginBottom: 4,
+  },
+  commitmentsStats: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(148px, 1fr))",
+    gap: 12,
+  },
+  commitmentStat: {
+    padding: "12px 14px",
+    borderRadius: "var(--wm-radius-md)",
+    background: "var(--wm-surface-2)",
+    border: "1px solid var(--wm-border-soft)",
+  },
+  commitmentStatLabel: {
+    fontSize: "var(--wm-fs-xs)",
+    color: "var(--wm-text-muted)",
+    marginBottom: 6,
+  },
+  commitmentStatValue: {
+    fontSize: "1.15rem",
+    fontWeight: 600,
+    letterSpacing: "-0.02em",
+  },
+  commitmentCardList: {
+    listStyle: "none",
+    margin: 0,
+    padding: 0,
+  },
+  commitmentCardRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "8px 0",
+    borderBottom: "1px solid var(--wm-border-soft)",
+    fontSize: "var(--wm-fs-sm)",
+  },
+  commitmentCardName: {
+    color: "var(--wm-text)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  commitmentCardAmount: {
+    color: "var(--wm-text)",
+    fontWeight: 600,
+    flexShrink: 0,
+  },
+  commitmentsEmptyHint: {
+    marginTop: 12,
+    fontSize: "var(--wm-fs-sm)",
+    color: "var(--wm-text-muted)",
+  },
   kpi: {
-    padding: '16px 18px 14px',
-    display: 'flex',
-    flexDirection: 'column',
+    padding: "16px 18px 14px",
+    display: "flex",
+    flexDirection: "column",
     gap: 8,
   },
   kpiValue: {
-    fontSize: '1.6rem',
+    fontSize: "1.6rem",
     fontWeight: 600,
-    letterSpacing: '-0.02em',
+    letterSpacing: "-0.02em",
     lineHeight: 1.1,
   },
   kpiHint: {
-    color: 'var(--wm-text-muted)',
-    fontSize: 'var(--wm-fs-xs)',
+    color: "var(--wm-text-muted)",
+    fontSize: "var(--wm-fs-xs)",
   },
   gridTwoThirds: {
-    display: 'grid',
-    gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)',
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)",
     gap: 14,
   },
   gridHalves: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
     gap: 14,
   },
   panel: {
     padding: 18,
-    display: 'flex',
-    flexDirection: 'column',
+    display: "flex",
+    flexDirection: "column",
     gap: 14,
     minHeight: 0,
   },
   panelHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 12,
   },
   panelTitle: {
-    fontSize: 'var(--wm-fs-lg)',
+    fontSize: "var(--wm-fs-lg)",
     fontWeight: 600,
-    letterSpacing: '-0.01em',
+    letterSpacing: "-0.01em",
   },
   panelSubtitle: {
-    fontSize: 'var(--wm-fs-xs)',
-    color: 'var(--wm-text-muted)',
+    fontSize: "var(--wm-fs-xs)",
+    color: "var(--wm-text-muted)",
     marginTop: 2,
   },
   empty: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'flex-start',
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
     gap: 12,
-    padding: '24px 4px',
-    color: 'var(--wm-text-muted)',
+    padding: "24px 4px",
+    color: "var(--wm-text-muted)",
   },
   legendRow: {
-    display: 'flex',
+    display: "flex",
     gap: 16,
-    alignItems: 'center',
-    flexWrap: 'wrap',
+    alignItems: "center",
+    flexWrap: "wrap",
   },
   legendItem: {
-    display: 'inline-flex',
-    alignItems: 'center',
+    display: "inline-flex",
+    alignItems: "center",
     gap: 8,
-    fontSize: 'var(--wm-fs-xs)',
-    color: 'var(--wm-text-muted)',
+    fontSize: "var(--wm-fs-xs)",
+    color: "var(--wm-text-muted)",
   },
   yearLabel: {
-    display: 'flex',
-    alignItems: 'center',
+    display: "flex",
+    alignItems: "center",
     gap: 8,
-    fontSize: 'var(--wm-fs-xs)',
-    color: 'var(--wm-text-muted)',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
+    fontSize: "var(--wm-fs-xs)",
+    color: "var(--wm-text-muted)",
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
   },
   tooltip: {
-    background: 'var(--wm-surface-2)',
-    border: '1px solid var(--wm-border)',
-    borderRadius: 'var(--wm-radius-md)',
-    padding: '10px 12px',
-    boxShadow: 'var(--wm-shadow-soft)',
+    background: "var(--wm-surface-2)",
+    border: "1px solid var(--wm-border)",
+    borderRadius: "var(--wm-radius-md)",
+    padding: "10px 12px",
+    boxShadow: "var(--wm-shadow-soft)",
     minWidth: 160,
-    color: 'var(--wm-text)',
+    color: "var(--wm-text)",
   },
   tooltipLabel: {
-    fontSize: 'var(--wm-fs-xs)',
-    color: 'var(--wm-text-muted)',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
+    fontSize: "var(--wm-fs-xs)",
+    color: "var(--wm-text-muted)",
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
     marginBottom: 6,
   },
   tooltipRow: {
-    display: 'flex',
-    alignItems: 'center',
+    display: "flex",
+    alignItems: "center",
     gap: 8,
-    fontSize: 'var(--wm-fs-sm)',
-    padding: '2px 0',
+    fontSize: "var(--wm-fs-sm)",
+    padding: "2px 0",
   },
   tooltipDot: {
     width: 8,
     height: 8,
     borderRadius: 2,
-    display: 'inline-block',
+    display: "inline-block",
   },
   tooltipName: {
-    color: 'var(--wm-text-muted)',
+    color: "var(--wm-text-muted)",
     flex: 1,
   },
   tooltipValue: {
-    color: 'var(--wm-text)',
+    color: "var(--wm-text)",
     fontWeight: 600,
   },
   donutLayout: {
-    display: 'flex',
+    display: "flex",
     gap: 16,
-    flexWrap: 'wrap',
-    alignItems: 'center',
+    flexWrap: "wrap",
+    alignItems: "center",
   },
   donutLegend: {
-    flex: '1 1 200px',
-    listStyle: 'none',
+    flex: "1 1 200px",
+    listStyle: "none",
     margin: 0,
     padding: 0,
-    display: 'flex',
-    flexDirection: 'column',
+    display: "flex",
+    flexDirection: "column",
     gap: 8,
   },
   donutLegendItem: {
-    display: 'flex',
-    alignItems: 'center',
+    display: "flex",
+    alignItems: "center",
     gap: 10,
-    padding: '4px 0',
-    fontSize: 'var(--wm-fs-sm)',
-    borderBottom: '1px dashed var(--wm-border-soft)',
+    padding: "4px 0",
+    fontSize: "var(--wm-fs-sm)",
+    borderBottom: "1px dashed var(--wm-border-soft)",
   },
   donutDot: {
     width: 10,
     height: 10,
     borderRadius: 3,
-    display: 'inline-block',
+    display: "inline-block",
   },
   donutLegendName: {
     flex: 1,
-    color: 'var(--wm-text)',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
+    color: "var(--wm-text)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   },
   donutLegendValue: {
-    color: 'var(--wm-text)',
-    display: 'flex',
-    alignItems: 'baseline',
+    color: "var(--wm-text)",
+    display: "flex",
+    alignItems: "baseline",
     gap: 6,
   },
   donutLegendPct: {
-    color: 'var(--wm-text-muted)',
-    fontSize: 'var(--wm-fs-xs)',
+    color: "var(--wm-text-muted)",
+    fontSize: "var(--wm-fs-xs)",
   },
   txList: {
-    listStyle: 'none',
+    listStyle: "none",
     margin: 0,
     padding: 0,
-    display: 'flex',
-    flexDirection: 'column',
+    display: "flex",
+    flexDirection: "column",
   },
   txRow: {
-    display: 'flex',
-    alignItems: 'center',
+    display: "flex",
+    alignItems: "center",
     gap: 12,
-    padding: '10px 0',
-    borderBottom: '1px solid var(--wm-border-soft)',
+    padding: "10px 0",
+    borderBottom: "1px solid var(--wm-border-soft)",
   },
   txIcon: {
     width: 28,
     height: 28,
     borderRadius: 8,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
     fontSize: 14,
     fontWeight: 700,
     flexShrink: 0,
   },
   txDesc: {
-    color: 'var(--wm-text)',
-    fontSize: 'var(--wm-fs-md)',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
+    color: "var(--wm-text)",
+    fontSize: "var(--wm-fs-md)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   },
   txMeta: {
-    color: 'var(--wm-text-muted)',
-    fontSize: 'var(--wm-fs-xs)',
+    color: "var(--wm-text-muted)",
+    fontSize: "var(--wm-fs-xs)",
     marginTop: 1,
   },
   txAmount: {
-    fontSize: 'var(--wm-fs-md)',
+    fontSize: "var(--wm-fs-md)",
     fontWeight: 600,
-    whiteSpace: 'nowrap',
+    whiteSpace: "nowrap",
   },
   topList: {
-    listStyle: 'none',
+    listStyle: "none",
     margin: 0,
     padding: 0,
-    display: 'flex',
-    flexDirection: 'column',
+    display: "flex",
+    flexDirection: "column",
     gap: 14,
   },
   topRow: {
-    display: 'flex',
-    flexDirection: 'column',
+    display: "flex",
+    flexDirection: "column",
     gap: 6,
   },
   topRowHead: {
-    display: 'flex',
-    alignItems: 'center',
+    display: "flex",
+    alignItems: "center",
     gap: 8,
-    fontSize: 'var(--wm-fs-sm)',
+    fontSize: "var(--wm-fs-sm)",
   },
   topRowDot: {
     width: 8,
@@ -1145,28 +1374,28 @@ const styles: Record<string, CSSProperties> = {
   },
   topRowName: {
     flex: 1,
-    color: 'var(--wm-text)',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
+    color: "var(--wm-text)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   },
   topRowValue: {
-    color: 'var(--wm-text-muted)',
+    color: "var(--wm-text-muted)",
   },
   topRowBar: {
-    position: 'relative',
+    position: "relative",
     height: 5,
-    width: '100%',
-    background: 'var(--wm-surface-3)',
+    width: "100%",
+    background: "var(--wm-surface-3)",
     borderRadius: 999,
-    overflow: 'hidden',
+    overflow: "hidden",
   },
   topRowBarFill: {
-    position: 'absolute',
+    position: "absolute",
     top: 0,
     left: 0,
     bottom: 0,
     borderRadius: 999,
-    transition: 'width 240ms ease',
+    transition: "width 240ms ease",
   },
-}
+};

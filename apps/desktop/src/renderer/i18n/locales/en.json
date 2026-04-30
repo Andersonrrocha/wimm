@@ -25,6 +25,7 @@
     "pleaseWait": "Please wait…"
   },
   "auth": {
+    "noAccountForEmail": "There is no account for this email.",
     "invalidCredentials": "Invalid email or password.",
     "registerFailed": "Could not create account. Try again.",
     "signIn": "Sign in",
@@ -37,7 +38,7 @@
     "email": "Email",
     "password": "Password",
     "username": "Username",
-    "usernameInvalid": "3–32 characters: letters, numbers, underscore or hyphen only.",
+    "usernameInvalid": "3–32 characters: letters (accents ok), numbers, spaces, underscore or hyphen.",
     "passwordRules": {
       "length": "At least {{count}} characters",
       "upper": "One uppercase letter",
@@ -89,6 +90,10 @@
     "expense": "Expense",
     "income": "Income",
     "transactionKindAria": "Transaction kind",
+    "categoryParent": "Parent category",
+    "categoryParentNone": "None (top-level)",
+    "categoryParentHint": "Pick a main category to create this as a subcategory. Leave as top-level if it should sit alongside your other main categories.",
+    "categoryParentAria": "Parent category for subcategory",
     "selectCategoryTypeAria": "Category type",
     "selectSourceTypeAria": "Source type",
     "sourceType": {
@@ -106,7 +111,11 @@
       "description": "What was it?",
       "categoryName": "Groceries, Salary…",
       "sourceName": "Itaú checking, Nubank card…"
-    }
+    },
+    "creditCardClosingDay": "Statement closing day",
+    "creditCardDueDay": "Payment due day",
+    "creditCardClosingDayHint": "Calendar day (1–31) when the billing cycle closes. Used for budgeting, statement imports, and installments.",
+    "creditCardDueDayHint": "Calendar day (1–31) when the bill is due."
   },
   "datePicker": {
     "pickDate": "Pick a date",
@@ -121,6 +130,9 @@
     "addTransaction": "Add a transaction",
     "from": "From",
     "to": "To",
+    "monthFilter": "Month",
+    "monthFilterCustom": "Custom range",
+    "monthFilterAria": "Jump to a calendar month",
     "category": "Category",
     "source": "Source",
     "allCategories": "All categories",
@@ -141,20 +153,37 @@
     "pagePrev": "Previous",
     "pageNext": "Next",
     "pageOf": "Page {{page}} of {{totalPages}} · {{total}} total",
-    "untitled": "Untitled"
+    "untitled": "Untitled",
+    "uncategorized": "Other",
+    "uncategorizedFilter": "Uncategorized",
+    "categorySelectRowAria": "Category for this transaction",
+    "unknownCategory": "Unknown category",
+    "noSource": "No source",
+    "projectedParens": "projected",
+    "showProjectedInstallments": "Show projected installments",
+    "showProjectedInstallmentsHint": "Credit card import: future installment legs marked as projected. Recurrence-generated transactions are always shown."
   },
   "imports": {
     "title": "Import",
-    "subtitle": "Preview CSV or OFX, then commit into your register.",
+    "subtitle": "Preview CSV, OFX, or Banrisul/Cresol PDF, then commit into your register.",
     "eyebrow": "Batch",
     "statementTitle": "Import statement",
-    "statementSubtitle": "Upload a CSV or OFX/QFX file. Rows are normalized, categorization rules are applied, and duplicates are excluded by default.",
+    "statementSubtitle": "Upload CSV, OFX/QFX, or a text-selectable PDF (Banrisul card or Cresol account statement). Rows are normalized, categorization rules are applied, and duplicates are excluded by default.",
     "uploadTitle": "Upload file",
     "needSource": "Need a new source?",
     "createOne": "Create one",
     "source": "Source",
+    "sourceGroupBank": "Bank accounts",
+    "sourceGroupCreditCard": "Credit cards",
+    "sourceGroupOther": "Other sources",
+    "creditCardImportDisclaimer": "Purchases are imported using each row's purchase date. This card's billing cycle will determine how they affect your budget and cash flow. Installments may create projected future obligations in a later step.",
     "selectSource": "Select a source",
-    "fileLabel": "File (.csv, .ofx, .qfx)",
+    "fileLabel": "File (.csv, .ofx, .qfx, Banrisul/Cresol .pdf)",
+    "parserWarningsTitle": "Parser diagnostics",
+    "parserSeverity": {
+      "info": "info",
+      "warning": "warning"
+    },
     "parsing": "Parsing…",
     "preview": "Preview",
     "previewFailed": "Preview failed",
@@ -169,6 +198,7 @@
     "colKind": "Kind",
     "colAmount": "Amount",
     "colDescription": "Description",
+    "colCategory": "Category",
     "colSuggested": "Suggested",
     "colStatus": "Status",
     "duplicateTooltip": "Duplicate — already in your register",
@@ -278,16 +308,53 @@
       "expense": "Expense",
       "net": "Net",
       "cumulative": "Cumulative"
+    },
+    "commitments": {
+      "title": "Upcoming commitments (forecast)",
+      "subtitle": "Cash impact by card due dates and active recurrence rules—not purchase dates.",
+      "monthAria": "Forecast month",
+      "recurringExpense": "Recurring (expense)",
+      "recurringIncome": "Recurring (income)",
+      "cardInstallments": "Card installments",
+      "totalExpense": "Total projected outflows",
+      "byCard": "By card",
+      "none": "Nothing forecast for this month."
     }
   },
   "categories": {
     "keys": {
-      "streaming": "Streaming",
-      "online_shopping": "Online shopping",
+      "food": "Food",
       "market": "Market",
-      "health": "Health",
+      "restaurants": "Restaurants",
+      "food_other": "Food — Other",
+      "housing": "Housing",
       "transport": "Transport",
-      "utilities": "Bills & utilities"
+      "fuel": "Fuel",
+      "public_transport": "Public transport",
+      "maintenance": "Maintenance",
+      "transport_other": "Transport — Other",
+      "health": "Health",
+      "pharmacy": "Pharmacy",
+      "self_care": "Self-care",
+      "health_other": "Health — Other",
+      "leisure": "Leisure",
+      "subscriptions": "Subscriptions",
+      "streaming": "Streaming",
+      "software": "Software",
+      "subscriptions_other": "Subscriptions — Other",
+      "online_shopping": "Online shopping",
+      "shopping_clothing": "Apparel",
+      "shopping_games": "Games",
+      "shopping_home": "Home",
+      "shopping_other": "Online shopping — Other",
+      "debts": "Debts",
+      "debt_loans": "Loans",
+      "debt_cards": "Credit cards",
+      "debt_car": "Car",
+      "debt_motorcycle": "Motorcycle",
+      "taxes": "Taxes",
+      "utilities": "Bills & utilities",
+      "other": "Other"
     }
   },
   "categoriesTab": {
@@ -299,7 +366,8 @@
     "emptyBody": "Categories classify transactions as income or expense. They also power categorization rules.",
     "createFirst": "Create your first",
     "name": "Name",
-    "type": "Type"
+    "type": "Type",
+    "deleteConfirm": "Delete \"{{name}}\"?"
   },
   "sourcesTab": {
     "title": "Sources",
@@ -309,7 +377,39 @@
     "emptyBody": "Sources group transactions by origin. Add one before importing a statement.",
     "createFirst": "Create your first",
     "name": "Name",
-    "type": "Type"
+    "type": "Type",
+    "deleteConfirm": "Delete \"{{name}}\"?",
+    "billingCycleCol": "Cycle",
+    "billingCycleValue": "Close {{closing}} · Due {{due}}",
+    "billingCycleIncomplete": "Set closing and due days"
+  },
+  "rulesTab": {
+    "newRuleTitle": "New rule",
+    "newRuleSubtitle": "Rules run on import and can be re-applied anytime. Lowest priority number wins. Matching is case-insensitive.",
+    "priority": "Priority",
+    "match": "Match",
+    "matchContains": "Contains",
+    "matchEquals": "Equals",
+    "matchTypeAria": "Match type",
+    "pattern": "Pattern",
+    "patternPlaceholder": "Text in description",
+    "category": "Category",
+    "categoryAria": "Category",
+    "selectPlaceholder": "Select…",
+    "saving": "Saving…",
+    "addRule": "Add rule",
+    "createFailed": "Could not create rule.",
+    "yourRulesTitle": "Your rules",
+    "rulesSubtitleEmpty": "No rules yet.",
+    "rulesSubtitle": "{{total}} total · {{active}} active",
+    "failedLoad": "Failed to load rules.",
+    "emptyHint": "Add rules to auto-categorize imported transactions.",
+    "colActive": "Active",
+    "colPriority": "Priority",
+    "colMatch": "Match",
+    "colPattern": "Pattern",
+    "colCategory": "Category",
+    "deleteConfirm": "Delete this rule?"
   },
   "guest": {
     "language": "Language"

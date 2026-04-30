@@ -9,7 +9,10 @@ import type {
   TransactionKind,
 } from '@wimm/shared'
 import { apiClient } from '../lib/api-client'
-import { categoryDisplayName } from '../lib/category-label'
+import {
+  buildCategoryOptionGroups,
+  categoryDisplayName,
+} from '../lib/category-label'
 import { fromIsoDate, toIsoDate } from '../lib/dates'
 import { cn } from '../lib/cn'
 import { Modal } from './ui/modal'
@@ -106,8 +109,6 @@ function TransactionForm({ onDone }: { onDone: () => void }): JSX.Element {
     },
   })
 
-  const relevantCategories = categories.filter((c) => c.type === kind)
-
   const sourceOptions = useMemo(
     () => [
       { value: '', label: t('common.none') },
@@ -115,15 +116,13 @@ function TransactionForm({ onDone }: { onDone: () => void }): JSX.Element {
     ],
     [sources, t],
   )
-  const categoryOptions = useMemo(
-    () => [
-      { value: '', label: t('common.none') },
-      ...relevantCategories.map((c) => ({
-        value: c.id,
-        label: categoryDisplayName(c, t),
-      })),
-    ],
-    [relevantCategories, t],
+  const { leadingOptions: categoryLeading, optionGroups: categoryGroups } = useMemo(
+    () =>
+      buildCategoryOptionGroups(categories, t, {
+        filterType: kind,
+        leadingLabel: t('common.none'),
+      }),
+    [categories, kind, t],
   )
 
   const createMut = useMutation({
@@ -210,7 +209,8 @@ function TransactionForm({ onDone }: { onDone: () => void }): JSX.Element {
           <Select
             value={categoryId}
             onChange={setCategoryId}
-            options={categoryOptions}
+            leadingOptions={categoryLeading}
+            optionGroups={categoryGroups}
             placeholder={t('common.none')}
             ariaLabel={t('quickAdd.category')}
           />
@@ -246,6 +246,41 @@ function CategoryForm({ onDone }: { onDone: () => void }): JSX.Element {
   const qc = useQueryClient()
   const [name, setName] = useState('')
   const [type, setType] = useState<CategoryType>('EXPENSE')
+  const [parentId, setParentId] = useState('')
+
+  const { data: categoriesForParent = [] } = useQuery({
+    queryKey: ['categories'],
+    queryFn: async () => {
+      const { data } = await apiClient.get<Category[]>('/categories')
+      return data
+    },
+  })
+
+  const parentOptions = useMemo(() => {
+    const tops = categoriesForParent
+      .filter((c) => !c.parentId && c.type === type)
+      .sort((a, b) =>
+        categoryDisplayName(a, t).localeCompare(categoryDisplayName(b, t)),
+      )
+    return [
+      { value: '', label: t('quickAdd.categoryParentNone') },
+      ...tops.map((c) => ({
+        value: c.id,
+        label: categoryDisplayName(c, t),
+      })),
+    ]
+  }, [categoriesForParent, type, t])
+
+  useEffect(() => {
+    const validParentIds = new Set(
+      categoriesForParent
+        .filter((c) => !c.parentId && c.type === type)
+        .map((c) => c.id),
+    )
+    if (parentId && !validParentIds.has(parentId)) {
+      setParentId('')
+    }
+  }, [categoriesForParent, type, parentId])
 
   const categoryTypeOptions = useMemo(
     () => [
@@ -263,7 +298,11 @@ function CategoryForm({ onDone }: { onDone: () => void }): JSX.Element {
 
   const createMut = useMutation({
     mutationFn: async () => {
-      await apiClient.post('/categories', { name: name.trim(), type })
+      await apiClient.post('/categories', {
+        name: name.trim(),
+        type,
+        ...(parentId.trim() ? { parentId: parentId.trim() } : {}),
+      })
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['categories'] })
@@ -299,6 +338,19 @@ function CategoryForm({ onDone }: { onDone: () => void }): JSX.Element {
         </Field>
       </div>
 
+      <Field
+        label={t('quickAdd.categoryParent')}
+        className="w-full"
+        hint={t('quickAdd.categoryParentHint')}
+      >
+        <Select
+          value={parentId}
+          onChange={setParentId}
+          options={parentOptions}
+          ariaLabel={t('quickAdd.categoryParentAria')}
+        />
+      </Field>
+
       <FooterRow>
         {createMut.isError ? (
           <span className="text-wm-xs text-negative">
@@ -326,6 +378,15 @@ function SourceForm({ onDone }: { onDone: () => void }): JSX.Element {
   const qc = useQueryClient()
   const [name, setName] = useState('')
   const [type, setType] = useState<SourceType>('BANK_ACCOUNT')
+  const [closingDay, setClosingDay] = useState('')
+  const [dueDay, setDueDay] = useState('')
+
+  useEffect(() => {
+    if (type !== 'CREDIT_CARD') {
+      setClosingDay('')
+      setDueDay('')
+    }
+  }, [type])
 
   const sourceTypeOptions = useMemo(
     () =>
@@ -340,7 +401,17 @@ function SourceForm({ onDone }: { onDone: () => void }): JSX.Element {
 
   const createMut = useMutation({
     mutationFn: async () => {
-      await apiClient.post('/sources', { name: name.trim(), type })
+      const payload: {
+        name: string
+        type: SourceType
+        closingDay?: number
+        dueDay?: number
+      } = { name: name.trim(), type }
+      if (type === 'CREDIT_CARD') {
+        payload.closingDay = Number.parseInt(closingDay, 10)
+        payload.dueDay = Number.parseInt(dueDay, 10)
+      }
+      await apiClient.post('/sources', payload)
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['sources'] })
@@ -351,8 +422,37 @@ function SourceForm({ onDone }: { onDone: () => void }): JSX.Element {
   const handleSubmit = (e: FormEvent): void => {
     e.preventDefault()
     if (!name.trim()) return
+    if (type === 'CREDIT_CARD') {
+      const c = Number.parseInt(closingDay, 10)
+      const d = Number.parseInt(dueDay, 10)
+      if (
+        Number.isNaN(c) ||
+        Number.isNaN(d) ||
+        c < 1 ||
+        c > 31 ||
+        d < 1 ||
+        d > 31
+      ) {
+        return
+      }
+    }
     createMut.mutate()
   }
+
+  const creditCardBillingInvalid =
+    type === 'CREDIT_CARD' &&
+    (() => {
+      const c = Number.parseInt(closingDay, 10)
+      const d = Number.parseInt(dueDay, 10)
+      return (
+        Number.isNaN(c) ||
+        Number.isNaN(d) ||
+        c < 1 ||
+        c > 31 ||
+        d < 1 ||
+        d > 31
+      )
+    })()
 
   return (
     <form onSubmit={handleSubmit} className={formCls}>
@@ -376,6 +476,45 @@ function SourceForm({ onDone }: { onDone: () => void }): JSX.Element {
         </Field>
       </div>
 
+      {type === 'CREDIT_CARD' ? (
+        <div className={rowCls}>
+          <Field
+            label={t('quickAdd.creditCardClosingDay')}
+            hint={t('quickAdd.creditCardClosingDayHint')}
+            className="basis-[140px] grow"
+          >
+            <Input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={31}
+              required
+              value={closingDay}
+              onChange={(e) => setClosingDay(e.target.value)}
+              className="wm-num"
+              aria-label={t('quickAdd.creditCardClosingDay')}
+            />
+          </Field>
+          <Field
+            label={t('quickAdd.creditCardDueDay')}
+            hint={t('quickAdd.creditCardDueDayHint')}
+            className="basis-[140px] grow"
+          >
+            <Input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={31}
+              required
+              value={dueDay}
+              onChange={(e) => setDueDay(e.target.value)}
+              className="wm-num"
+              aria-label={t('quickAdd.creditCardDueDay')}
+            />
+          </Field>
+        </div>
+      ) : null}
+
       <FooterRow>
         {createMut.isError ? (
           <span className="text-wm-xs text-negative">
@@ -389,7 +528,7 @@ function SourceForm({ onDone }: { onDone: () => void }): JSX.Element {
         <Button
           type="submit"
           variant="primary"
-          disabled={createMut.isPending}
+          disabled={createMut.isPending || creditCardBillingInvalid}
         >
           {createMut.isPending ? t('quickAdd.saving') : t('quickAdd.saveSource')}
         </Button>

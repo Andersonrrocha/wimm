@@ -5,14 +5,10 @@ import type { AxiosError } from 'axios'
 import { useAuth } from '../context/auth-context'
 import { AuthBrand } from '../components/auth-brand'
 import { RegisterForm } from '../components/register-form'
-
-const authScreen =
-  'flex min-h-screen items-center justify-center p-6 ' +
-  'bg-[radial-gradient(1200px_600px_at_85%_15%,rgba(255,106,61,0.08),transparent_55%),radial-gradient(900px_500px_at_15%_90%,rgba(138,180,248,0.05),transparent_60%)] ' +
-  'bg-surface-app'
-
-const authCard =
-  'flex w-full max-w-[440px] flex-col gap-3 rounded-lg border border-line bg-surface-1 p-8 shadow-wm-raised'
+import {
+  authCardClassName,
+  authScreenClassName,
+} from '../lib/auth-screen-classes'
 
 function registerErrorMessage(err: unknown, fallback: string): string {
   if (err && typeof err === 'object' && 'isAxiosError' in err) {
@@ -52,8 +48,8 @@ export function RegisterPage(): JSX.Element {
   }
 
   return (
-    <div className={authScreen}>
-      <div className={authCard}>
+    <div className={authScreenClassName}>
+      <div className={authCardClassName}>
         <AuthBrand />
         <h1 className="text-center text-wm-lg font-medium text-fg">
           {t('auth.createYourAccount')}

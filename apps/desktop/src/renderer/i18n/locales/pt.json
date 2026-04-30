@@ -25,6 +25,7 @@
     "pleaseWait": "Aguarde…"
   },
   "auth": {
+    "noAccountForEmail": "Não há conta cadastrada com este e-mail.",
     "invalidCredentials": "E-mail ou senha inválidos.",
     "registerFailed": "Não foi possível criar a conta. Tente novamente.",
     "signIn": "Entrar",
@@ -37,7 +38,7 @@
     "email": "E-mail",
     "password": "Senha",
     "username": "Nome de usuário",
-    "usernameInvalid": "De 3 a 32 caracteres: letras, números, sublinhado ou hífen apenas.",
+    "usernameInvalid": "De 3 a 32 caracteres: letras (com acentos), números, espaço, sublinhado ou hífen.",
     "passwordRules": {
       "length": "Pelo menos {{count}} caracteres",
       "upper": "Uma letra maiúscula",
@@ -89,6 +90,10 @@
     "expense": "Despesa",
     "income": "Receita",
     "transactionKindAria": "Tipo de transação",
+    "categoryParent": "Categoria pai",
+    "categoryParentNone": "Nenhuma (categoria principal)",
+    "categoryParentHint": "Escolha uma categoria principal para criar esta como subcategoria. Mantenha Nenhuma se ela deve ficar no mesmo nível das outras principais.",
+    "categoryParentAria": "Categoria pai da subcategoria",
     "selectCategoryTypeAria": "Tipo de categoria",
     "selectSourceTypeAria": "Tipo de origem",
     "sourceType": {
@@ -106,7 +111,11 @@
       "description": "Do que se trata?",
       "categoryName": "Supermercado, salário…",
       "sourceName": "Conta Itaú, cartão Nubank…"
-    }
+    },
+    "creditCardClosingDay": "Dia de fechamento",
+    "creditCardDueDay": "Dia de vencimento",
+    "creditCardClosingDayHint": "Dia do mês em que a fatura fecha (1–31). Usado para orçamento, importação de extrato e parcelas.",
+    "creditCardDueDayHint": "Dia do mês do pagamento da fatura (1–31)."
   },
   "datePicker": {
     "pickDate": "Escolher data",
@@ -121,6 +130,9 @@
     "addTransaction": "Adicionar transação",
     "from": "De",
     "to": "Até",
+    "monthFilter": "Mês",
+    "monthFilterCustom": "Período livre",
+    "monthFilterAria": "Ir direto para um mês do calendário",
     "category": "Categoria",
     "source": "Origem",
     "allCategories": "Todas as categorias",
@@ -141,20 +153,37 @@
     "pagePrev": "Anterior",
     "pageNext": "Próximo",
     "pageOf": "Página {{page}} de {{totalPages}} · {{total}} no total",
-    "untitled": "Sem título"
+    "untitled": "Sem título",
+    "uncategorized": "Outros",
+    "uncategorizedFilter": "Sem categoria",
+    "categorySelectRowAria": "Categoria desta transação",
+    "unknownCategory": "Categoria desconhecida",
+    "noSource": "Sem origem",
+    "projectedParens": "previsto",
+    "showProjectedInstallments": "Mostrar parcelas previstas",
+    "showProjectedInstallmentsHint": "Importação de cartão: parcelas futuras marcadas como previstas. Lançamentos gerados por recorrência manual continuam visíveis."
   },
   "imports": {
     "title": "Importar",
-    "subtitle": "Pré-visualize CSV ou OFX e depois confirme no registro.",
+    "subtitle": "Pré-visualize CSV, OFX ou PDF (Banrisul ou Cresol) e depois confirme no registro.",
     "eyebrow": "Em lote",
     "statementTitle": "Importar extrato",
-    "statementSubtitle": "Envie um arquivo CSV ou OFX/QFX. As linhas são normalizadas, as regras de categorização são aplicadas e duplicados são ignorados por padrão.",
+    "statementSubtitle": "Envie CSV, OFX/QFX ou PDF de extrato (Banrisul cartão ou Cresol conta; somente PDF com texto selecionável). As linhas são normalizadas, as regras de categorização são aplicadas e duplicados são ignorados por padrão.",
     "uploadTitle": "Enviar arquivo",
     "needSource": "Precisa de uma nova origem?",
     "createOne": "Criar uma",
     "source": "Origem",
+    "sourceGroupBank": "Contas bancárias",
+    "sourceGroupCreditCard": "Cartões de crédito",
+    "sourceGroupOther": "Outras origens",
+    "creditCardImportDisclaimer": "As compras são importadas com a data de compra de cada linha. O ciclo de faturamento deste cartão definirá como elas entram no orçamento e no fluxo de caixa. Parcelamentos podem gerar obrigações futuras projetadas em um passo posterior.",
     "selectSource": "Selecione uma origem",
-    "fileLabel": "Arquivo (.csv, .ofx, .qfx)",
+    "fileLabel": "Arquivo (.csv, .ofx, .qfx, .pdf Banrisul/Cresol)",
+    "parserWarningsTitle": "Diagnósticos do analisador",
+    "parserSeverity": {
+      "info": "info",
+      "warning": "atenção"
+    },
     "parsing": "Analisando…",
     "preview": "Pré-visualizar",
     "previewFailed": "Falha na pré-visualização",
@@ -169,6 +198,7 @@
     "colKind": "Tipo",
     "colAmount": "Valor",
     "colDescription": "Descrição",
+    "colCategory": "Categoria",
     "colSuggested": "Sugerida",
     "colStatus": "Status",
     "duplicateTooltip": "Duplicada — já existe no registro",
@@ -278,16 +308,53 @@
       "expense": "Despesas",
       "net": "Líquido",
       "cumulative": "Acumulado"
+    },
+    "commitments": {
+      "title": "Compromissos futuros (previsão)",
+      "subtitle": "Impacto de caixa pela data de vencimento no cartão e pelas recorrências ativas—não pela data da compra.",
+      "monthAria": "Mês da previsão",
+      "recurringExpense": "Recorrências (despesa)",
+      "recurringIncome": "Recorrências (receita)",
+      "cardInstallments": "Parcelas no cartão",
+      "totalExpense": "Total de saídas previstas",
+      "byCard": "Por cartão",
+      "none": "Nada previsto neste mês."
     }
   },
   "categories": {
     "keys": {
-      "streaming": "Streaming",
-      "online_shopping": "Compras online",
+      "food": "Alimentação",
       "market": "Mercado",
-      "health": "Saúde",
+      "restaurants": "Restaurantes",
+      "food_other": "Alimentação — Outros",
+      "housing": "Moradia",
       "transport": "Transporte",
-      "utilities": "Contas e utilidades"
+      "fuel": "Combustível",
+      "public_transport": "Transporte público",
+      "maintenance": "Manutenção",
+      "transport_other": "Transporte — Outros",
+      "health": "Saúde",
+      "pharmacy": "Farmácia",
+      "self_care": "Auto cuidado",
+      "health_other": "Saúde — Outros",
+      "leisure": "Lazer",
+      "subscriptions": "Assinaturas",
+      "streaming": "Streaming",
+      "software": "Software",
+      "subscriptions_other": "Assinaturas — Outros",
+      "online_shopping": "Compras online",
+      "shopping_clothing": "Vestuário",
+      "shopping_games": "Jogos",
+      "shopping_home": "Casa",
+      "shopping_other": "Compras online — Outros",
+      "debts": "Débitos",
+      "debt_loans": "Empréstimos",
+      "debt_cards": "Cartões",
+      "debt_car": "Carro",
+      "debt_motorcycle": "Moto",
+      "taxes": "Impostos",
+      "utilities": "Contas e utilidades",
+      "other": "Outros"
     }
   },
   "categoriesTab": {
@@ -299,7 +366,8 @@
     "emptyBody": "As categorias classificam receitas e despesas e alimentam as regras de categorização.",
     "createFirst": "Criar a primeira",
     "name": "Nome",
-    "type": "Tipo"
+    "type": "Tipo",
+    "deleteConfirm": "Excluir \"{{name}}\"?"
   },
   "sourcesTab": {
     "title": "Origens",
@@ -309,7 +377,39 @@
     "emptyBody": "As origens agrupam transações por fonte. Adicione uma antes de importar um extrato.",
     "createFirst": "Criar a primeira",
     "name": "Nome",
-    "type": "Tipo"
+    "type": "Tipo",
+    "deleteConfirm": "Excluir \"{{name}}\"?",
+    "billingCycleCol": "Ciclo",
+    "billingCycleValue": "Fech. {{closing}} · Venc. {{due}}",
+    "billingCycleIncomplete": "Defina fechamento e vencimento"
+  },
+  "rulesTab": {
+    "newRuleTitle": "Nova regra",
+    "newRuleSubtitle": "As regras são aplicadas na importação e podem ser reexecutadas. Menor número de prioridade vence. A correspondência ignora maiúsculas e minúsculas.",
+    "priority": "Prioridade",
+    "match": "Correspondência",
+    "matchContains": "Contém",
+    "matchEquals": "Igual a",
+    "matchTypeAria": "Tipo de correspondência",
+    "pattern": "Padrão",
+    "patternPlaceholder": "Texto na descrição",
+    "category": "Categoria",
+    "categoryAria": "Categoria",
+    "selectPlaceholder": "Selecione…",
+    "saving": "Salvando…",
+    "addRule": "Adicionar regra",
+    "createFailed": "Não foi possível criar a regra.",
+    "yourRulesTitle": "Suas regras",
+    "rulesSubtitleEmpty": "Ainda não há regras.",
+    "rulesSubtitle": "{{total}} no total · {{active}} ativas",
+    "failedLoad": "Não foi possível carregar as regras.",
+    "emptyHint": "Adicione regras para categorizar automaticamente as transações importadas.",
+    "colActive": "Ativa",
+    "colPriority": "Prioridade",
+    "colMatch": "Correspondência",
+    "colPattern": "Padrão",
+    "colCategory": "Categoria",
+    "deleteConfirm": "Excluir esta regra?"
   },
   "guest": {
     "language": "Idioma"

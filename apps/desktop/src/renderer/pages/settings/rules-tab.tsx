@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type {
   CategorizationMatchType,
@@ -7,7 +7,7 @@ import type {
   Category,
 } from '@wimm/shared'
 import { apiClient } from '../../lib/api-client'
-import { categoryDisplayName } from '../../lib/category-label'
+import { buildCategoryOptionGroups } from '../../lib/category-label'
 import { Select } from '../../components/ui/select'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -16,14 +16,16 @@ import { Field } from '../../components/ui/field'
 import { Input } from '../../components/ui/input'
 import { Panel } from '../../components/ui/panel'
 
-const MATCH_TYPES = [
-  { value: 'CONTAINS', label: 'Contains' },
-  { value: 'EQUALS', label: 'Equals' },
-]
-
 export function RulesTab(): JSX.Element {
   const { t } = useTranslation()
   const qc = useQueryClient()
+  const matchTypeOptions = useMemo(
+    () => [
+      { value: 'CONTAINS' as const, label: t('rulesTab.matchContains') },
+      { value: 'EQUALS' as const, label: t('rulesTab.matchEquals') },
+    ],
+    [t],
+  )
   const [priority, setPriority] = useState(10)
   const [matchType, setMatchType] =
     useState<CategorizationMatchType>('CONTAINS')
@@ -51,6 +53,14 @@ export function RulesTab(): JSX.Element {
       return data
     },
   })
+
+  const { leadingOptions: ruleCatLeading, optionGroups: ruleCatGroups } = useMemo(
+    () =>
+      buildCategoryOptionGroups(categories, t, {
+        leadingLabel: t('rulesTab.selectPlaceholder'),
+      }),
+    [categories, t],
+  )
 
   const createMut = useMutation({
     mutationFn: async () => {
@@ -96,18 +106,15 @@ export function RulesTab(): JSX.Element {
       <Panel>
         <Panel.Header>
           <div>
-            <Panel.Title>New rule</Panel.Title>
-            <Panel.Subtitle>
-              Rules apply on import and can be re-run anytime. Lowest priority
-              number wins. Matching is case-insensitive.
-            </Panel.Subtitle>
+            <Panel.Title>{t('rulesTab.newRuleTitle')}</Panel.Title>
+            <Panel.Subtitle>{t('rulesTab.newRuleSubtitle')}</Panel.Subtitle>
           </div>
         </Panel.Header>
         <form
           onSubmit={handleSubmit}
           className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] items-end gap-3"
         >
-          <Field label="Priority">
+          <Field label={t('rulesTab.priority')}>
             <Input
               type="number"
               min={0}
@@ -118,36 +125,31 @@ export function RulesTab(): JSX.Element {
               className="wm-num"
             />
           </Field>
-          <Field label="Match">
+          <Field label={t('rulesTab.match')}>
             <Select
               value={matchType}
               onChange={(v) => setMatchType(v as CategorizationMatchType)}
-              options={MATCH_TYPES}
-              ariaLabel="Match type"
+              options={matchTypeOptions}
+              ariaLabel={t('rulesTab.matchTypeAria')}
             />
           </Field>
-          <Field label="Pattern" className="col-span-2">
+          <Field label={t('rulesTab.pattern')} className="col-span-2">
             <Input
               value={pattern}
               onChange={(e) => setPattern(e.target.value)}
-              placeholder="Text in description"
+              placeholder={t('rulesTab.patternPlaceholder')}
               required
             />
           </Field>
-          <Field label="Category" className="col-span-2">
+          <Field label={t('rulesTab.category')} className="col-span-2">
             <Select
               value={categoryId}
               onChange={setCategoryId}
-              options={[
-                { value: '', label: 'Select…' },
-                ...categories.map((c) => ({
-                  value: c.id,
-                  label: `${categoryDisplayName(c, t)} (${c.type === 'INCOME' ? 'income' : 'expense'})`,
-                })),
-              ]}
-              placeholder="Select…"
+              leadingOptions={ruleCatLeading}
+              optionGroups={ruleCatGroups}
+              placeholder={t('rulesTab.selectPlaceholder')}
               required
-              ariaLabel="Category"
+              ariaLabel={t('rulesTab.categoryAria')}
             />
           </Field>
           <div className="flex items-end">
@@ -156,47 +158,50 @@ export function RulesTab(): JSX.Element {
               variant="primary"
               disabled={createMut.isPending || !categoryId}
             >
-              {createMut.isPending ? 'Saving…' : 'Add rule'}
+              {createMut.isPending
+                ? t('rulesTab.saving')
+                : t('rulesTab.addRule')}
             </Button>
           </div>
         </form>
         {createMut.isError && (
-          <p className="text-wm-sm text-negative">Could not create rule.</p>
+          <p className="text-wm-sm text-negative">{t('rulesTab.createFailed')}</p>
         )}
       </Panel>
 
       <Panel>
         <Panel.Header>
           <div>
-            <Panel.Title>Your rules</Panel.Title>
+            <Panel.Title>{t('rulesTab.yourRulesTitle')}</Panel.Title>
             <Panel.Subtitle>
               {rules.length === 0
-                ? 'No rules yet.'
-                : `${rules.length} rule${rules.length === 1 ? '' : 's'} — ${
-                    rules.filter((r) => r.active).length
-                  } active`}
+                ? t('rulesTab.rulesSubtitleEmpty')
+                : t('rulesTab.rulesSubtitle', {
+                    total: rules.length,
+                    active: rules.filter((r) => r.active).length,
+                  })}
             </Panel.Subtitle>
           </div>
         </Panel.Header>
 
         {error ? (
-          <p className="text-wm-sm text-negative">Failed to load rules.</p>
+          <p className="text-wm-sm text-negative">{t('rulesTab.failedLoad')}</p>
         ) : isLoading ? (
-          <p className="text-wm-sm text-fg-muted">Loading…</p>
+          <p className="text-wm-sm text-fg-muted">{t('common.loading')}</p>
         ) : rules.length === 0 ? (
           <EmptyState>
-            <span>Add rules to auto-categorize imported transactions.</span>
+            <span>{t('rulesTab.emptyHint')}</span>
           </EmptyState>
         ) : (
           <div className="wm-table-wrap">
             <table className="wm-table">
               <thead>
                 <tr>
-                  <th style={{ width: 60 }}>Active</th>
-                  <th style={{ width: 88 }}>Priority</th>
-                  <th style={{ width: 110 }}>Match</th>
-                  <th>Pattern</th>
-                  <th>Category</th>
+                  <th style={{ width: 60 }}>{t('rulesTab.colActive')}</th>
+                  <th style={{ width: 88 }}>{t('rulesTab.colPriority')}</th>
+                  <th style={{ width: 110 }}>{t('rulesTab.colMatch')}</th>
+                  <th>{t('rulesTab.colPattern')}</th>
+                  <th>{t('rulesTab.colCategory')}</th>
                   <th className="wm-table__actions" />
                 </tr>
               </thead>
@@ -218,7 +223,13 @@ export function RulesTab(): JSX.Element {
                     </td>
                     <td className="wm-td--num">{r.priority}</td>
                     <td>
-                      <Badge>{r.matchType}</Badge>
+                      <Badge>
+                        {r.matchType === 'CONTAINS'
+                          ? t('rulesTab.matchContains')
+                          : r.matchType === 'EQUALS'
+                            ? t('rulesTab.matchEquals')
+                            : r.matchType}
+                      </Badge>
                     </td>
                     <td className="wm-td--desc">{r.pattern}</td>
                     <td>{categoryDisplayName(r.category, t)}</td>
@@ -227,12 +238,12 @@ export function RulesTab(): JSX.Element {
                         variant="danger"
                         size="sm"
                         onClick={() => {
-                          if (window.confirm('Delete this rule?')) {
+                          if (window.confirm(t('rulesTab.deleteConfirm'))) {
                             deleteMut.mutate(r.id)
                           }
                         }}
                       >
-                        Delete
+                        {t('transactions.delete')}
                       </Button>
                     </td>
                   </tr>

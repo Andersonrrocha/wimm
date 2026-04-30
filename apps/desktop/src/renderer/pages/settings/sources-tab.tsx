@@ -1,18 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { Source, SourceType } from '@wimm/shared'
 import { apiClient } from '../../lib/api-client'
 import { Badge, type BadgeVariant } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Panel } from '../../components/ui/panel'
-
-const SOURCE_TYPE_LABEL: Record<SourceType, string> = {
-  BANK_ACCOUNT: 'Bank account',
-  CREDIT_CARD: 'Credit card',
-  CASH: 'Cash',
-  MANUAL: 'Manual',
-}
 
 const SOURCE_TYPE_VARIANT: Record<SourceType, BadgeVariant> = {
   BANK_ACCOUNT: 'neutral',
@@ -26,7 +20,11 @@ interface SourcesTabProps {
 }
 
 export function SourcesTab({ onNewSource }: SourcesTabProps): JSX.Element {
+  const { t } = useTranslation()
   const qc = useQueryClient()
+
+  const sourceTypeLabel = (type: SourceType): string =>
+    t(`quickAdd.sourceType.${type}`)
 
   const {
     data: sources = [],
@@ -51,30 +49,24 @@ export function SourcesTab({ onNewSource }: SourcesTabProps): JSX.Element {
     <Panel>
       <Panel.Header>
         <div>
-          <Panel.Title>Sources</Panel.Title>
-          <Panel.Subtitle>
-            Where transactions come from — accounts, cards, cash wallets, or
-            manual entries.
-          </Panel.Subtitle>
+          <Panel.Title>{t('sourcesTab.title')}</Panel.Title>
+          <Panel.Subtitle>{t('sourcesTab.subtitle')}</Panel.Subtitle>
         </div>
         <Button variant="primary" onClick={onNewSource}>
           <Plus className="size-4 shrink-0" strokeWidth={2.25} aria-hidden />
-          New source
+          {t('sourcesTab.newSource')}
         </Button>
       </Panel.Header>
 
       {error ? (
-        <p className="text-wm-sm text-negative">Failed to load sources.</p>
+        <p className="text-wm-sm text-negative">{t('sourcesTab.failedLoad')}</p>
       ) : isLoading ? (
-        <p className="text-wm-sm text-fg-muted">Loading…</p>
+        <p className="text-wm-sm text-fg-muted">{t('common.loading')}</p>
       ) : sources.length === 0 ? (
         <EmptyState>
-          <span>
-            Sources group transactions by origin. Add one before importing a
-            statement.
-          </span>
+          <span>{t('sourcesTab.emptyBody')}</span>
           <Button variant="primary" onClick={onNewSource}>
-            Create your first
+            {t('sourcesTab.createFirst')}
           </Button>
         </EmptyState>
       ) : (
@@ -82,8 +74,9 @@ export function SourcesTab({ onNewSource }: SourcesTabProps): JSX.Element {
           <table className="wm-table">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Type</th>
+                <th>{t('sourcesTab.name')}</th>
+                <th>{t('sourcesTab.type')}</th>
+                <th>{t('sourcesTab.billingCycleCol')}</th>
                 <th className="wm-table__actions" />
               </tr>
             </thead>
@@ -93,21 +86,39 @@ export function SourcesTab({ onNewSource }: SourcesTabProps): JSX.Element {
                   <td>{s.name}</td>
                   <td>
                     <Badge variant={SOURCE_TYPE_VARIANT[s.type]}>
-                      {SOURCE_TYPE_LABEL[s.type]}
+                      {sourceTypeLabel(s.type)}
                     </Badge>
+                  </td>
+                  <td className="text-wm-sm text-fg-muted">
+                    {s.type === 'CREDIT_CARD' &&
+                    s.closingDay != null &&
+                    s.dueDay != null ? (
+                      t('sourcesTab.billingCycleValue', {
+                        closing: s.closingDay,
+                        due: s.dueDay,
+                      })
+                    ) : s.type === 'CREDIT_CARD' ? (
+                      t('sourcesTab.billingCycleIncomplete')
+                    ) : (
+                      '—'
+                    )}
                   </td>
                   <td className="wm-table__actions">
                     <Button
                       variant="danger"
                       size="sm"
                       onClick={() => {
-                        if (window.confirm(`Delete "${s.name}"?`)) {
+                        if (
+                          window.confirm(
+                            t('sourcesTab.deleteConfirm', { name: s.name }),
+                          )
+                        ) {
                           deleteMut.mutate(s.id)
                         }
                       }}
                       disabled={deleteMut.isPending}
                     >
-                      Delete
+                      {t('transactions.delete')}
                     </Button>
                   </td>
                 </tr>

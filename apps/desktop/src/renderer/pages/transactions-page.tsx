@@ -1,7 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { endOfMonth, startOfMonth } from 'date-fns'
+import {
+  endOfDay,
+  endOfMonth,
+  format,
+  startOfDay,
+  startOfMonth,
+  subDays,
+} from 'date-fns'
 import { Plus } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useOutletContext } from 'react-router-dom'
 import type {
@@ -12,7 +19,7 @@ import type {
   TransactionKind,
 } from '@wimm/shared'
 import { apiClient } from '../lib/api-client'
-import { categoryDisplayName } from '../lib/category-label'
+import { buildCategoryOptionGroups } from '../lib/category-label'
 import { PageHeader } from '../components/ui/page-header'
 import { DatePicker } from '../components/ui/date-picker'
 import { Select } from '../components/ui/select'
@@ -24,6 +31,7 @@ import { Panel } from '../components/ui/panel'
 import type { QuickAddTab } from '../components/quick-add-modal'
 import { dateFnsLocaleForLang } from '../lib/date-fns-locale'
 import { formatDateTime, formatShortDate, toIsoDate } from '../lib/dates'
+import { formatTransactionDescriptionForDisplay } from '../lib/format-transaction-description'
 import { cn } from '../lib/cn'
 
 type OutletCtx = {
@@ -31,6 +39,9 @@ type OutletCtx = {
 }
 
 type KindFilter = 'ALL' | TransactionKind
+
+/** Select value for API `uncategorizedOnly=true` (not a category UUID). */
+const CATEGORY_FILTER_UNCATEGORIZED = 'uncategorized'
 
 function formatMoney(amount: string): string {
   const n = Number.parseFloat(amount)
@@ -50,11 +61,14 @@ export function TransactionsPage(): JSX.Element {
   const qc = useQueryClient()
   const { openQuickAdd } = useOutletContext<OutletCtx>()
 
-  const [from, setFrom] = useState(() => toIsoDate(startOfMonth(new Date())))
-  const [to, setTo] = useState(() => toIsoDate(endOfMonth(new Date())))
+  const [from, setFrom] = useState(() => toIsoDate(startOfDay(subDays(new Date(), 59))))
+  const [to, setTo] = useState(() => toIsoDate(endOfDay(new Date())))
+  /** `yyyy-MM` when using the month shortcut; empty when using custom from/to. */
+  const [monthShortcut, setMonthShortcut] = useState('')
   const [kind, setKind] = useState<KindFilter>('ALL')
   const [categoryId, setCategoryId] = useState('')
   const [sourceId, setSourceId] = useState('')
+  const [showProjectedInstallments, setShowProjectedInstallments] = useState(false)
   const [page, setPage] = useState(1)
   const pageSize = 20
 
@@ -75,13 +89,22 @@ export function TransactionsPage(): JSX.Element {
   })
 
   const queryParams = useMemo(() => {
-    const params: Record<string, string | number> = { page, pageSize }
+    const params: Record<string, string | number> = {
+      page,
+      pageSize,
+      /** Axios omits boolean `false` from query strings; use explicit strings. */
+      includeProjected: showProjectedInstallments ? 'true' : 'false',
+    }
     if (from) params.from = from
     if (to) params.to = to
-    if (categoryId) params.categoryId = categoryId
+    if (categoryId === CATEGORY_FILTER_UNCATEGORIZED) {
+      params.uncategorizedOnly = 'true'
+    } else if (categoryId) {
+      params.categoryId = categoryId
+    }
     if (sourceId) params.sourceId = sourceId
     return params
-  }, [page, from, to, categoryId, sourceId])
+  }, [page, from, to, categoryId, sourceId, showProjectedInstallments])
 
   const { data: list, isLoading, error } = useQuery({
     queryKey: ['transactions', queryParams],
@@ -104,17 +127,36 @@ export function TransactionsPage(): JSX.Element {
     },
   })
 
+  const [categoryUpdatingId, setCategoryUpdatingId] = useState<string | null>(null)
+  const updateCategoryMut = useMutation({
+    mutationFn: async (vars: { id: string; categoryId: string | null }) => {
+      await apiClient.patch(`/transactions/${vars.id}`, {
+        categoryId: vars.categoryId,
+      })
+    },
+    onMutate: (vars) => {
+      setCategoryUpdatingId(vars.id)
+    },
+    onSettled: async () => {
+      setCategoryUpdatingId(null)
+      await qc.invalidateQueries({ queryKey: ['transactions'] })
+      await qc.invalidateQueries({ queryKey: ['reports'] })
+    },
+  })
+
+  const onRowCategoryChange = useCallback(
+    (id: string, value: string) => {
+      const categoryId = value === '' ? null : value
+      updateCategoryMut.mutate({ id, categoryId })
+    },
+    [updateCategoryMut],
+  )
+
   const items = list?.items ?? []
   const filtered = useMemo(() => {
     if (kind === 'ALL') return items
     return items.filter((t) => t.kind === kind)
   }, [items, kind])
-
-  const categoryNameById = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const c of categories) m.set(c.id, categoryDisplayName(c, t))
-    return m
-  }, [categories, t])
 
   const sourceNameById = useMemo(() => {
     const m = new Map<string, string>()
@@ -129,15 +171,52 @@ export function TransactionsPage(): JSX.Element {
 
   const resetPage = (): void => setPage(1)
 
-  const categoryOptions = useMemo(
-    () => [
-      { value: '', label: t('transactions.allCategories') },
-      ...categories.map((c) => ({
-        value: c.id,
-        label: categoryDisplayName(c, t),
-      })),
-    ],
+  const monthShortcutOptions = useMemo(() => {
+    const now = new Date()
+    const opts: { value: string; label: string }[] = [
+      { value: '', label: t('transactions.monthFilterCustom') },
+    ]
+    for (let i = 0; i < 24; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+      opts.push({
+        value: key,
+        label: format(d, 'LLLL yyyy', { locale: dfLocale }),
+      })
+    }
+    return opts
+  }, [dfLocale, t])
+
+  const applyMonthShortcut = useCallback(
+    (key: string) => {
+      setMonthShortcut(key)
+      if (!key) return
+      const [yStr, mStr] = key.split('-')
+      const y = Number(yStr)
+      const mo = Number(mStr)
+      if (!Number.isFinite(y) || !Number.isFinite(mo) || mo < 1 || mo > 12) return
+      const first = startOfMonth(new Date(y, mo - 1, 1))
+      const last = endOfMonth(first)
+      setFrom(toIsoDate(startOfDay(first)))
+      setTo(toIsoDate(endOfDay(last)))
+      setPage(1)
+    },
+    [],
+  )
+
+  const { leadingOptions: filterCatLeading, optionGroups: filterCatGroups } = useMemo(
+    () =>
+      buildCategoryOptionGroups(categories, t, {
+        leadingLabel: t('transactions.allCategories'),
+      }),
     [categories, t],
+  )
+  const filterCatAllLeading = useMemo(
+    () => [
+      ...filterCatLeading,
+      { value: CATEGORY_FILTER_UNCATEGORIZED, label: t('transactions.uncategorizedFilter') },
+    ],
+    [filterCatLeading, t],
   )
 
   const sourceOptions = useMemo(
@@ -146,6 +225,23 @@ export function TransactionsPage(): JSX.Element {
       ...sources.map((s) => ({ value: s.id, label: s.name })),
     ],
     [sources, t],
+  )
+
+  const { leadingOptions: rowCatLeadingExpense, optionGroups: rowCatExpenseGroups } = useMemo(
+    () =>
+      buildCategoryOptionGroups(categories, t, {
+        filterType: 'EXPENSE',
+        leadingLabel: t('transactions.uncategorized'),
+      }),
+    [categories, t],
+  )
+  const { leadingOptions: rowCatLeadingIncome, optionGroups: rowCatIncomeGroups } = useMemo(
+    () =>
+      buildCategoryOptionGroups(categories, t, {
+        filterType: 'INCOME',
+        leadingLabel: t('transactions.uncategorized'),
+      }),
+    [categories, t],
   )
 
   const subtitle =
@@ -181,6 +277,7 @@ export function TransactionsPage(): JSX.Element {
               <DatePicker
                 value={from}
                 onChange={(v) => {
+                  setMonthShortcut('')
                   setFrom(v)
                   resetPage()
                 }}
@@ -191,10 +288,21 @@ export function TransactionsPage(): JSX.Element {
               <DatePicker
                 value={to}
                 onChange={(v) => {
+                  setMonthShortcut('')
                   setTo(v)
                   resetPage()
                 }}
                 minWidth={160}
+              />
+            </Field>
+            <Field label={t('transactions.monthFilter')}>
+              <Select
+                value={monthShortcut}
+                onChange={applyMonthShortcut}
+                options={monthShortcutOptions}
+                placeholder={t('transactions.monthFilterCustom')}
+                ariaLabel={t('transactions.monthFilterAria')}
+                minWidth={200}
               />
             </Field>
             <Field label={t('transactions.category')}>
@@ -204,7 +312,8 @@ export function TransactionsPage(): JSX.Element {
                   setCategoryId(v)
                   resetPage()
                 }}
-                options={categoryOptions}
+                leadingOptions={filterCatAllLeading}
+                optionGroups={filterCatGroups}
                 placeholder={t('transactions.allCategories')}
                 minWidth={170}
                 ariaLabel={t('transactions.category')}
@@ -223,6 +332,21 @@ export function TransactionsPage(): JSX.Element {
                 ariaLabel={t('transactions.source')}
               />
             </Field>
+            <label className="flex max-w-[280px] cursor-pointer items-center gap-2 self-end pb-1 text-wm-sm text-fg">
+              <input
+                type="checkbox"
+                className="wm-check"
+                checked={showProjectedInstallments}
+                onChange={(e) => {
+                  setShowProjectedInstallments(e.target.checked)
+                  resetPage()
+                }}
+                title={t('transactions.showProjectedInstallmentsHint')}
+              />
+              <span title={t('transactions.showProjectedInstallmentsHint')}>
+                {t('transactions.showProjectedInstallments')}
+              </span>
+            </label>
           </div>
 
           <div
@@ -275,6 +399,11 @@ export function TransactionsPage(): JSX.Element {
               <tbody>
                 {filtered.map((row) => {
                   const isIncome = row.kind === 'INCOME'
+                  const displayDescription = formatTransactionDescriptionForDisplay(
+                    row.description,
+                    row.isProjected,
+                    t,
+                  )
                   return (
                     <tr key={row.id}>
                       <td className="wm-muted">
@@ -289,20 +418,31 @@ export function TransactionsPage(): JSX.Element {
                               isIncome ? 'bg-positive' : 'bg-negative',
                             )}
                           />
-                          <span className="wm-td--desc" title={row.description}>
-                            {row.description || t('transactions.untitled')}
+                          <span className="wm-td--desc" title={displayDescription}>
+                            {displayDescription}
                           </span>
                         </span>
                       </td>
-                      <td className="wm-muted">
-                        {row.categoryId
-                          ? categoryNameById.get(row.categoryId) ?? '—'
-                          : '—'}
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <Select
+                          value={row.categoryId ?? ''}
+                          onChange={(v) => onRowCategoryChange(row.id, v)}
+                          leadingOptions={row.kind === 'INCOME' ? rowCatLeadingIncome : rowCatLeadingExpense}
+                          optionGroups={row.kind === 'INCOME' ? rowCatIncomeGroups : rowCatExpenseGroups}
+                          placeholder={t('transactions.uncategorized')}
+                          disabled={
+                            updateCategoryMut.isPending &&
+                            categoryUpdatingId === row.id
+                          }
+                          ariaLabel={t('transactions.categorySelectRowAria')}
+                          minWidth={200}
+                        />
                       </td>
                       <td className="wm-muted">
                         {row.sourceId
-                          ? sourceNameById.get(row.sourceId) ?? '—'
-                          : '—'}
+                          ? (sourceNameById.get(row.sourceId) ??
+                            t('transactions.noSource'))
+                          : t('transactions.noSource')}
                       </td>
                       <td
                         className={cn(

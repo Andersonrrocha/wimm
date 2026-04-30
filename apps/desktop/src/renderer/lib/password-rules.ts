@@ -63,10 +63,10 @@ export function passwordMeetsAllRules(
   return getPasswordRuleStates(password, tr).every((r) => r.met)
 }
 
-/** Username: 3–32 chars, letters, numbers, underscore, hyphen */
-export const USERNAME_RE = /^[a-zA-Z0-9_-]{3,32}$/
+/** Username: 3–32 chars; letters (incl. accents), digits, spaces, _, - */
+export const USERNAME_RE = /^[\p{L}0-9 _-]{3,32}$/u
 
 export function isValidUsername(raw: string): boolean {
-  const s = raw.trim()
+  const s = raw.trim().replace(/\s+/g, ' ')
   return USERNAME_RE.test(s)
 }

@@ -17,7 +17,7 @@
  *      element. Element resets live inside `@layer base` for the same reason.
  */
 
-@import 'tailwindcss';
+@import "tailwindcss";
 
 :root {
   color-scheme: dark;
@@ -66,10 +66,11 @@
   --wm-radius-pill: 999px;
 
   /* Typography ---------------------------------------------------------- */
-  --wm-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
-    Roboto, Helvetica, Arial, sans-serif;
-  --wm-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo,
-    monospace;
+  --wm-font-sans:
+    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  --wm-font-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   --wm-fs-xs: 0.72rem;
   --wm-fs-sm: 0.82rem;
@@ -84,8 +85,8 @@
 
   /* Effects ------------------------------------------------------------- */
   --wm-shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --wm-shadow-raised: 0 12px 32px rgba(0, 0, 0, 0.45),
-    0 2px 6px rgba(0, 0, 0, 0.35);
+  --wm-shadow-raised:
+    0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.35);
   --wm-motion-fast: 140ms cubic-bezier(0.2, 0.7, 0.3, 1);
   --wm-motion-base: 220ms cubic-bezier(0.2, 0.7, 0.3, 1);
 
@@ -295,6 +296,12 @@
 /* ------------------------------------------------------------------ */
 
 @layer components {
+  /* Matches subtitle / text-fg-muted; class hook beats inherited input color */
+  .wm-text-field::placeholder {
+    color: var(--wm-text-muted);
+    opacity: 1;
+  }
+
   /* Rich Select (Radix) ------------------------------------------------ */
   .wm-select-trigger {
     display: inline-flex;
@@ -309,7 +316,8 @@
     font-size: var(--wm-fs-md);
     font-family: inherit;
     line-height: 1.2;
-    transition: border-color var(--wm-motion-fast),
+    transition:
+      border-color var(--wm-motion-fast),
       background var(--wm-motion-fast);
     min-width: 140px;
     width: 100%;
@@ -319,7 +327,7 @@
   .wm-select-trigger:hover:not([data-disabled]) {
     border-color: var(--wm-border-strong);
   }
-  .wm-select-trigger[data-state='open'],
+  .wm-select-trigger[data-state="open"],
   .wm-select-trigger:focus-visible {
     outline: none;
     border-color: var(--wm-accent);
@@ -335,9 +343,11 @@
   .wm-select-trigger__icon {
     display: inline-flex;
     color: var(--wm-text-muted);
-    transition: transform var(--wm-motion-fast), color var(--wm-motion-fast);
+    transition:
+      transform var(--wm-motion-fast),
+      color var(--wm-motion-fast);
   }
-  .wm-select-trigger[data-state='open'] .wm-select-trigger__icon {
+  .wm-select-trigger[data-state="open"] .wm-select-trigger__icon {
     color: var(--wm-accent);
     transform: rotate(180deg);
   }
@@ -365,6 +375,15 @@
     padding: 4px;
   }
 
+  .wm-select-group__label {
+    padding: 0.35rem 0.65rem 0.2rem;
+    font-size: var(--wm-fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--wm-text-muted);
+    user-select: none;
+  }
+
   .wm-select-item {
     display: flex;
     align-items: flex-start;
@@ -380,7 +399,7 @@
   .wm-select-item[data-highlighted] {
     background: var(--wm-surface-2);
   }
-  .wm-select-item[data-state='checked'] {
+  .wm-select-item[data-state="checked"] {
     color: var(--wm-text);
     background: var(--wm-accent-soft);
   }
@@ -468,7 +487,9 @@
   .wm-daypicker .rdp-button_next {
     color: var(--wm-text-muted);
     border-radius: var(--wm-radius-sm);
-    transition: background var(--wm-motion-fast), color var(--wm-motion-fast);
+    transition:
+      background var(--wm-motion-fast),
+      color var(--wm-motion-fast);
   }
   .wm-daypicker .rdp-nav_button:hover,
   .wm-daypicker .rdp-button_previous:hover,
@@ -484,7 +505,9 @@
     font-weight: 500;
   }
   .wm-daypicker .rdp-day_button {
-    transition: background var(--wm-motion-fast), color var(--wm-motion-fast);
+    transition:
+      background var(--wm-motion-fast),
+      color var(--wm-motion-fast);
     font-variant-numeric: tabular-nums;
   }
   .wm-daypicker .rdp-day_button:hover:not([disabled]) {
@@ -558,7 +581,9 @@
     line-height: 1;
     background: transparent;
     border: 1px solid transparent;
-    transition: background var(--wm-motion-fast), color var(--wm-motion-fast),
+    transition:
+      background var(--wm-motion-fast),
+      color var(--wm-motion-fast),
       border-color var(--wm-motion-fast);
   }
   .wm-modal__close:hover {
@@ -590,12 +615,14 @@
     color: var(--wm-text-muted);
     background: transparent;
     border: none;
-    transition: color var(--wm-motion-fast), background var(--wm-motion-fast);
+    transition:
+      color var(--wm-motion-fast),
+      background var(--wm-motion-fast);
   }
   .wm-tab:hover {
     color: var(--wm-text);
   }
-  .wm-tab[aria-selected='true'] {
+  .wm-tab[aria-selected="true"] {
     color: var(--wm-text);
     background: var(--wm-surface-3);
     box-shadow: var(--wm-shadow-soft);
