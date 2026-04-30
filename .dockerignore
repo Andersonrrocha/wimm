@@ -1,0 +1,15 @@
+**/node_modules
+**/dist
+**/.turbo
+**/.git
+**/coverage
+**/.cache
+.env
+.env.*
+!.env.example
+**/*.log
+apps/desktop
+docs
+README.md
+ARCHITECTURE.md
+LICENSE
