@@ -73,6 +73,10 @@ export interface Source {
   userId: string
   name: string
   type: SourceType
+  /** Calendar day (1–31). Set only when type is CREDIT_CARD. */
+  closingDay?: number | null
+  /** Calendar day (1–31). Set only when type is CREDIT_CARD. */
+  dueDay?: number | null
   createdAt: string
   updatedAt: string
 }
@@ -83,6 +87,8 @@ export interface Category {
   name: string
   type: CategoryType
   categoryKey?: string | null
+  parentId?: string | null
+  parent?: { id: string; name: string; categoryKey?: string | null } | null
   createdAt: string
   updatedAt: string
 }
@@ -99,6 +105,19 @@ export interface Transaction {
   description: string
   occurredAt: string
   fingerprint: string | null
+  /** Set when source is a credit card; otherwise null. */
+  billingCycleMonth?: number | null
+  billingCycleYear?: number | null
+  expectedDueDate?: string | null
+  /** Credit card statement imports when parsed (e.g. Banrisul). */
+  installmentCurrent?: number | null
+  installmentTotal?: number | null
+  /** Set when this row belongs to a credit card installment plan. */
+  installmentPlanId?: string | null
+  /** Generated future obligation; false once matched to a real statement import (reconciliation). */
+  isProjected?: boolean
+  /** True when the row comes from a statement import (including reconciled projections). */
+  isConfirmedFromImport?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -132,8 +151,33 @@ export interface MaterializeResponse {
   created: number
 }
 
-// Imports (CSV / OFX)
-export type ImportBatchFormat = 'CSV' | 'OFX'
+// Imports (CSV / OFX / bank-specific PDF)
+export type ImportBatchFormat =
+  | 'CSV'
+  | 'OFX'
+  | 'PDF_BANRISUL_CC'
+  | 'PDF_CRESOL_STATEMENT'
+
+export type ImportParserWarningSeverity = 'info' | 'warning'
+
+/**
+ * Parser diagnostics for import preview (any bank-specific PDF/text parser).
+ * Non-fatal: preview still returns parsed rows unless the file is unsupported.
+ */
+export interface ImportParserWarning {
+  code: string
+  message: string
+  /** Single-line or short snippet (e.g. Banrisul transaction line). */
+  rawLine?: string
+  /** Multi-line source block (e.g. Cresol movement block). Prefer for display when set. */
+  rawBlock?: string
+  cardLast4?: string
+  expectedTotal?: number
+  actualTotal?: number
+  delta?: number
+  /** Defaults to `warning` when omitted (older clients). */
+  severity?: ImportParserWarningSeverity
+}
 
 export interface ImportPreviewRow {
   occurredAt: string
@@ -143,6 +187,18 @@ export interface ImportPreviewRow {
   fingerprint: string
   isDuplicate: boolean
   suggestedCategoryId: string | null
+  /** Banrisul-style installment when parsed (current/total). */
+  installmentCurrent?: number
+  installmentTotal?: number
+}
+
+/**
+ * Billing snapshot from an imported credit card statement (preview → commit).
+ * `paymentDueDate` is the invoice due date from the file; `statementClosingDate` is optional (e.g. document date).
+ */
+export interface ImportStatementBilling {
+  paymentDueDate: string
+  statementClosingDate?: string
 }
 
 export interface ImportPreviewResponse {
@@ -152,6 +208,16 @@ export interface ImportPreviewResponse {
   totalParsed: number
   duplicateCount: number
   newCount: number
+  /**
+   * When the source is a credit card and the parser extracted a due date from the statement.
+   */
+  statementBilling?: ImportStatementBilling
+  /**
+   * Bank-specific PDF parsers attach diagnostics here.
+   * For `PDF_BANRISUL_CC` and `PDF_CRESOL_STATEMENT`, always present when applicable (may be empty).
+   * Omitted for CSV/OFX.
+   */
+  parserWarnings?: ImportParserWarning[]
 }
 
 export interface CommitImportRow {
@@ -160,6 +226,8 @@ export interface CommitImportRow {
   amount: number
   description: string
   categoryId?: string
+  installmentCurrent?: number
+  installmentTotal?: number
 }
 
 export interface CommitImportRequest {
@@ -167,6 +235,8 @@ export interface CommitImportRequest {
   fileName: string
   format: ImportBatchFormat
   rows: CommitImportRow[]
+  /** Echo from import preview when the statement included a due date; used only for CREDIT_CARD sources. */
+  statementBilling?: ImportStatementBilling
 }
 
 export interface CommitImportResponse {
@@ -206,6 +276,22 @@ export interface ReportMonthlyResponse {
   months: MonthlyReportMonth[]
 }
 
+export interface ReportFutureCommitmentsCardRow {
+  sourceId: string
+  sourceName: string
+  total: string
+}
+
+export interface ReportFutureCommitmentsResponse {
+  year: number
+  month: number
+  recurringExpenseTotal: string
+  recurringIncomeTotal: string
+  cardInstallmentsTotal: string
+  totalCommittedExpense: string
+  cardBySource: ReportFutureCommitmentsCardRow[]
+}
+
 export type CategorizationMatchType = 'CONTAINS' | 'EQUALS'
 
 export interface CategorizationRule {
@@ -220,3 +306,16 @@ export interface CategorizationRule {
   updatedAt: string
   category: Category
 }
+
+export {
+  groupSourcesForImportSelect,
+  type SourceForImportGrouping,
+  type SourceTypeForImport,
+  type SourcesGroupedForImportSelect,
+} from './group-sources-for-import'
+
+export {
+  BillingCycleInputError,
+  calculateCreditCardBillingCycleContext,
+  type CreditCardBillingCycleContext,
+} from './credit-card-billing-cycle'
