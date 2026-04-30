@@ -1,4 +1,4 @@
-import { IsEnum, IsOptional, IsString, MaxLength, MinLength } from 'class-validator'
+import { IsEnum, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator'
 import { CategoryType } from '@prisma/client'
 
 export class UpdateCategoryDto {
@@ -11,4 +11,8 @@ export class UpdateCategoryDto {
   @IsOptional()
   @IsEnum(CategoryType)
   type?: CategoryType
+
+  @IsOptional()
+  @IsUUID()
+  parentId?: string
 }

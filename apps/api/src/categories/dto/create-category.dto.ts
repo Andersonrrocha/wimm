@@ -1,4 +1,4 @@
-import { IsEnum, IsString, MaxLength, MinLength } from 'class-validator'
+import { IsEnum, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator'
 import { CategoryType } from '@prisma/client'
 
 export class CreateCategoryDto {
@@ -9,4 +9,8 @@ export class CreateCategoryDto {
 
   @IsEnum(CategoryType)
   type!: CategoryType
+
+  @IsOptional()
+  @IsUUID()
+  parentId?: string
 }
