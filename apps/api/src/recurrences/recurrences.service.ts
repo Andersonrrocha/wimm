@@ -9,6 +9,12 @@ import {
   type RecurrenceFrequency,
 } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
+import { assertCategoryIsLeaf } from '../categories/assert-category-leaf'
+import {
+  resolveTransactionBillingFields,
+  type SourceBillingInput,
+  TransactionBillingConfigError,
+} from '../transactions/transaction-billing.util'
 import {
   endOfUtcDayFromDateString,
   nextOccurrence,
@@ -50,6 +56,9 @@ export class RecurrencesService {
 
     await this.assertSourceOwned(userId, dto.sourceId)
     await this.assertCategoryOwned(userId, dto.categoryId)
+    if (dto.categoryId) {
+      await assertCategoryIsLeaf(this.prisma, userId, dto.categoryId)
+    }
 
     const startDate = new Date(dto.startDate)
     const endDate =
@@ -101,6 +110,9 @@ export class RecurrencesService {
     }
     if (dto.categoryId !== undefined) {
       await this.assertCategoryOwned(userId, dto.categoryId ?? undefined)
+      if (dto.categoryId) {
+        await assertCategoryIsLeaf(this.prisma, userId, dto.categoryId)
+      }
     }
 
     const startDate = dto.startDate
@@ -192,6 +204,24 @@ export class RecurrencesService {
         ? endOfUtcDayFromDateString(toUtcDateKey(rec.endDate))
         : null
 
+    let sourceBilling: SourceBillingInput = null
+    if (rec.sourceId) {
+      const s = await this.prisma.source.findFirst({
+        where: { id: rec.sourceId, userId },
+        select: { type: true, closingDay: true, dueDay: true },
+      })
+      if (s) sourceBilling = s
+    }
+
+    try {
+      resolveTransactionBillingFields(sourceBilling, new Date(rec.startDate))
+    } catch (e) {
+      if (e instanceof TransactionBillingConfigError) {
+        throw new BadRequestException(e.message)
+      }
+      throw e
+    }
+
     let cursor = new Date(rec.startDate)
     let created = 0
     let steps = 0
@@ -215,6 +245,7 @@ export class RecurrencesService {
       })
 
       if (!existing) {
+        const billing = resolveTransactionBillingFields(sourceBilling, cursor)
         await this.prisma.transaction.create({
           data: {
             userId,
@@ -226,6 +257,7 @@ export class RecurrencesService {
             sourceId: rec.sourceId,
             categoryId: rec.categoryId,
             fingerprint: fp,
+            ...billing,
           },
         })
         created++
