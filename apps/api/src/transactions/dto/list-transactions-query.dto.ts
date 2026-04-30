@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer'
 import {
   IsDateString,
+  IsIn,
   IsInt,
   IsOptional,
   IsUUID,
@@ -37,4 +38,18 @@ export class ListTransactionsQueryDto {
   @Min(1)
   @Max(100)
   pageSize?: number = 20
+
+  /**
+   * When `'false'`, excludes projected installment legs (`isProjected: true`)
+   * created during credit card import. Recurrence-generated rows are unaffected.
+   * Kept as string to avoid `enableImplicitConversion` coercing `'false'` → `true`.
+   */
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  includeProjected?: string
+
+  /** When `'true'`, only transactions with `categoryId` null. Ignores `categoryId`. */
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  uncategorizedOnly?: string
 }

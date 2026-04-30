@@ -1,4 +1,13 @@
-import { IsEnum, IsOptional, IsString, MaxLength, MinLength } from 'class-validator'
+import {
+  IsEnum,
+  IsInt,
+  IsOptional,
+  Max,
+  Min,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator'
 import { SourceType } from '@prisma/client'
 
 export class UpdateSourceDto {
@@ -11,4 +20,16 @@ export class UpdateSourceDto {
   @IsOptional()
   @IsEnum(SourceType)
   type?: SourceType
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(31)
+  closingDay?: number
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(31)
+  dueDay?: number
 }
