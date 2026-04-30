@@ -1,0 +1,4 @@
+# Never commit compiler output next to sources (breaks Vite: resolves .js before .ts)
+src/**/*.js
+src/**/*.js.map
+src/**/*.d.ts
