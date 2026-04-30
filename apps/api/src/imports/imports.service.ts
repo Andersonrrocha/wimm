@@ -6,50 +6,72 @@ import {
   CategoryType,
   ImportBatchFormat,
   Prisma,
+  SourceType,
   TransactionKind,
 } from '@prisma/client'
 import { DefaultCategoriesService } from '../categories/default-categories.service'
 import { CategorizationRulesService } from '../categorization-rules/categorization-rules.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { computeImportFingerprint } from './fingerprint'
+import { pickUniqueReconcilableCandidate } from './installment-reconcile.util'
+import {
+  buildProjectedInstallmentRows,
+  type ImportStatementBillingBaseline,
+} from './installment-projection.util'
+import { billingFieldsFromStatementBilling } from './import-statement-billing.util'
+import {
+  detectImportFormat,
+  isBanrisulPdfFormat,
+  isCresolPdfFormat,
+} from './import-format'
+import { canParseBanrisulCreditCardPdf } from './parsers/banrisul-cc/banrisul-layout-guard'
+import { canParseCresolStatementPdf } from './parsers/cresol/cresol-layout-guard'
 import type { ParsedLedgerRow } from './parsers/csv-parser'
 import { parseCsvBuffer } from './parsers/csv-parser'
 import { parseOfxBuffer } from './parsers/ofx-parser'
+import { banrisulStatementToLedgerRows } from './parsers/banrisul-cc/to-ledger-rows'
+import { parseBanrisulStatementFromText } from './parsers/banrisul-cc/parse-statement-text'
+import { mapBanrisulWarningsForPreview } from './map-banrisul-parser-warnings'
+import { mapCresolWarningsForPreview } from './map-cresol-parser-warnings'
+import { parseCresolStatementFromExtractedText } from './parsers/cresol/parse-cresol-statement-extracted-text'
+import { cresolStatementToLedgerRows } from './parsers/cresol/to-ledger-rows'
+import type { ImportParserWarning } from '@wimm/shared'
 import type { CommitImportDto } from './dto/commit-import.dto'
+import { sanitizePersistedInstallment } from './import-installment.util'
+import {
+  resolveTransactionBillingFields,
+  TransactionBillingConfigError,
+} from '../transactions/transaction-billing.util'
 
 const MAX_IMPORT_ROWS = 10_000
 
-function detectFormat(fileName: string): ImportBatchFormat {
-  const lower = fileName.toLowerCase()
-  if (lower.endsWith('.csv')) {
-    return ImportBatchFormat.CSV
-  }
-  if (lower.endsWith('.ofx') || lower.endsWith('.qfx')) {
-    return ImportBatchFormat.OFX
-  }
-  throw new BadRequestException(
-    'Only .csv, .ofx, or .qfx files are supported',
-  )
-}
-
-function toNormalized(row: ParsedLedgerRow): {
+type NormalizedLedgerRow = {
   occurredAt: Date
   kind: TransactionKind
   amountAbs: number
   description: string
-} {
+  installmentCurrent?: number
+  installmentTotal?: number
+}
+
+function toNormalized(row: ParsedLedgerRow): NormalizedLedgerRow {
   const signed = row.signedAmount
   const kind = signed >= 0 ? TransactionKind.INCOME : TransactionKind.EXPENSE
   const amountAbs = Math.abs(signed)
   if (amountAbs < 0.01) {
     throw new BadRequestException('Each row amount must be at least 0.01')
   }
-  return {
+  const base: NormalizedLedgerRow = {
     occurredAt: row.occurredAt,
     kind,
     amountAbs,
     description: row.description.slice(0, 512),
   }
+  if (row.installmentCurrent != null && row.installmentTotal != null) {
+    base.installmentCurrent = row.installmentCurrent
+    base.installmentTotal = row.installmentTotal
+  }
+  return base
 }
 
 @Injectable()
@@ -69,13 +91,74 @@ export class ImportsService {
       throw new BadRequestException('File is required')
     }
 
-    await this.assertSourceOwned(userId, sourceId)
+    const previewSource = await this.prisma.source.findFirst({
+      where: { id: sourceId, userId },
+      select: { type: true },
+    })
+    if (!previewSource) {
+      throw new BadRequestException('Invalid source')
+    }
 
-    const format = detectFormat(file.originalname)
-    const parsed =
-      format === ImportBatchFormat.CSV
-        ? parseCsvBuffer(file.buffer)
-        : parseOfxBuffer(file.buffer)
+    const detected = await detectImportFormat(file.originalname, file.buffer)
+    let format: ImportBatchFormat
+    let parsed: ParsedLedgerRow[]
+    /** Set for bank-specific PDF formats (always, including empty array). */
+    let parserWarnings: ImportParserWarning[] | undefined
+    let statementBillingPreview:
+      | { paymentDueDate: string; statementClosingDate?: string }
+      | undefined
+
+    if (detected.format === ImportBatchFormat.CSV) {
+      format = ImportBatchFormat.CSV
+      parsed = parseCsvBuffer(file.buffer)
+    } else if (detected.format === ImportBatchFormat.OFX) {
+      format = ImportBatchFormat.OFX
+      parsed = parseOfxBuffer(file.buffer)
+    } else if (isBanrisulPdfFormat(detected)) {
+      format = ImportBatchFormat.PDF_BANRISUL_CC
+      const layout = canParseBanrisulCreditCardPdf(detected.extractedText)
+      if (!layout.ok) {
+        throw new BadRequestException(layout.message)
+      }
+      let banrisul
+      try {
+        banrisul = parseBanrisulStatementFromText(detected.extractedText)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        throw new BadRequestException(
+          `Could not parse this Banrisul credit card statement PDF: ${msg}`,
+        )
+      }
+      parserWarnings = mapBanrisulWarningsForPreview(banrisul.warnings)
+      parsed = banrisulStatementToLedgerRows(banrisul)
+      if (
+        previewSource.type === SourceType.CREDIT_CARD &&
+        banrisul.statementBilling
+      ) {
+        const b = banrisul.statementBilling
+        statementBillingPreview = {
+          paymentDueDate: b.paymentDueDate.toISOString().slice(0, 10),
+          ...(b.statementClosingDate !== undefined
+            ? {
+                statementClosingDate: b.statementClosingDate
+                  .toISOString()
+                  .slice(0, 10),
+              }
+            : {}),
+        }
+      }
+    } else if (isCresolPdfFormat(detected)) {
+      format = ImportBatchFormat.PDF_CRESOL_STATEMENT
+      const layout = canParseCresolStatementPdf(detected.extractedText)
+      if (!layout.ok) {
+        throw new BadRequestException(layout.message)
+      }
+      const cresol = parseCresolStatementFromExtractedText(detected.extractedText)
+      parserWarnings = mapCresolWarningsForPreview(cresol.warnings)
+      parsed = cresolStatementToLedgerRows(cresol)
+    } else {
+      throw new BadRequestException('Unsupported import format')
+    }
 
     if (parsed.length > MAX_IMPORT_ROWS) {
       throw new BadRequestException(
@@ -132,6 +215,12 @@ export class ImportsService {
         fingerprint,
         isDuplicate,
         suggestedCategoryId,
+        ...(n.installmentCurrent != null && n.installmentTotal != null
+          ? {
+              installmentCurrent: n.installmentCurrent,
+              installmentTotal: n.installmentTotal,
+            }
+          : {}),
       }
     })
 
@@ -145,6 +234,11 @@ export class ImportsService {
       totalParsed: rows.length,
       duplicateCount,
       newCount,
+      ...(statementBillingPreview !== undefined
+        ? { statementBilling: statementBillingPreview }
+        : {}),
+      // Warnings are preview-only; ImportBatch does not persist them yet.
+      ...(parserWarnings !== undefined ? { parserWarnings } : {}),
     }
   }
 
@@ -159,6 +253,63 @@ export class ImportsService {
       await this.categorizationRules.loadSystemResolutionContext(userId)
 
     const result = await this.prisma.$transaction(async (tx) => {
+      const sourceRow = await tx.source.findFirst({
+        where: { id: dto.sourceId, userId },
+        select: { type: true, closingDay: true, dueDay: true },
+      })
+      if (!sourceRow) {
+        throw new BadRequestException('Invalid source')
+      }
+
+      let batchBillingFromStatement: {
+        billingCycleMonth: number
+        billingCycleYear: number
+        expectedDueDate: Date
+      } | null = null
+      let importStatementBaseline: ImportStatementBillingBaseline | null = null
+
+      if (
+        sourceRow.type === SourceType.CREDIT_CARD &&
+        dto.statementBilling?.paymentDueDate
+      ) {
+        const paymentDue = new Date(dto.statementBilling.paymentDueDate)
+        if (Number.isNaN(paymentDue.getTime())) {
+          throw new BadRequestException(
+            'Invalid statement billing payment due date',
+          )
+        }
+        let statementClosing: Date | undefined
+        if (dto.statementBilling.statementClosingDate) {
+          statementClosing = new Date(dto.statementBilling.statementClosingDate)
+          if (Number.isNaN(statementClosing.getTime())) {
+            throw new BadRequestException(
+              'Invalid statement billing closing date',
+            )
+          }
+        }
+        batchBillingFromStatement = billingFieldsFromStatementBilling({
+          paymentDueDate: paymentDue,
+          statementClosingDate: statementClosing,
+        })
+        importStatementBaseline = {
+          dueDate: batchBillingFromStatement.expectedDueDate,
+          ...(statementClosing !== undefined
+            ? {
+                closingDate: new Date(
+                  Date.UTC(
+                    statementClosing.getUTCFullYear(),
+                    statementClosing.getUTCMonth(),
+                    statementClosing.getUTCDate(),
+                    12,
+                    0,
+                    0,
+                  ),
+                ),
+              }
+            : {}),
+        }
+      }
+
       const batch = await tx.importBatch.create({
         data: {
           userId,
@@ -200,7 +351,9 @@ export class ImportsService {
             rules,
             systemCtx,
           ) ??
-          null
+          (row.kind === TransactionKind.EXPENSE
+            ? (systemCtx.categoryIdByKey?.get('other') ?? null)
+            : null)
 
         if (categoryId) {
           const cat = await tx.category.findFirst({
@@ -220,6 +373,97 @@ export class ImportsService {
           }
         }
 
+        let billing: {
+          billingCycleMonth: number | null
+          billingCycleYear: number | null
+          expectedDueDate: Date | null
+        }
+        if (batchBillingFromStatement !== null) {
+          billing = {
+            billingCycleMonth: batchBillingFromStatement.billingCycleMonth,
+            billingCycleYear: batchBillingFromStatement.billingCycleYear,
+            expectedDueDate: batchBillingFromStatement.expectedDueDate,
+          }
+        } else {
+          try {
+            billing = resolveTransactionBillingFields(sourceRow, occurredAt)
+          } catch (e) {
+            if (e instanceof TransactionBillingConfigError) {
+              throw new BadRequestException(e.message)
+            }
+            throw e
+          }
+        }
+
+        const installment =
+          sourceRow.type === SourceType.CREDIT_CARD
+            ? sanitizePersistedInstallment(
+                row.installmentCurrent,
+                row.installmentTotal,
+              )
+            : null
+
+        if (
+          installment &&
+          sourceRow.type === SourceType.CREDIT_CARD &&
+          billing.billingCycleMonth != null &&
+          billing.billingCycleYear != null
+        ) {
+          const candidates = await tx.transaction.findMany({
+            where: {
+              userId,
+              sourceId: dto.sourceId,
+              isProjected: true,
+              kind: row.kind,
+              installmentCurrent: installment.installmentCurrent,
+              installmentTotal: installment.installmentTotal,
+              billingCycleMonth: billing.billingCycleMonth,
+              billingCycleYear: billing.billingCycleYear,
+              amount: new Prisma.Decimal(row.amount.toFixed(2)),
+            },
+            select: { id: true, description: true },
+          })
+
+          const reconcileId = pickUniqueReconcilableCandidate(
+            candidates,
+            row.description,
+          )
+
+          if (reconcileId) {
+            await tx.transaction.update({
+              where: { id: reconcileId },
+              data: {
+                isProjected: false,
+                isConfirmedFromImport: true,
+                importBatchId: batch.id,
+                occurredAt,
+                description: row.description.trim(),
+                fingerprint: fp,
+                categoryId,
+                billingCycleMonth: billing.billingCycleMonth,
+                billingCycleYear: billing.billingCycleYear,
+                expectedDueDate: billing.expectedDueDate,
+              },
+            })
+            created++
+            continue
+          }
+        }
+
+        let installmentPlanId: string | null = null
+        if (installment) {
+          const plan = await tx.installmentPlan.create({
+            data: {
+              userId,
+              sourceId: dto.sourceId,
+              originatingBatchId: batch.id,
+              installmentTotal: installment.installmentTotal,
+              amountEach: new Prisma.Decimal(row.amount.toFixed(2)),
+            },
+          })
+          installmentPlanId = plan.id
+        }
+
         await tx.transaction.create({
           data: {
             userId,
@@ -231,9 +475,68 @@ export class ImportsService {
             occurredAt,
             fingerprint: fp,
             categoryId,
+            billingCycleMonth: billing.billingCycleMonth,
+            billingCycleYear: billing.billingCycleYear,
+            expectedDueDate: billing.expectedDueDate,
+            installmentCurrent: installment?.installmentCurrent ?? null,
+            installmentTotal: installment?.installmentTotal ?? null,
+            installmentPlanId,
+            isProjected: false,
+            isConfirmedFromImport: true,
           },
         })
         created++
+
+        if (
+          installment &&
+          installment.installmentCurrent < installment.installmentTotal
+        ) {
+          const projectedRows = buildProjectedInstallmentRows({
+            userId,
+            installmentPlanId: installmentPlanId!,
+            sourceBilling: sourceRow,
+            baseDescription: row.description.trim(),
+            baseOccurredAt: occurredAt,
+            importedCurrent: installment.installmentCurrent,
+            installmentTotal: installment.installmentTotal,
+            amount: row.amount,
+            kind: row.kind,
+            ...(importStatementBaseline !== null
+              ? { importStatementBaseline }
+              : {}),
+          })
+
+          for (const p of projectedRows) {
+            const projExists = await tx.transaction.findFirst({
+              where: { userId, fingerprint: p.fingerprint },
+              select: { id: true },
+            })
+            if (projExists) continue
+
+            await tx.transaction.create({
+              data: {
+                userId,
+                sourceId: dto.sourceId,
+                importBatchId: null,
+                installmentPlanId,
+                kind: row.kind,
+                amount: new Prisma.Decimal(row.amount.toFixed(2)),
+                description: p.description,
+                occurredAt: p.occurredAt,
+                fingerprint: p.fingerprint,
+                categoryId,
+                billingCycleMonth: p.billing.billingCycleMonth,
+                billingCycleYear: p.billing.billingCycleYear,
+                expectedDueDate: p.billing.expectedDueDate,
+                installmentCurrent: p.installmentCurrent,
+                installmentTotal: installment.installmentTotal,
+                isProjected: true,
+                isConfirmedFromImport: false,
+              },
+            })
+            created++
+          }
+        }
       }
 
       return {

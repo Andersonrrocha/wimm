@@ -4,6 +4,7 @@ import {
   IsArray,
   IsDateString,
   IsEnum,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
@@ -15,6 +16,15 @@ import {
   ValidateNested,
 } from 'class-validator'
 import { ImportBatchFormat, TransactionKind } from '@prisma/client'
+
+export class ImportStatementBillingDto {
+  @IsDateString()
+  paymentDueDate!: string
+
+  @IsOptional()
+  @IsDateString()
+  statementClosingDate?: string
+}
 
 export class CommitImportRowDto {
   @IsDateString()
@@ -37,6 +47,20 @@ export class CommitImportRowDto {
   @IsOptional()
   @IsUUID()
   categoryId?: string
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(99)
+  installmentCurrent?: number
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(99)
+  installmentTotal?: number
 }
 
 export class CommitImportDto {
@@ -50,6 +74,11 @@ export class CommitImportDto {
 
   @IsEnum(ImportBatchFormat)
   format!: ImportBatchFormat
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ImportStatementBillingDto)
+  statementBilling?: ImportStatementBillingDto
 
   @IsArray()
   @ArrayMinSize(1)

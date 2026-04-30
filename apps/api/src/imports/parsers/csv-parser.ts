@@ -8,6 +8,9 @@ export type ParsedLedgerRow = {
   occurredAt: Date
   signedAmount: number
   description: string
+  /** Present for some credit card PDF parsers (e.g. Banrisul). */
+  installmentCurrent?: number
+  installmentTotal?: number
 }
 
 const DATE_KEYS = new Set([

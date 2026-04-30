@@ -27,3 +27,26 @@ export function computeImportFingerprint(
   const payload = [userId, sourceId, dk, kind, amt, norm].join('|')
   return createHash('sha256').update(payload, 'utf8').digest('hex')
 }
+
+/** Stable id for projected installment legs (distinct namespace from {@link computeImportFingerprint}). */
+export function computeProjectedInstallmentFingerprint(
+  userId: string,
+  installmentPlanId: string,
+  installmentCurrent: number,
+  occurredAt: Date,
+  kind: TransactionKind,
+  amountAbsolute: number,
+): string {
+  const dk = dateKeyUtc(occurredAt)
+  const amt = Math.abs(amountAbsolute).toFixed(2)
+  const payload = [
+    'wimm:proj_inst',
+    userId,
+    installmentPlanId,
+    String(installmentCurrent),
+    dk,
+    kind,
+    amt,
+  ].join('|')
+  return createHash('sha256').update(payload, 'utf8').digest('hex')
+}
