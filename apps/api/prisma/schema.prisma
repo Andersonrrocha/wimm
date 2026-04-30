@@ -24,6 +24,7 @@ model User {
   importBatches        ImportBatch[]
   recurrences          Recurrence[]
   categorizationRules  CategorizationRule[]
+  installmentPlans     InstallmentPlan[]
 }
 
 enum SourceType {
@@ -60,11 +61,16 @@ model Source {
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   name           String
   type           SourceType
+  /** Statement closing day (1–31). Required when type is CREDIT_CARD; must be null otherwise. */
+  closingDay     Int?
+  /** Payment due day (1–31). Required when type is CREDIT_CARD; must be null otherwise. */
+  dueDay         Int?
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   transactions   Transaction[]
-  importBatches  ImportBatch[]
-  recurrences    Recurrence[]
+  importBatches      ImportBatch[]
+  recurrences        Recurrence[]
+  installmentPlans   InstallmentPlan[]
 
   @@unique([userId, name])
   @@index([userId])
@@ -77,6 +83,9 @@ model Category {
   name                 String
   type                 CategoryType
   categoryKey          String?
+  parentId             String?
+  parent               Category?            @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children             Category[]           @relation("CategoryHierarchy")
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
   transactions         Transaction[]
@@ -86,6 +95,7 @@ model Category {
   @@unique([userId, name])
   @@unique([userId, categoryKey])
   @@index([userId])
+  @@index([userId, parentId])
 }
 
 model SystemCategorizationRule {
@@ -127,6 +137,8 @@ model CategorizationRule {
 enum ImportBatchFormat {
   CSV
   OFX
+  PDF_BANRISUL_CC
+  PDF_CRESOL_STATEMENT
 }
 
 enum ImportBatchStatus {
@@ -144,6 +156,26 @@ model ImportBatch {
   status       ImportBatchStatus  @default(COMPLETED)
   createdAt    DateTime           @default(now())
   transactions Transaction[]
+  installmentPlans InstallmentPlan[]
+
+  @@index([userId])
+  @@index([sourceId])
+}
+
+/** Groups credit card installment legs for reconciliation (not the recurrence engine). */
+model InstallmentPlan {
+  id                 String        @id @default(uuid())
+  userId             String
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceId           String
+  source             Source        @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  originatingBatchId String?
+  originatingBatch   ImportBatch?  @relation(fields: [originatingBatchId], references: [id], onDelete: SetNull)
+  installmentTotal   Int
+  amountEach         Decimal       @db.Decimal(14, 2)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  transactions       Transaction[]
 
   @@index([userId])
   @@index([sourceId])
@@ -182,6 +214,12 @@ model Transaction {
   category       Category?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   importBatchId  String?
   importBatch    ImportBatch?      @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  installmentPlanId String?
+  installmentPlan   InstallmentPlan? @relation(fields: [installmentPlanId], references: [id], onDelete: SetNull)
+  /** True when this row is a future obligation generated from an installment purchase (not yet confirmed from a statement). */
+  isProjected    Boolean           @default(false)
+  /** True when the row was created or reconciled from a statement import (false for projected-only rows). */
+  isConfirmedFromImport Boolean     @default(false)
   recurrenceId   String?
   recurrence     Recurrence?       @relation(fields: [recurrenceId], references: [id], onDelete: SetNull)
   kind           TransactionKind
@@ -189,12 +227,23 @@ model Transaction {
   description    String
   occurredAt     DateTime
   fingerprint    String?
+  /** UTC calendar month (1–12) of the card billing cycle close; set only for credit card sources. */
+  billingCycleMonth Int?
+  /** UTC calendar year of the card billing cycle close; set only for credit card sources. */
+  billingCycleYear  Int?
+  /** Payment due date (UTC); set only for credit card sources. */
+  expectedDueDate   DateTime?
+  /** Installment index from statement (e.g. 2 of 12); credit card imports only. */
+  installmentCurrent Int?
+  /** Total installments from statement; credit card imports only. */
+  installmentTotal   Int?
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
   @@index([userId, occurredAt])
   @@index([userId])
   @@index([userId, fingerprint])
+  @@index([installmentPlanId])
   @@index([recurrenceId, occurredAt])
 }
 

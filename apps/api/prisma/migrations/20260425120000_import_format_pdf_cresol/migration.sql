@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "ImportBatchFormat" ADD VALUE 'PDF_CRESOL_STATEMENT';
