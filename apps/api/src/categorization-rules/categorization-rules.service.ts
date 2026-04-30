@@ -12,6 +12,8 @@ import {
   type SystemCategorizationRule,
 } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
+import { DefaultCategoriesService } from '../categories/default-categories.service'
+import { assertCategoryIsLeaf } from '../categories/assert-category-leaf'
 import { resolveFirstSystemCategoryId } from './resolve-system-category'
 import type { CreateCategorizationRuleDto } from './dto/create-categorization-rule.dto'
 import type { UpdateCategorizationRuleDto } from './dto/update-categorization-rule.dto'
@@ -27,7 +29,10 @@ export type SystemResolutionContext = {
 
 @Injectable()
 export class CategorizationRulesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly defaultCategories: DefaultCategoriesService,
+  ) {}
 
   async listForUser(userId: string) {
     return this.prisma.categorizationRule.findMany({
@@ -48,6 +53,7 @@ export class CategorizationRulesService {
 
   async createForUser(userId: string, dto: CreateCategorizationRuleDto) {
     await this.assertCategoryOwned(userId, dto.categoryId)
+    await assertCategoryIsLeaf(this.prisma, userId, dto.categoryId)
 
     return this.prisma.categorizationRule.create({
       data: {
@@ -70,6 +76,7 @@ export class CategorizationRulesService {
     await this.findOneForUser(userId, id)
     if (dto.categoryId) {
       await this.assertCategoryOwned(userId, dto.categoryId)
+      await assertCategoryIsLeaf(this.prisma, userId, dto.categoryId)
     }
 
     const data: Prisma.CategorizationRuleUpdateInput = {}
@@ -111,14 +118,26 @@ export class CategorizationRulesService {
     })
   }
 
+  /**
+   * Maps stable categoryKey → id for resolving system rules.
+   * Only leaf categories (no children) are included: transactions and rules
+   * must target leaves; parent keys like `health` or `online_shopping` must
+   * not resolve to a non-assignable row.
+   */
   async buildCategoryIdByKeyMap(userId: string): Promise<Map<string, string>> {
     const rows = await this.prisma.category.findMany({
       where: { userId, categoryKey: { not: null } },
-      select: { id: true, categoryKey: true },
+      select: {
+        id: true,
+        categoryKey: true,
+        _count: { select: { children: true } },
+      },
     })
     const m = new Map<string, string>()
     for (const r of rows) {
-      if (r.categoryKey) m.set(r.categoryKey, r.id)
+      if (r.categoryKey && r._count.children === 0) {
+        m.set(r.categoryKey, r.id)
+      }
     }
     return m
   }
@@ -126,6 +145,7 @@ export class CategorizationRulesService {
   async loadSystemResolutionContext(
     userId: string,
   ): Promise<SystemResolutionContext> {
+    await this.defaultCategories.ensureForUser(userId)
     const [systemRules, categoryIdByKey] = await Promise.all([
       this.loadActiveSystemRulesOrdered(),
       this.buildCategoryIdByKeyMap(userId),
