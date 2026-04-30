@@ -9,6 +9,7 @@
     "target": "ES2021",
     "sourceMap": true,
     "outDir": "./dist",
+    "rootDir": "./src",
     "baseUrl": "./",
     "incremental": true,
     "skipLibCheck": true,
@@ -18,8 +19,7 @@
     "forceConsistentCasingInFileNames": true,
     "noFallthroughCasesInSwitch": false,
     "paths": {
-      "@prisma/client": ["./src/generated/prisma/client"],
-      "@wimm/shared": ["../../packages/shared/src/index.ts"]
+      "@prisma/client": ["./src/generated/prisma/client"]
     }
   },
   "include": ["src/**/*"],
