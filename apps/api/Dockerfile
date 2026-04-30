@@ -27,7 +27,10 @@ COPY apps/api ./apps/api
 
 # Build shared package first (api consumes it via dist), then api
 RUN pnpm --filter @wimm/shared build
-RUN pnpm --filter @wimm/api build
+# Prisma 7 reads DATABASE_URL from prisma.config.ts at generate time but does
+# not connect during generation — a placeholder is enough.
+RUN DATABASE_URL=postgresql://placeholder:placeholder@placeholder:5432/placeholder \
+    pnpm --filter @wimm/api build
 
 EXPOSE 3000
 WORKDIR /app/apps/api
