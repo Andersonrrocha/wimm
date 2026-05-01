@@ -265,7 +265,7 @@ export function HomeScreen(): JSX.Element {
 
       <SectionHeader
         title={t('dashboard.monthlyPerformance')}
-        subtitle={t('dashboard.cumulativeNetSub', { year: trendYear })}
+        subtitle={`${t('dashboard.kpi.net')} · ${trendYear}`}
       />
       <Panel>
         {loadingMonthly || !monthly ? (
