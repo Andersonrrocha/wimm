@@ -210,7 +210,19 @@
     "cancel": "Cancelar",
     "importCount": "Importar {{count}}",
     "commitError": "Falha na importação. Verifique a API e tente novamente.",
-    "selectedOf": "{{selected}} selecionadas de {{total}}"
+    "selectedOf": "{{selected}} selecionadas de {{total}}",
+    "stepPick": "Escolher",
+    "stepPreview": "Revisar",
+    "stepResult": "Pronto",
+    "chooseFile": "Escolher arquivo…",
+    "fileSizeHint": "Máx. {{max}} MB.",
+    "statParsed": "Lidas",
+    "statNew": "Novas",
+    "statDuplicates": "Duplicadas",
+    "resultTitle": "Importação concluída",
+    "importAnother": "Importar outro",
+    "fileTooLargeTitle": "Arquivo muito grande",
+    "fileTooLargeMessage": "Tamanho máximo é {{max}} MB."
   },
   "recurrences": {
     "title": "Recorrências",

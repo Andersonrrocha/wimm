@@ -210,7 +210,19 @@
     "cancel": "Cancel",
     "importCount": "Import {{count}}",
     "commitError": "Import failed. Check the API and try again.",
-    "selectedOf": "{{selected}} selected of {{total}}"
+    "selectedOf": "{{selected}} selected of {{total}}",
+    "stepPick": "Pick",
+    "stepPreview": "Review",
+    "stepResult": "Done",
+    "chooseFile": "Choose file…",
+    "fileSizeHint": "Max {{max}} MB.",
+    "statParsed": "Parsed",
+    "statNew": "New",
+    "statDuplicates": "Duplicates",
+    "resultTitle": "Import complete",
+    "importAnother": "Import another",
+    "fileTooLargeTitle": "File too large",
+    "fileTooLargeMessage": "Maximum size is {{max}} MB."
   },
   "recurrences": {
     "title": "Recurrences",
