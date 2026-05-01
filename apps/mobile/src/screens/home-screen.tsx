@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { ChartColumn, ChartPie } from 'lucide-react-native'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -15,6 +16,7 @@ import type {
   ReportMonthlyResponse,
   ReportSummaryResponse,
 } from '@wimm/shared'
+import { CategoryBarRow } from '../components/dashboard/category-bar-row'
 import {
   CategoryDonut,
   type CategorySlice,
@@ -29,7 +31,19 @@ import { useAuth } from '../context/auth-context'
 import { apiClient } from '../lib/api-client'
 import { computeRange, type RangePreset } from '../lib/dates'
 import { formatMoney } from '../lib/format-money'
+import { usePersistedPreference } from '../lib/use-persisted-preference'
 import { colors, fontSize, radius, spacing, tracking } from '../theme/tokens'
+
+type ExpenseView = 'donut' | 'bars'
+
+const CATEGORY_BAR_COLORS = [
+  colors.chart1,
+  colors.chart2,
+  colors.chart4,
+  colors.chart5,
+  colors.chart6,
+  colors.chart3,
+]
 
 const RANGE_PRESETS: { id: RangePreset; labelKey: string }[] = [
   { id: 'mtd', labelKey: 'dashboard.range.mtd' },
@@ -50,6 +64,10 @@ export function HomeScreen(): JSX.Element {
   const user = state.status === 'authenticated' ? state.user : null
 
   const [range, setRange] = useState<RangePreset>('mtd')
+  const [expenseView, setExpenseView] = usePersistedPreference<ExpenseView>(
+    'home.expenseView',
+    'donut',
+  )
   const dateRange = useMemo(() => computeRange(range), [range])
   const forecast = useMemo(() => nextMonth(), [])
 
@@ -212,11 +230,36 @@ export function HomeScreen(): JSX.Element {
             {t('dashboard.noExpenseCategories')}
           </Text>
         ) : (
-          <CategoryDonut
-            slices={expenseSlices.slices}
-            centerValue={formatMoney(expenseSlices.total)}
-            centerLabel={t('dashboard.kpi.expense')}
-          />
+          <>
+            <View style={styles.viewToggleRow}>
+              <ViewToggle value={expenseView} onChange={setExpenseView} />
+            </View>
+            {expenseView === 'donut' ? (
+              <CategoryDonut
+                slices={expenseSlices.slices}
+                centerValue={formatMoney(expenseSlices.total)}
+                centerLabel={t('dashboard.kpi.expense')}
+              />
+            ) : (
+              <View style={styles.barsList}>
+                {expenseSlices.slices.map((s, i) => (
+                  <CategoryBarRow
+                    key={s.id}
+                    label={s.label}
+                    value={formatMoney(s.value)}
+                    fraction={
+                      expenseSlices.slices[0].value > 0
+                        ? s.value / expenseSlices.slices[0].value
+                        : 0
+                    }
+                    color={
+                      CATEGORY_BAR_COLORS[i % CATEGORY_BAR_COLORS.length]
+                    }
+                  />
+                ))}
+              </View>
+            )}
+          </>
         )}
       </Panel>
 
@@ -334,6 +377,56 @@ function Loader(): JSX.Element {
   )
 }
 
+function ViewToggle({
+  value,
+  onChange,
+}: {
+  value: ExpenseView
+  onChange: (v: ExpenseView) => void
+}): JSX.Element {
+  return (
+    <View style={styles.viewToggle}>
+      <ViewToggleButton
+        active={value === 'donut'}
+        onPress={() => onChange('donut')}
+      >
+        <ChartPie
+          size={16}
+          color={value === 'donut' ? colors.fg : colors.fgMuted}
+        />
+      </ViewToggleButton>
+      <ViewToggleButton
+        active={value === 'bars'}
+        onPress={() => onChange('bars')}
+      >
+        <ChartColumn
+          size={16}
+          color={value === 'bars' ? colors.fg : colors.fgMuted}
+        />
+      </ViewToggleButton>
+    </View>
+  )
+}
+
+function ViewToggleButton({
+  active,
+  onPress,
+  children,
+}: {
+  active: boolean
+  onPress: () => void
+  children: React.ReactNode
+}): JSX.Element {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[styles.viewToggleBtn, active && styles.viewToggleBtnActive]}
+    >
+      {children}
+    </Pressable>
+  )
+}
+
 function parseAmount(value: string | undefined): number {
   if (!value) return 0
   const n = Number.parseFloat(value)
@@ -393,6 +486,31 @@ const styles = StyleSheet.create({
   muted: {
     color: colors.fgMuted,
     fontSize: fontSize.sm,
+  },
+  viewToggleRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginBottom: spacing.sm,
+  },
+  viewToggle: {
+    flexDirection: 'row',
+    backgroundColor: colors.surface2,
+    borderColor: colors.lineSoft,
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    padding: 3,
+    gap: 2,
+  },
+  viewToggleBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.xs,
+  },
+  viewToggleBtnActive: {
+    backgroundColor: colors.surface3,
+  },
+  barsList: {
+    gap: spacing.md,
   },
   loader: {
     paddingVertical: spacing.lg,
