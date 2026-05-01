@@ -10,8 +10,8 @@ import { Fab } from '../components/ui/fab'
 import { HomeScreen } from '../screens/home-screen'
 import { ImportsScreen } from '../screens/imports-screen'
 import { RecurrencesScreen } from '../screens/recurrences-screen'
-import { SettingsScreen } from '../screens/settings-screen'
 import { TransactionsScreen } from '../screens/transactions-screen'
+import { SettingsNavigator } from './settings-navigator'
 import { colors, fontSize, tracking } from '../theme/tokens'
 
 export type TabsParamList = {
@@ -76,7 +76,7 @@ export function TabsNavigator(): JSX.Element {
         />
         <Tab.Screen
           name="Settings"
-          component={SettingsScreen}
+          component={SettingsNavigator}
           options={{ title: t('nav.settings') }}
         />
       </Tab.Navigator>
