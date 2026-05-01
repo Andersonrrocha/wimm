@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { ChartColumn, ChartPie } from 'lucide-react-native'
+import { CalendarRange, ChartColumn, ChartPie } from 'lucide-react-native'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -198,20 +198,20 @@ export function HomeScreen(): JSX.Element {
         ))}
         <Pressable
           onPress={() => setShowDateRangeModal(true)}
+          accessibilityRole="button"
+          accessibilityLabel={t('common.custom')}
+          accessibilityState={{ selected: range === 'custom' }}
           style={({ pressed }) => [
             styles.chip,
+            styles.chipIcon,
             range === 'custom' && styles.chipActive,
             pressed && styles.chipPressed,
           ]}
         >
-          <Text
-            style={[
-              styles.chipLabel,
-              range === 'custom' && styles.chipLabelActive,
-            ]}
-          >
-            {t('common.custom')}
-          </Text>
+          <CalendarRange
+            size={14}
+            color={range === 'custom' ? colors.accent : colors.fgMuted}
+          />
         </Pressable>
       </ScrollView>
 
@@ -490,6 +490,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.line,
     backgroundColor: colors.surface1,
+  },
+  chipIcon: {
+    paddingHorizontal: 10,
+    minWidth: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   chipActive: {
     borderColor: colors.accent,

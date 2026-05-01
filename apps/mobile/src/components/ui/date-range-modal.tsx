@@ -1,7 +1,4 @@
-import DateTimePicker, {
-  type DateTimePickerEvent,
-} from '@react-native-community/datetimepicker'
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Modal,
@@ -11,9 +8,20 @@ import {
   Text,
   View,
 } from 'react-native'
+import {
+  Calendar,
+  LocaleConfig,
+  type DateData,
+} from 'react-native-calendars'
+
+interface PeriodMark {
+  color: string
+  textColor: string
+  startingDay?: boolean
+  endingDay?: boolean
+}
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Button } from './button'
-import { Field } from './field'
 import {
   dateFnsLocaleForLang,
   formatMediumDate,
@@ -23,6 +31,21 @@ import {
 } from '../../lib/dates'
 import { colors, fontSize, radius, spacing, tracking } from '../../theme/tokens'
 
+LocaleConfig.locales.pt = {
+  monthNames: [
+    'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+    'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
+  ],
+  monthNamesShort: [
+    'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
+    'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez',
+  ],
+  dayNames: [
+    'Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado',
+  ],
+  dayNamesShort: ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'],
+}
+
 interface DateRangeModalProps {
   visible: boolean
   onClose: () => void
@@ -30,6 +53,12 @@ interface DateRangeModalProps {
   onApply: (range: DateRange) => void
 }
 
+/**
+ * Two-tap range picker on a single calendar.
+ *  - Tap 1: sets start, clears end. Day highlights.
+ *  - Tap 2: sets end (auto-swaps if before start). Range fills between.
+ *  - Tap 3: starts a new range from that day.
+ */
 export function DateRangeModal({
   visible,
   onClose,
@@ -38,37 +67,57 @@ export function DateRangeModal({
 }: DateRangeModalProps): JSX.Element {
   const { t, i18n } = useTranslation()
   const dfLocale = dateFnsLocaleForLang(i18n.language)
-  const [from, setFrom] = useState<Date>(
-    () => fromIsoDate(initial.from) ?? new Date(),
-  )
-  const [to, setTo] = useState<Date>(
-    () => fromIsoDate(initial.to) ?? new Date(),
-  )
-  const [showFromPicker, setShowFromPicker] = useState(false)
-  const [showToPicker, setShowToPicker] = useState(false)
+  const [start, setStart] = useState<string | null>(null)
+  const [end, setEnd] = useState<string | null>(null)
 
-  const onFromChange = (
-    _: DateTimePickerEvent,
-    selected: Date | undefined,
-  ): void => {
-    if (Platform.OS !== 'ios') setShowFromPicker(false)
-    if (selected) setFrom(selected)
-  }
-  const onToChange = (
-    _: DateTimePickerEvent,
-    selected: Date | undefined,
-  ): void => {
-    if (Platform.OS !== 'ios') setShowToPicker(false)
-    if (selected) setTo(selected)
+  // Hydrate from `initial` only when opening so subsequent re-renders don't
+  // wipe the user's in-progress selection.
+  useEffect(() => {
+    if (visible) {
+      setStart(initial.from)
+      setEnd(initial.to)
+    }
+  }, [visible, initial.from, initial.to])
+
+  const calendarLocale = i18n.language?.startsWith('pt') ? 'pt' : 'en'
+  LocaleConfig.defaultLocale = calendarLocale
+
+  const markedDates = useMemo<Record<string, PeriodMark>>(
+    () => buildPeriodMarks(start, end),
+    [start, end],
+  )
+
+  const handleDayPress = (day: DateData): void => {
+    const iso = day.dateString
+    if (!start || (start && end)) {
+      // First tap or restarting after a complete range.
+      setStart(iso)
+      setEnd(null)
+      return
+    }
+    // Second tap: set end (swap if user picked earlier than start).
+    if (iso < start) {
+      setEnd(start)
+      setStart(iso)
+    } else {
+      setEnd(iso)
+    }
   }
 
   const handleApply = (): void => {
-    // Normalize so `from <= to` regardless of pick order.
-    const a = from <= to ? from : to
-    const b = from <= to ? to : from
-    onApply({ from: toIsoDate(a), to: toIsoDate(b) })
+    if (!start) return
+    onApply({ from: start, to: end ?? start })
     onClose()
   }
+
+  const startLabel = start
+    ? formatMediumDate(fromIsoDate(start) ?? new Date(), dfLocale)
+    : '—'
+  const endLabel = end
+    ? formatMediumDate(fromIsoDate(end) ?? new Date(), dfLocale)
+    : start
+      ? t('common.dateRange') // hint state
+      : '—'
 
   return (
     <Modal
@@ -85,79 +134,110 @@ export function DateRangeModal({
           </Pressable>
         </View>
 
-        <View style={styles.body}>
-          <Field label={t('common.from')}>
-            <Pressable
-              onPress={() => setShowFromPicker(true)}
-              style={({ pressed }) => [
-                styles.fieldButton,
-                pressed && styles.fieldPressed,
+        <View style={styles.summary}>
+          <View style={styles.summaryCol}>
+            <Text style={styles.summaryLabel}>{t('common.from')}</Text>
+            <Text
+              style={[
+                styles.summaryValue,
+                !start && styles.summaryValueMuted,
               ]}
             >
-              <Text style={styles.fieldValue}>
-                {formatMediumDate(from, dfLocale)}
-              </Text>
-            </Pressable>
-            {showFromPicker && (
-              <DateTimePicker
-                value={from}
-                mode="date"
-                display={Platform.OS === 'ios' ? 'inline' : 'default'}
-                onChange={onFromChange}
-                themeVariant="dark"
-              />
-            )}
-            {Platform.OS === 'ios' && showFromPicker ? (
-              <Pressable
-                onPress={() => setShowFromPicker(false)}
-                style={styles.dismiss}
-              >
-                <Text style={styles.dismissLabel}>{t('common.close')}</Text>
-              </Pressable>
-            ) : null}
-          </Field>
-
-          <Field label={t('common.to')}>
-            <Pressable
-              onPress={() => setShowToPicker(true)}
-              style={({ pressed }) => [
-                styles.fieldButton,
-                pressed && styles.fieldPressed,
+              {startLabel}
+            </Text>
+          </View>
+          <Text style={styles.summarySep}>→</Text>
+          <View style={styles.summaryCol}>
+            <Text style={styles.summaryLabel}>{t('common.to')}</Text>
+            <Text
+              style={[
+                styles.summaryValue,
+                !end && styles.summaryValueMuted,
               ]}
             >
-              <Text style={styles.fieldValue}>
-                {formatMediumDate(to, dfLocale)}
-              </Text>
-            </Pressable>
-            {showToPicker && (
-              <DateTimePicker
-                value={to}
-                mode="date"
-                display={Platform.OS === 'ios' ? 'inline' : 'default'}
-                onChange={onToChange}
-                themeVariant="dark"
-              />
-            )}
-            {Platform.OS === 'ios' && showToPicker ? (
-              <Pressable
-                onPress={() => setShowToPicker(false)}
-                style={styles.dismiss}
-              >
-                <Text style={styles.dismissLabel}>{t('common.close')}</Text>
-              </Pressable>
-            ) : null}
-          </Field>
+              {endLabel}
+            </Text>
+          </View>
+        </View>
 
+        <Calendar
+          current={start ?? toIsoDate(new Date())}
+          markingType="period"
+          markedDates={markedDates}
+          onDayPress={handleDayPress}
+          enableSwipeMonths
+          firstDay={Platform.OS === 'ios' ? 0 : 1}
+          theme={calendarTheme}
+          style={styles.calendar}
+        />
+
+        <View style={styles.footer}>
           <Button
             label={t('common.apply')}
             variant="primary"
             block
+            disabled={!start || !end}
             onPress={handleApply}
           />
         </View>
       </SafeAreaView>
     </Modal>
   )
+}
+
+function buildPeriodMarks(
+  start: string | null,
+  end: string | null,
+): Record<string, PeriodMark> {
+  if (!start) return {}
+  const marks: Record<string, PeriodMark> = {}
+
+  if (!end || end === start) {
+    marks[start] = {
+      startingDay: true,
+      endingDay: true,
+      color: colors.accent,
+      textColor: colors.accentInk,
+    }
+    return marks
+  }
+
+  const cur = fromIsoDate(start)
+  const stop = fromIsoDate(end)
+  if (!cur || !stop) return marks
+
+  while (cur <= stop) {
+    const iso = toIsoDate(cur)
+    const isStart = iso === start
+    const isEnd = iso === end
+    marks[iso] = {
+      color: isStart || isEnd ? colors.accent : colors.accentSoft,
+      textColor: isStart || isEnd ? colors.accentInk : colors.fg,
+      startingDay: isStart,
+      endingDay: isEnd,
+    }
+    cur.setDate(cur.getDate() + 1)
+  }
+  return marks
+}
+
+const calendarTheme = {
+  backgroundColor: colors.bg,
+  calendarBackground: colors.bg,
+  textSectionTitleColor: colors.fgMuted,
+  selectedDayBackgroundColor: colors.accent,
+  selectedDayTextColor: colors.accentInk,
+  todayTextColor: colors.accent,
+  dayTextColor: colors.fg,
+  textDisabledColor: colors.fgSoft,
+  monthTextColor: colors.fg,
+  arrowColor: colors.accent,
+  textDayFontWeight: '500' as const,
+  textMonthFontWeight: '600' as const,
+  textDayHeaderFontWeight: '500' as const,
+  textDayFontSize: fontSize.md,
+  textMonthFontSize: fontSize.md,
+  textDayHeaderFontSize: fontSize.xs,
 }
 
 const styles = StyleSheet.create({
@@ -182,30 +262,45 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     letterSpacing: tracking.base,
   },
-  body: {
-    padding: spacing.lg,
+  summary: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
   },
-  fieldButton: {
-    backgroundColor: colors.surface2,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: radius.sm,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+  summaryCol: {
+    flex: 1,
+    gap: 2,
   },
-  fieldPressed: { backgroundColor: colors.surface3 },
-  fieldValue: {
+  summaryLabel: {
+    color: colors.fgMuted,
+    fontSize: fontSize.xs,
+    textTransform: 'uppercase',
+    letterSpacing: tracking.label,
+    fontWeight: '500',
+  },
+  summaryValue: {
     color: colors.fg,
     fontSize: fontSize.md,
+    fontVariant: ['tabular-nums'],
   },
-  dismiss: {
-    alignSelf: 'flex-end',
-    paddingVertical: 6,
+  summaryValueMuted: {
+    color: colors.fgMuted,
   },
-  dismissLabel: {
-    color: colors.accent,
-    fontSize: fontSize.sm,
-    fontWeight: '500',
+  summarySep: {
+    color: colors.fgMuted,
+    fontSize: fontSize.lg,
+  },
+  calendar: {
+    backgroundColor: colors.bg,
+    paddingVertical: spacing.sm,
+  },
+  footer: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.lg,
+    borderTopColor: colors.lineSoft,
+    borderTopWidth: 1,
   },
 })

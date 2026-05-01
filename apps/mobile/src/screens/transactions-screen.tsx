@@ -4,6 +4,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
+import { CalendarRange } from 'lucide-react-native'
 import { useCallback, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -225,6 +226,14 @@ export function TransactionsScreen(): JSX.Element {
             label={t('common.custom')}
             active={period === 'custom'}
             onPress={() => setShowDateRangeModal(true)}
+            icon={
+              <CalendarRange
+                size={14}
+                color={
+                  period === 'custom' ? colors.accent : colors.fgMuted
+                }
+              />
+            }
           />
         </ScrollView>
 
@@ -353,26 +362,37 @@ function FilterChip({
   label,
   active,
   onPress,
+  icon,
 }: {
   label: string
   active: boolean
   onPress: () => void
+  /** Render an icon instead of the label text (label still used for a11y). */
+  icon?: React.ReactNode
 }): JSX.Element {
   return (
     <Pressable
       onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ selected: active }}
       style={({ pressed }) => [
         styles.chip,
+        icon != null && styles.chipIcon,
         active && styles.chipActive,
         pressed && styles.chipPressed,
       ]}
     >
-      <Text
-        style={[styles.chipLabel, active && styles.chipLabelActive]}
-        numberOfLines={1}
-      >
-        {label}
-      </Text>
+      {icon != null ? (
+        icon
+      ) : (
+        <Text
+          style={[styles.chipLabel, active && styles.chipLabelActive]}
+          numberOfLines={1}
+        >
+          {label}
+        </Text>
+      )}
     </Pressable>
   )
 }
@@ -398,6 +418,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.line,
     backgroundColor: colors.surface1,
+  },
+  chipIcon: {
+    paddingHorizontal: 10,
+    minWidth: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   chipActive: {
     borderColor: colors.accent,
