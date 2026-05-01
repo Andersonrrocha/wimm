@@ -19,6 +19,7 @@ import { categoryDisplayName } from '../../lib/category-label'
 import {
   dateFnsLocaleForLang,
   formatMediumDate,
+  formatTime,
 } from '../../lib/dates'
 import { colors, fontSize, radius, spacing, tracking } from '../../theme/tokens'
 
@@ -38,6 +39,7 @@ export function TransactionForm({ onDone }: TransactionFormProps): JSX.Element {
   const [sourceId, setSourceId] = useState('')
   const [categoryId, setCategoryId] = useState('')
   const [showDatePicker, setShowDatePicker] = useState(false)
+  const [showTimePicker, setShowTimePicker] = useState(false)
   const [showSourcePicker, setShowSourcePicker] = useState(false)
   const [showCategoryPicker, setShowCategoryPicker] = useState(false)
 
@@ -109,7 +111,28 @@ export function TransactionForm({ onDone }: TransactionFormProps): JSX.Element {
     selected: Date | undefined,
   ): void => {
     if (Platform.OS !== 'ios') setShowDatePicker(false)
-    if (selected) setDate(selected)
+    if (selected) {
+      setDate((prev) => {
+        // Preserve time-of-day when only the calendar day changes.
+        const next = new Date(selected)
+        next.setHours(prev.getHours(), prev.getMinutes(), 0, 0)
+        return next
+      })
+    }
+  }
+
+  const onTimeChange = (
+    _: DateTimePickerEvent,
+    selected: Date | undefined,
+  ): void => {
+    if (Platform.OS !== 'ios') setShowTimePicker(false)
+    if (selected) {
+      setDate((prev) => {
+        const next = new Date(prev)
+        next.setHours(selected.getHours(), selected.getMinutes(), 0, 0)
+        return next
+      })
+    }
   }
 
   const isValid =
@@ -139,30 +162,70 @@ export function TransactionForm({ onDone }: TransactionFormProps): JSX.Element {
         />
       </Field>
 
-      <Field label={t('quickAdd.date')}>
-        <Pressable
-          onPress={() => setShowDatePicker(true)}
-          style={({ pressed }) => [styles.fieldButton, pressed && styles.fieldPressed]}
-        >
-          <Text style={styles.fieldValue}>
-            {formatMediumDate(date, dfLocale)}
-          </Text>
-        </Pressable>
-        {showDatePicker && (
-          <DateTimePicker
-            value={date}
-            mode="date"
-            display={Platform.OS === 'ios' ? 'inline' : 'default'}
-            onChange={onDateChange}
-            themeVariant="dark"
-          />
-        )}
-        {Platform.OS === 'ios' && showDatePicker ? (
-          <Pressable onPress={() => setShowDatePicker(false)} style={styles.dismiss}>
-            <Text style={styles.dismissLabel}>{t('common.close')}</Text>
+      <View style={styles.row}>
+        <Field label={t('quickAdd.date')} style={styles.flex2}>
+          <Pressable
+            onPress={() => setShowDatePicker(true)}
+            style={({ pressed }) => [
+              styles.fieldButton,
+              pressed && styles.fieldPressed,
+            ]}
+          >
+            <Text style={styles.fieldValue}>
+              {formatMediumDate(date, dfLocale)}
+            </Text>
           </Pressable>
-        ) : null}
-      </Field>
+        </Field>
+        <Field label={t('quickAdd.time')} style={styles.flex1}>
+          <Pressable
+            onPress={() => setShowTimePicker(true)}
+            style={({ pressed }) => [
+              styles.fieldButton,
+              pressed && styles.fieldPressed,
+            ]}
+          >
+            <Text style={[styles.fieldValue, styles.fieldValueNum]}>
+              {formatTime(date)}
+            </Text>
+          </Pressable>
+        </Field>
+      </View>
+
+      {showDatePicker && (
+        <DateTimePicker
+          value={date}
+          mode="date"
+          display={Platform.OS === 'ios' ? 'inline' : 'default'}
+          onChange={onDateChange}
+          themeVariant="dark"
+        />
+      )}
+      {Platform.OS === 'ios' && showDatePicker ? (
+        <Pressable
+          onPress={() => setShowDatePicker(false)}
+          style={styles.dismiss}
+        >
+          <Text style={styles.dismissLabel}>{t('common.close')}</Text>
+        </Pressable>
+      ) : null}
+
+      {showTimePicker && (
+        <DateTimePicker
+          value={date}
+          mode="time"
+          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+          onChange={onTimeChange}
+          themeVariant="dark"
+        />
+      )}
+      {Platform.OS === 'ios' && showTimePicker ? (
+        <Pressable
+          onPress={() => setShowTimePicker(false)}
+          style={styles.dismiss}
+        >
+          <Text style={styles.dismissLabel}>{t('common.close')}</Text>
+        </Pressable>
+      ) : null}
 
       <Field label={t('quickAdd.source')}>
         <Pressable
@@ -278,6 +341,10 @@ function KindOption({
 
 const styles = StyleSheet.create({
   form: { gap: spacing.md },
+  row: { flexDirection: 'row', gap: spacing.sm },
+  flex1: { flex: 1 },
+  flex2: { flex: 2 },
+  fieldValueNum: { fontVariant: ['tabular-nums'] },
   fieldButton: {
     backgroundColor: colors.surface2,
     borderColor: colors.line,

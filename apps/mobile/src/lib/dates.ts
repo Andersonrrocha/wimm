@@ -63,6 +63,10 @@ export function formatDateTime(
   return format(d, 'MMM d, yyyy · HH:mm', { locale })
 }
 
+export function formatTime(value: Date): string {
+  return format(value, 'HH:mm')
+}
+
 export type RangePreset = 'mtd' | 'last30' | 'ytd'
 
 export interface DateRange {
