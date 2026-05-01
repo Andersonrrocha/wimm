@@ -2,21 +2,25 @@ import { AxiosError } from 'axios'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
   View,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../context/auth-context'
 import { Button } from '../components/ui/button'
 import { Field } from '../components/ui/field'
 import { Input } from '../components/ui/input'
-import { Screen } from '../components/screen'
 import { colors, fontSize, spacing, tracking } from '../theme/tokens'
 import type { AuthStackScreenProps } from '../navigation/auth-navigator'
+
+const wimmLogo = require('../../assets/images/wimm-logo.png')
 
 export function LoginScreen({
   navigation,
@@ -42,65 +46,77 @@ export function LoginScreen({
   }
 
   return (
-    <Screen>
+    <SafeAreaView edges={['top', 'bottom']} style={styles.safe}>
       <KeyboardAvoidingView
         style={styles.fill}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.brand}>
-          <Text style={styles.brandTitle}>WIMM</Text>
-          <Text style={styles.brandSubtitle}>{t('auth.brandAlt')}</Text>
-        </View>
-
-        <View style={styles.form}>
-          <Field label={t('auth.email')}>
-            <Input
-              value={email}
-              onChangeText={setEmail}
-              placeholder="you@example.com"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="email"
-              textContentType="emailAddress"
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.center}>
+            <Image
+              source={wimmLogo}
+              style={styles.logo}
+              resizeMode="contain"
+              accessibilityLabel={t('auth.brandAlt')}
             />
-          </Field>
 
-          <Field label={t('auth.password')}>
-            <Input
-              value={password}
-              onChangeText={setPassword}
-              placeholder="••••••••"
-              secureTextEntry
-              autoComplete="current-password"
-              textContentType="password"
-            />
-          </Field>
+            <View style={styles.form}>
+              <Field label={t('auth.email')}>
+                <Input
+                  value={email}
+                  onChangeText={setEmail}
+                  placeholder="you@example.com"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="email"
+                  textContentType="emailAddress"
+                />
+              </Field>
 
-          <Pressable
-            style={styles.rememberRow}
-            onPress={() => setRememberMe((v) => !v)}
-          >
-            <Switch
-              value={rememberMe}
-              onValueChange={setRememberMe}
-              trackColor={{ false: colors.surface3, true: colors.accent }}
-              thumbColor={colors.fg}
-            />
-            <Text style={styles.rememberLabel}>{t('auth.rememberMe')}</Text>
-          </Pressable>
+              <Field label={t('auth.password')}>
+                <Input
+                  value={password}
+                  onChangeText={setPassword}
+                  placeholder="••••••••"
+                  secureTextEntry
+                  autoComplete="current-password"
+                  textContentType="password"
+                />
+              </Field>
 
-          <Button
-            label={loading ? t('common.pleaseWait') : t('auth.signIn')}
-            variant="primary"
-            block
-            loading={loading}
-            disabled={!email || !password || loading}
-            onPress={handleSubmit}
-          />
+              <Pressable
+                style={styles.rememberRow}
+                onPress={() => setRememberMe((v) => !v)}
+              >
+                <Switch
+                  value={rememberMe}
+                  onValueChange={setRememberMe}
+                  trackColor={{ false: colors.surface3, true: colors.accent }}
+                  thumbColor={colors.fg}
+                />
+                <Text style={styles.rememberLabel}>
+                  {t('auth.rememberMe')}
+                </Text>
+              </Pressable>
 
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-        </View>
+              <Button
+                label={loading ? t('common.pleaseWait') : t('auth.signIn')}
+                variant="primary"
+                block
+                loading={loading}
+                disabled={!email || !password || loading}
+                onPress={handleSubmit}
+              />
+
+              {error ? <Text style={styles.error}>{error}</Text> : null}
+            </View>
+          </View>
+        </ScrollView>
 
         <View style={styles.footer}>
           <Text style={styles.footerLabel}>{t('auth.noAccount')} </Text>
@@ -109,7 +125,7 @@ export function LoginScreen({
           </Pressable>
         </View>
       </KeyboardAvoidingView>
-    </Screen>
+    </SafeAreaView>
   )
 }
 
@@ -127,22 +143,25 @@ function loginErrorMessage(
 }
 
 const styles = StyleSheet.create({
+  safe: {
+    flex: 1,
+    backgroundColor: colors.bg,
+  },
   fill: { flex: 1 },
-  brand: {
-    alignItems: 'flex-start',
-    marginTop: spacing.xxl,
-    marginBottom: spacing.xxl,
+  scroll: {
+    flexGrow: 1,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.lg,
   },
-  brandTitle: {
-    color: colors.fg,
-    fontSize: fontSize.xxxl,
-    fontWeight: '600',
-    letterSpacing: -0.5,
+  center: {
+    flex: 1,
+    justifyContent: 'center',
+    gap: spacing.xxl,
   },
-  brandSubtitle: {
-    color: colors.fgMuted,
-    fontSize: fontSize.sm,
-    marginTop: 4,
+  logo: {
+    width: 200,
+    height: 56,
+    alignSelf: 'center',
   },
   form: { gap: spacing.md },
   rememberRow: {
@@ -162,7 +181,6 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   footer: {
-    marginTop: 'auto',
     flexDirection: 'row',
     justifyContent: 'center',
     paddingVertical: spacing.lg,
