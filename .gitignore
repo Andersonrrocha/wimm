@@ -33,6 +33,11 @@ apps/desktop/dist/
 apps/desktop/out/
 apps/desktop/release/
 
+# Expo (mobile)
+apps/mobile/.expo/
+apps/mobile/dist/
+apps/mobile/web-build/
+
 # NestJS
 apps/api/dist/
 apps/api/src/generated/

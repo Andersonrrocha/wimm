@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "WIMM",
+    "slug": "wimm-mobile",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "com.wimm.mobile",
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.wimm.mobile"
+    }
+  }
+}
