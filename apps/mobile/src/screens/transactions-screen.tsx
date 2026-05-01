@@ -24,11 +24,13 @@ import type {
   Transaction,
   TransactionKind,
 } from '@wimm/shared'
+import { Button } from '../components/ui/button'
 import { EmptyState } from '../components/ui/empty-state'
 import { PageHeader } from '../components/ui/page-header'
 import { PickerModal, type PickerOption } from '../components/ui/picker-modal'
 import { TransactionCard } from '../components/transactions/transaction-card'
 import { Screen } from '../components/screen'
+import { useQuickAdd } from '../context/quick-add-context'
 import { apiClient } from '../lib/api-client'
 import { categoryDisplayName } from '../lib/category-label'
 import { computeRange, type RangePreset } from '../lib/dates'
@@ -53,6 +55,7 @@ const PAGE_SIZE = 30
 export function TransactionsScreen(): JSX.Element {
   const { t } = useTranslation()
   const qc = useQueryClient()
+  const { open: openQuickAdd } = useQuickAdd()
   const [period, setPeriod] = useState<RangePreset>('last30')
   const [kind, setKind] = useState<KindFilter>('ALL')
   const [categoryId, setCategoryId] = useState('')
@@ -253,6 +256,13 @@ export function TransactionsScreen(): JSX.Element {
             from: range.from,
             to: range.to,
           })}
+          action={
+            <Button
+              label={t('transactions.newTransaction')}
+              variant="primary"
+              onPress={() => openQuickAdd('transaction')}
+            />
+          }
         />
       ) : (
         <FlatList

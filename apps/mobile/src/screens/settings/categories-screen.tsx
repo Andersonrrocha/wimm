@@ -10,10 +10,12 @@ import {
   View,
 } from 'react-native'
 import type { Category } from '@wimm/shared'
+import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Panel } from '../../components/ui/panel'
 import { Screen } from '../../components/screen'
+import { useQuickAdd } from '../../context/quick-add-context'
 import { apiClient } from '../../lib/api-client'
 import { categoryDisplayName } from '../../lib/category-label'
 import { colors, fontSize, radius, spacing } from '../../theme/tokens'
@@ -21,6 +23,7 @@ import { colors, fontSize, radius, spacing } from '../../theme/tokens'
 export function CategoriesScreen(): JSX.Element {
   const { t } = useTranslation()
   const qc = useQueryClient()
+  const { open: openQuickAdd } = useQuickAdd()
 
   const { data: list = [], isLoading } = useQuery({
     queryKey: ['categories'],
@@ -87,6 +90,13 @@ export function CategoriesScreen(): JSX.Element {
         <EmptyState
           title={t('categoriesTab.title')}
           subtitle={t('categoriesTab.emptyBody')}
+          action={
+            <Button
+              label={t('categoriesTab.newCategory')}
+              variant="primary"
+              onPress={() => openQuickAdd('category')}
+            />
+          }
         />
       ) : (
         <Panel padding="sm">

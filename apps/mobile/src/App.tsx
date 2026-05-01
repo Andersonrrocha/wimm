@@ -4,6 +4,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { StatusBar } from 'expo-status-bar'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { AuthProvider } from './context/auth-context'
+import { QuickAddProvider } from './context/quick-add-context'
 import { queryClient } from './lib/query-client'
 import { RootNavigator } from './navigation/root-navigator'
 import { navTheme } from './navigation/nav-theme'
@@ -14,9 +15,11 @@ export function App(): JSX.Element {
       <StatusBar style="light" />
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
-          <NavigationContainer theme={navTheme}>
-            <RootNavigator />
-          </NavigationContainer>
+          <QuickAddProvider>
+            <NavigationContainer theme={navTheme}>
+              <RootNavigator />
+            </NavigationContainer>
+          </QuickAddProvider>
         </AuthProvider>
       </QueryClientProvider>
     </SafeAreaProvider>

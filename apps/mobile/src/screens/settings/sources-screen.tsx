@@ -10,16 +10,19 @@ import {
   View,
 } from 'react-native'
 import type { Source, SourceType } from '@wimm/shared'
+import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Panel } from '../../components/ui/panel'
 import { Screen } from '../../components/screen'
+import { useQuickAdd } from '../../context/quick-add-context'
 import { apiClient } from '../../lib/api-client'
 import { colors, fontSize, radius, spacing } from '../../theme/tokens'
 
 export function SourcesScreen(): JSX.Element {
   const { t } = useTranslation()
   const qc = useQueryClient()
+  const { open: openQuickAdd } = useQuickAdd()
 
   const { data: list = [], isLoading } = useQuery({
     queryKey: ['sources'],
@@ -72,6 +75,13 @@ export function SourcesScreen(): JSX.Element {
         <EmptyState
           title={t('sourcesTab.title')}
           subtitle={t('sourcesTab.emptyBody')}
+          action={
+            <Button
+              label={t('sourcesTab.newSource')}
+              variant="primary"
+              onPress={() => openQuickAdd('source')}
+            />
+          }
         />
       ) : (
         <Panel padding="sm">
