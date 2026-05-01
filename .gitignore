@@ -45,3 +45,6 @@ pnpm-debug.log*
 # Cursor (local-only; do not version)
 .cursorrules
 .cursor
+
+# Claude Code (local-only settings; shared skills and CLAUDE.md are versioned)
+.claude/settings.local.json
