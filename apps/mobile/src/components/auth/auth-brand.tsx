@@ -35,19 +35,19 @@ export function AuthBrand({ size = 'md' }: AuthBrandProps): JSX.Element {
 //   label      596×203  →  2.936
 
 const LARGE = {
-  iconW: 72,
-  iconH: 48,
-  labelW: 153,
-  labelH: 52,
-  gap: 10,
+  iconW: 93,
+  iconH: 62,
+  labelW: 200,
+  labelH: 68,
+  gap: 12,
 }
 
 const SMALL = {
-  iconW: 48,
-  iconH: 32,
-  labelW: 106,
-  labelH: 36,
-  gap: 6,
+  iconW: 78,
+  iconH: 52,
+  labelW: 170,
+  labelH: 58,
+  gap: 10,
 }
 
 const styles = StyleSheet.create({
