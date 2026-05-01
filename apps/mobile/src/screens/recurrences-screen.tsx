@@ -13,6 +13,7 @@ import type { Category, Recurrence, Source } from '@wimm/shared'
 import { Button } from '../components/ui/button'
 import { EmptyState } from '../components/ui/empty-state'
 import { PageHeader } from '../components/ui/page-header'
+import { SwipeToDelete } from '../components/ui/swipe-to-delete'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { MaterializePanel } from '../components/recurrences/materialize-panel'
 import { RecurrenceCard } from '../components/recurrences/recurrence-card'
@@ -152,18 +153,21 @@ export function RecurrencesScreen(): JSX.Element {
         ) : (
           <View style={styles.list}>
             {list.map((rec) => (
-              <RecurrenceCard
-                key={rec.id}
-                recurrence={rec}
-                categoryName={
-                  rec.categoryId ? categoryById.get(rec.categoryId) : undefined
-                }
-                sourceName={
-                  rec.sourceId ? sourceById.get(rec.sourceId) : undefined
-                }
-                onEdit={() => setForm({ mode: 'edit', recurrence: rec })}
-                onLongPress={() => onLongPress(rec)}
-              />
+              <SwipeToDelete key={rec.id} onDelete={() => onLongPress(rec)}>
+                <RecurrenceCard
+                  recurrence={rec}
+                  categoryName={
+                    rec.categoryId
+                      ? categoryById.get(rec.categoryId)
+                      : undefined
+                  }
+                  sourceName={
+                    rec.sourceId ? sourceById.get(rec.sourceId) : undefined
+                  }
+                  onEdit={() => setForm({ mode: 'edit', recurrence: rec })}
+                  onLongPress={() => onLongPress(rec)}
+                />
+              </SwipeToDelete>
             ))}
           </View>
         )}

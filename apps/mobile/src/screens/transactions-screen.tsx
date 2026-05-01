@@ -31,6 +31,7 @@ import { PickerModal, type PickerOption } from '../components/ui/picker-modal'
 import { DateRangeModal } from '../components/transactions/date-range-modal'
 import { TransactionCard } from '../components/transactions/transaction-card'
 import { Screen } from '../components/screen'
+import { SwipeToDelete } from '../components/ui/swipe-to-delete'
 import { useQuickAdd } from '../context/quick-add-context'
 import { apiClient } from '../lib/api-client'
 import { categoryDisplayName } from '../lib/category-label'
@@ -281,16 +282,20 @@ export function TransactionsScreen(): JSX.Element {
           data={items}
           keyExtractor={(tx) => tx.id}
           renderItem={({ item }) => (
-            <TransactionCard
-              transaction={item}
-              categoryName={
-                item.categoryId ? categoryById.get(item.categoryId) : undefined
-              }
-              sourceName={
-                item.sourceId ? sourceById.get(item.sourceId) : undefined
-              }
-              onLongPress={() => onLongPress(item)}
-            />
+            <SwipeToDelete onDelete={() => onLongPress(item)}>
+              <TransactionCard
+                transaction={item}
+                categoryName={
+                  item.categoryId
+                    ? categoryById.get(item.categoryId)
+                    : undefined
+                }
+                sourceName={
+                  item.sourceId ? sourceById.get(item.sourceId) : undefined
+                }
+                onLongPress={() => onLongPress(item)}
+              />
+            </SwipeToDelete>
           )}
           ItemSeparatorComponent={Separator}
           contentContainerStyle={styles.listContent}
