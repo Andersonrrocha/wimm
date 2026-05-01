@@ -25,7 +25,9 @@
     "pleaseWait": "Please wait…",
     "cancel": "Cancel",
     "delete": "Delete",
-    "close": "Close"
+    "close": "Close",
+    "apply": "Apply",
+    "dateRange": "Date range"
   },
   "auth": {
     "noAccountForEmail": "There is no account for this email.",

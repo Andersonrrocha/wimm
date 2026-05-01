@@ -28,15 +28,17 @@ import { Button } from '../components/ui/button'
 import { EmptyState } from '../components/ui/empty-state'
 import { PageHeader } from '../components/ui/page-header'
 import { PickerModal, type PickerOption } from '../components/ui/picker-modal'
+import { DateRangeModal } from '../components/transactions/date-range-modal'
 import { TransactionCard } from '../components/transactions/transaction-card'
 import { Screen } from '../components/screen'
 import { useQuickAdd } from '../context/quick-add-context'
 import { apiClient } from '../lib/api-client'
 import { categoryDisplayName } from '../lib/category-label'
-import { computeRange, type RangePreset } from '../lib/dates'
+import { computeRange, type DateRange, type RangePreset } from '../lib/dates'
 import { colors, fontSize, radius, spacing, tracking } from '../theme/tokens'
 
 type KindFilter = 'ALL' | TransactionKind
+type PeriodId = RangePreset | 'custom'
 
 const PERIOD_PRESETS: { id: RangePreset; labelKey: string }[] = [
   { id: 'last30', labelKey: 'dashboard.range.last30' },
@@ -56,14 +58,19 @@ export function TransactionsScreen(): JSX.Element {
   const { t } = useTranslation()
   const qc = useQueryClient()
   const { open: openQuickAdd } = useQuickAdd()
-  const [period, setPeriod] = useState<RangePreset>('last30')
+  const [period, setPeriod] = useState<PeriodId>('last30')
+  const [customRange, setCustomRange] = useState<DateRange | null>(null)
   const [kind, setKind] = useState<KindFilter>('ALL')
   const [categoryId, setCategoryId] = useState('')
   const [sourceId, setSourceId] = useState('')
   const [showCategoryPicker, setShowCategoryPicker] = useState(false)
   const [showSourcePicker, setShowSourcePicker] = useState(false)
+  const [showDateRangeModal, setShowDateRangeModal] = useState(false)
 
-  const range = useMemo(() => computeRange(period), [period])
+  const range = useMemo<DateRange>(() => {
+    if (period === 'custom' && customRange) return customRange
+    return computeRange(period === 'custom' ? 'last30' : period)
+  }, [period, customRange])
 
   const baseFilters = useMemo(() => {
     const params: Record<string, string> = {
@@ -213,6 +220,11 @@ export function TransactionsScreen(): JSX.Element {
               onPress={() => setPeriod(p.id)}
             />
           ))}
+          <FilterChip
+            label={t('common.custom')}
+            active={period === 'custom'}
+            onPress={() => setShowDateRangeModal(true)}
+          />
         </ScrollView>
 
         <ScrollView
@@ -318,6 +330,15 @@ export function TransactionsScreen(): JSX.Element {
         options={sourceOptions}
         selected={sourceId}
         onSelect={setSourceId}
+      />
+      <DateRangeModal
+        visible={showDateRangeModal}
+        onClose={() => setShowDateRangeModal(false)}
+        initial={range}
+        onApply={(r) => {
+          setCustomRange(r)
+          setPeriod('custom')
+        }}
       />
     </Screen>
   )

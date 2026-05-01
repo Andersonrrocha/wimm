@@ -25,7 +25,9 @@
     "pleaseWait": "Aguarde…",
     "cancel": "Cancelar",
     "delete": "Excluir",
-    "close": "Fechar"
+    "close": "Fechar",
+    "apply": "Aplicar",
+    "dateRange": "Período"
   },
   "auth": {
     "noAccountForEmail": "Não há conta cadastrada com este e-mail.",
