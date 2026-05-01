@@ -12,8 +12,8 @@ import {
   View,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { Button } from '../ui/button'
-import { Field } from '../ui/field'
+import { Button } from './button'
+import { Field } from './field'
 import {
   dateFnsLocaleForLang,
   formatMediumDate,

@@ -22,6 +22,7 @@ import {
   type CategorySlice,
 } from '../components/dashboard/category-donut'
 import { MonthlyTrendChart } from '../components/dashboard/monthly-trend-chart'
+import { DateRangeModal } from '../components/ui/date-range-modal'
 import { EmptyState } from '../components/ui/empty-state'
 import { KpiCard } from '../components/ui/kpi-card'
 import { PageHeader } from '../components/ui/page-header'
@@ -29,12 +30,13 @@ import { Panel } from '../components/ui/panel'
 import { Screen } from '../components/screen'
 import { useAuth } from '../context/auth-context'
 import { apiClient } from '../lib/api-client'
-import { computeRange, type RangePreset } from '../lib/dates'
+import { computeRange, type DateRange, type RangePreset } from '../lib/dates'
 import { formatMoney } from '../lib/format-money'
 import { usePersistedPreference } from '../lib/use-persisted-preference'
 import { colors, fontSize, radius, spacing, tracking } from '../theme/tokens'
 
 type ExpenseView = 'donut' | 'bars'
+type PeriodId = RangePreset | 'custom'
 
 const CATEGORY_BAR_COLORS = [
   colors.chart1,
@@ -63,12 +65,17 @@ export function HomeScreen(): JSX.Element {
   const { state } = useAuth()
   const user = state.status === 'authenticated' ? state.user : null
 
-  const [range, setRange] = useState<RangePreset>('mtd')
+  const [range, setRange] = useState<PeriodId>('mtd')
+  const [customRange, setCustomRange] = useState<DateRange | null>(null)
+  const [showDateRangeModal, setShowDateRangeModal] = useState(false)
   const [expenseView, setExpenseView] = usePersistedPreference<ExpenseView>(
     'home.expenseView',
     'donut',
   )
-  const dateRange = useMemo(() => computeRange(range), [range])
+  const dateRange = useMemo<DateRange>(() => {
+    if (range === 'custom' && customRange) return customRange
+    return computeRange(range === 'custom' ? 'mtd' : range)
+  }, [range, customRange])
   const forecast = useMemo(() => nextMonth(), [])
 
   const { data: summary, isLoading: loadingSummary } = useQuery({
@@ -189,6 +196,23 @@ export function HomeScreen(): JSX.Element {
             </Text>
           </Pressable>
         ))}
+        <Pressable
+          onPress={() => setShowDateRangeModal(true)}
+          style={({ pressed }) => [
+            styles.chip,
+            range === 'custom' && styles.chipActive,
+            pressed && styles.chipPressed,
+          ]}
+        >
+          <Text
+            style={[
+              styles.chipLabel,
+              range === 'custom' && styles.chipLabelActive,
+            ]}
+          >
+            {t('common.custom')}
+          </Text>
+        </Pressable>
       </ScrollView>
 
       <View style={styles.kpiStack}>
@@ -286,6 +310,16 @@ export function HomeScreen(): JSX.Element {
           <CommitmentsBlock data={commitments} />
         )}
       </Panel>
+
+      <DateRangeModal
+        visible={showDateRangeModal}
+        onClose={() => setShowDateRangeModal(false)}
+        initial={dateRange}
+        onApply={(r) => {
+          setCustomRange(r)
+          setRange('custom')
+        }}
+      />
     </Screen>
   )
 }
