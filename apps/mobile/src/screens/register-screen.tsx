@@ -2,7 +2,6 @@ import { AxiosError } from 'axios'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -13,13 +12,12 @@ import {
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../context/auth-context'
+import { AuthBrand } from '../components/auth/auth-brand'
 import { Button } from '../components/ui/button'
 import { Field } from '../components/ui/field'
 import { Input } from '../components/ui/input'
 import { colors, fontSize, spacing, tracking } from '../theme/tokens'
 import type { AuthStackScreenProps } from '../navigation/auth-navigator'
-
-const wimmLogo = require('../../assets/images/wimm-logo.png')
 
 export function RegisterScreen({
   navigation,
@@ -55,12 +53,9 @@ export function RegisterScreen({
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <Image
-            source={wimmLogo}
-            style={styles.logo}
-            resizeMode="contain"
-            accessibilityLabel={t('auth.brandAlt')}
-          />
+          <View style={styles.logoWrap}>
+            <AuthBrand size="sm" />
+          </View>
 
           <View style={styles.brand}>
             <Text style={styles.brandTitle}>
@@ -154,10 +149,8 @@ const styles = StyleSheet.create({
     paddingTop: spacing.xl,
     paddingBottom: spacing.lg,
   },
-  logo: {
-    width: 140,
-    height: 40,
-    alignSelf: 'center',
+  logoWrap: {
+    alignItems: 'center',
     marginBottom: spacing.lg,
   },
   brand: {
