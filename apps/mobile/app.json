@@ -2,16 +2,35 @@
   "expo": {
     "name": "WIMM",
     "slug": "wimm-mobile",
-    "version": "0.0.1",
+    "version": "1.0.0",
+    "description": "Personal finance tracking — see where your money goes.",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
+    "icon": "./assets/icon.png",
     "ios": {
       "bundleIdentifier": "com.wimm.mobile",
+      "buildNumber": "1",
       "supportsTablet": false
     },
     "android": {
-      "package": "com.wimm.mobile"
-    }
+      "package": "com.wimm.mobile",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0a0a0c"
+      }
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 180,
+          "backgroundColor": "#0a0a0c",
+          "resizeMode": "contain"
+        }
+      ]
+    ]
   }
 }
