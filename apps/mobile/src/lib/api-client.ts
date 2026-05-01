@@ -10,6 +10,16 @@ import { secureTokenStore } from './secure-token-store'
 const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3000/api'
 
+// Hard-fail at boot if a release build was bundled with an insecure URL.
+// `__DEV__` is false in EAS/production builds; cleartext traffic is blocked
+// by ATS/NetworkSecurityConfig anyway, but failing here gives a precise
+// error message instead of a silent network error.
+if (!__DEV__ && !API_BASE_URL.startsWith('https://')) {
+  throw new Error(
+    `EXPO_PUBLIC_API_URL must use HTTPS in production builds. Got: ${API_BASE_URL}`,
+  )
+}
+
 let isRefreshing = false
 let pendingQueue: Array<{
   resolve: (token: string) => void
