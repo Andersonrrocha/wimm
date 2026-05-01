@@ -22,7 +22,10 @@
     "year": "Year",
     "from": "From",
     "to": "To",
-    "pleaseWait": "Please wait…"
+    "pleaseWait": "Please wait…",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "close": "Close"
   },
   "auth": {
     "noAccountForEmail": "There is no account for this email.",

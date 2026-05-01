@@ -22,7 +22,10 @@
     "year": "Ano",
     "from": "De",
     "to": "Até",
-    "pleaseWait": "Aguarde…"
+    "pleaseWait": "Aguarde…",
+    "cancel": "Cancelar",
+    "delete": "Excluir",
+    "close": "Fechar"
   },
   "auth": {
     "noAccountForEmail": "Não há conta cadastrada com este e-mail.",
