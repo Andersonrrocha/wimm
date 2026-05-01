@@ -309,6 +309,8 @@
     "newShort": "New",
     "whereMoneyGoes": "Where the money goes",
     "whereMoneyGoesSub": "Top {{count}} expense categories in range",
+    "viewDonut": "Donut chart",
+    "viewBars": "Bar list",
     "recentActivity": "Recent activity",
     "recentActivitySub": "Six latest transactions in range",
     "noTransactionsRange": "No transactions in this range yet.",

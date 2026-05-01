@@ -384,10 +384,12 @@ function ViewToggle({
   value: ExpenseView
   onChange: (v: ExpenseView) => void
 }): JSX.Element {
+  const { t } = useTranslation()
   return (
     <View style={styles.viewToggle}>
       <ViewToggleButton
         active={value === 'donut'}
+        label={t('dashboard.viewDonut')}
         onPress={() => onChange('donut')}
       >
         <ChartPie
@@ -397,6 +399,7 @@ function ViewToggle({
       </ViewToggleButton>
       <ViewToggleButton
         active={value === 'bars'}
+        label={t('dashboard.viewBars')}
         onPress={() => onChange('bars')}
       >
         <ChartColumn
@@ -410,16 +413,22 @@ function ViewToggle({
 
 function ViewToggleButton({
   active,
+  label,
   onPress,
   children,
 }: {
   active: boolean
+  label: string
   onPress: () => void
   children: React.ReactNode
 }): JSX.Element {
   return (
     <Pressable
       onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ selected: active }}
+      hitSlop={8}
       style={[styles.viewToggleBtn, active && styles.viewToggleBtnActive]}
     >
       {children}

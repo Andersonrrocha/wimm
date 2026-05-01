@@ -309,6 +309,8 @@
     "newShort": "Nova",
     "whereMoneyGoes": "Para onde vai o dinheiro",
     "whereMoneyGoesSub": "Top {{count}} categorias de despesa no período",
+    "viewDonut": "Gráfico donut",
+    "viewBars": "Lista em barras",
     "recentActivity": "Atividade recente",
     "recentActivitySub": "Últimas seis transações no período",
     "noTransactionsRange": "Ainda não há transações neste período.",
