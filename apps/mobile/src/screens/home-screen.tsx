@@ -12,9 +12,14 @@ import {
 import type {
   ReportByCategoryResponse,
   ReportFutureCommitmentsResponse,
+  ReportMonthlyResponse,
   ReportSummaryResponse,
 } from '@wimm/shared'
-import { CategoryBarRow } from '../components/dashboard/category-bar-row'
+import {
+  CategoryDonut,
+  type CategorySlice,
+} from '../components/dashboard/category-donut'
+import { MonthlyTrendChart } from '../components/dashboard/monthly-trend-chart'
 import { EmptyState } from '../components/ui/empty-state'
 import { KpiCard } from '../components/ui/kpi-card'
 import { PageHeader } from '../components/ui/page-header'
@@ -33,15 +38,6 @@ const RANGE_PRESETS: { id: RangePreset; labelKey: string }[] = [
 ]
 
 const TOP_CATEGORY_LIMIT = 5
-
-const CATEGORY_BAR_COLORS = [
-  colors.chart1,
-  colors.chart2,
-  colors.chart4,
-  colors.chart5,
-  colors.chart6,
-  colors.chart3,
-]
 
 function nextMonth(now: Date = new Date()): { year: number; month: number } {
   const next = new Date(now.getFullYear(), now.getMonth() + 1, 1)
@@ -90,21 +86,53 @@ export function HomeScreen(): JSX.Element {
     },
   })
 
+  const trendYear = useMemo(() => new Date().getFullYear(), [])
+  const { data: monthly, isLoading: loadingMonthly } = useQuery({
+    queryKey: ['reports', 'monthly', trendYear],
+    queryFn: async () => {
+      const { data } = await apiClient.get<ReportMonthlyResponse>(
+        '/reports/monthly',
+        { params: { year: trendYear } },
+      )
+      return data
+    },
+  })
+
   const incomeNum = parseAmount(summary?.income)
   const netNum = parseAmount(summary?.net)
   const savingsRate =
     incomeNum > 0 ? Math.round((netNum / incomeNum) * 100) : null
 
-  const topExpenses = useMemo(() => {
+  const expenseSlices = useMemo<{
+    slices: CategorySlice[]
+    total: number
+  }>(() => {
     const items = (byCategory?.items ?? []).filter(
       (r) => r.kind === 'EXPENSE',
     )
     const sorted = items
-      .map((r) => ({ ...r, total: parseAmount(r.total) }))
-      .sort((a, b) => b.total - a.total)
+      .map((r) => ({
+        id: r.categoryId ?? `unknown-${r.name}`,
+        label: r.name,
+        value: parseAmount(r.total),
+      }))
+      .sort((a, b) => b.value - a.value)
+
     const top = sorted.slice(0, TOP_CATEGORY_LIMIT)
-    const max = top[0]?.total ?? 0
-    return { rows: top, max }
+    const otherTotal = sorted
+      .slice(TOP_CATEGORY_LIMIT)
+      .reduce((sum, s) => sum + s.value, 0)
+
+    const slices: CategorySlice[] = [...top]
+    if (otherTotal > 0) {
+      slices.push({
+        id: '__other__',
+        label: 'Outros',
+        value: otherTotal,
+      })
+    }
+    const total = sorted.reduce((sum, s) => sum + s.value, 0)
+    return { slices, total }
   }, [byCategory])
 
   return (
@@ -171,28 +199,36 @@ export function HomeScreen(): JSX.Element {
       </View>
 
       <SectionHeader
-        title={t('dashboard.topSpending')}
-        subtitle={t('dashboard.topSpendingSub')}
+        title={t('dashboard.whereMoneyGoes')}
+        subtitle={t('dashboard.whereMoneyGoesSub', {
+          count: TOP_CATEGORY_LIMIT,
+        })}
       />
       <Panel>
         {loadingByCat ? (
           <Loader />
-        ) : topExpenses.rows.length === 0 ? (
+        ) : expenseSlices.slices.length === 0 ? (
           <Text style={styles.muted}>
             {t('dashboard.noExpenseCategories')}
           </Text>
         ) : (
-          <View style={styles.barsList}>
-            {topExpenses.rows.map((row, i) => (
-              <CategoryBarRow
-                key={row.categoryId ?? `unknown-${i}`}
-                label={row.name}
-                value={formatMoney(row.total)}
-                fraction={topExpenses.max > 0 ? row.total / topExpenses.max : 0}
-                color={CATEGORY_BAR_COLORS[i % CATEGORY_BAR_COLORS.length]}
-              />
-            ))}
-          </View>
+          <CategoryDonut
+            slices={expenseSlices.slices}
+            centerValue={formatMoney(expenseSlices.total)}
+            centerLabel={t('dashboard.kpi.expense')}
+          />
+        )}
+      </Panel>
+
+      <SectionHeader
+        title={t('dashboard.monthlyPerformance')}
+        subtitle={t('dashboard.cumulativeNetSub', { year: trendYear })}
+      />
+      <Panel>
+        {loadingMonthly || !monthly ? (
+          <Loader />
+        ) : (
+          <MonthlyTrendChart months={monthly.months} />
         )}
       </Panel>
 
@@ -353,9 +389,6 @@ const styles = StyleSheet.create({
   sectionSub: {
     color: colors.fgMuted,
     fontSize: fontSize.sm,
-  },
-  barsList: {
-    gap: spacing.md,
   },
   muted: {
     color: colors.fgMuted,
