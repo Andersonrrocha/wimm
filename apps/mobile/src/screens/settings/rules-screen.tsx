@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   ActivityIndicator,
@@ -11,6 +11,8 @@ import {
   View,
 } from 'react-native'
 import type { CategorizationRule } from '@wimm/shared'
+import { RuleFormModal } from '../../components/rules/rule-form-modal'
+import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Panel } from '../../components/ui/panel'
@@ -22,6 +24,7 @@ import { colors, fontSize, radius, spacing } from '../../theme/tokens'
 export function RulesScreen(): JSX.Element {
   const { t } = useTranslation()
   const qc = useQueryClient()
+  const [showForm, setShowForm] = useState(false)
 
   const { data: list = [], isLoading } = useQuery({
     queryKey: ['categorization-rules'],
@@ -82,11 +85,19 @@ export function RulesScreen(): JSX.Element {
 
   return (
     <Screen scroll edges={[]}>
-      <Text style={styles.subtitle}>
-        {list.length === 0
-          ? t('rulesTab.rulesSubtitleEmpty')
-          : t('rulesTab.rulesSubtitle', stats)}
-      </Text>
+      <View style={styles.headRow}>
+        <Text style={styles.subtitle}>
+          {list.length === 0
+            ? t('rulesTab.rulesSubtitleEmpty')
+            : t('rulesTab.rulesSubtitle', stats)}
+        </Text>
+        <Button
+          label={t('rulesTab.addRule')}
+          variant="primary"
+          size="sm"
+          onPress={() => setShowForm(true)}
+        />
+      </View>
 
       {isLoading ? (
         <View style={styles.center}>
@@ -96,6 +107,13 @@ export function RulesScreen(): JSX.Element {
         <EmptyState
           title={t('settings.tabRules')}
           subtitle={t('rulesTab.emptyHint')}
+          action={
+            <Button
+              label={t('rulesTab.addRule')}
+              variant="primary"
+              onPress={() => setShowForm(true)}
+            />
+          }
         />
       ) : (
         <Panel padding="sm">
@@ -145,15 +163,24 @@ export function RulesScreen(): JSX.Element {
           ))}
         </Panel>
       )}
+
+      <RuleFormModal visible={showForm} onClose={() => setShowForm(false)} />
     </Screen>
   )
 }
 
 const styles = StyleSheet.create({
+  headRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
   subtitle: {
     color: colors.fgMuted,
     fontSize: fontSize.sm,
-    marginBottom: spacing.md,
+    flex: 1,
   },
   center: {
     paddingVertical: spacing.xxl,
