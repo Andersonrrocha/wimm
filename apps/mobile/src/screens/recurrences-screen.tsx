@@ -111,7 +111,7 @@ export function RecurrencesScreen(): JSX.Element {
       >
         <PageHeader
           eyebrow={t('recurrences.eyebrow')}
-          title={t('recurrences.pageTitle')}
+          title={t('nav.recurrences')}
           subtitle={
             list.length > 0
               ? t('recurrences.rulesSubtitle', {
@@ -121,12 +121,14 @@ export function RecurrencesScreen(): JSX.Element {
               : t('recurrences.pageSubtitle')
           }
           trailing={
-            <Button
-              label={t('recurrences.addRule')}
-              variant="primary"
-              size="sm"
-              onPress={() => setForm({ mode: 'new' })}
-            />
+            list.length > 0 ? (
+              <Button
+                label={t('recurrences.addRule')}
+                variant="primary"
+                size="sm"
+                onPress={() => setForm({ mode: 'new' })}
+              />
+            ) : undefined
           }
         />
 

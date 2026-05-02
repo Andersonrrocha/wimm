@@ -36,7 +36,7 @@ export function SettingsNavigator(): JSX.Element {
       <Stack.Screen
         name="SettingsHome"
         component={SettingsHomeScreen}
-        options={{ headerShown: false }}
+        options={{ headerShown: false, title: t('nav.settings') }}
       />
       <Stack.Screen
         name="Categories"
