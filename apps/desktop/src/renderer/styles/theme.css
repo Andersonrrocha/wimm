@@ -690,6 +690,13 @@
   background: var(--wm-surface-2);
 }
 
+/* Library default sets `font-size: large` + `font-weight: bold` on selected,
+   which makes the highlighted days noticeably bigger than the rest. */
+.wm-daypicker .rdp-selected {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
 .wm-daypicker .rdp-selected .rdp-day_button {
   background: var(--wm-accent);
   color: var(--wm-text);
