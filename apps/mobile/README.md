@@ -105,7 +105,7 @@ This repo uses **pnpm only**. Running `npm install` or `yarn` at the root will b
 
 ## Tech stack
 
-- Expo SDK 52 (React Native 0.76, React 18.3)
+- Expo SDK 54 (React Native 0.81, React 19.1)
 - TypeScript strict
 - React Navigation 7 (Bottom Tabs + Native Stack)
 - TanStack Query 5
