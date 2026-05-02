@@ -448,89 +448,6 @@
     animation: wm-rise var(--wm-motion-base);
   }
 
-  /*
-   * DayPicker loads `react-day-picker/style.css` after our theme; its
-   * `.rdp-root { --rdp-accent-color: blue }` would otherwise win. Chain
-   * `.rdp-root.wm-daypicker` so tokens beat the library and chevrons / today /
-   * selection use our accent orange.
-   */
-  .rdp-root.wm-daypicker {
-    --rdp-accent-color: var(--wm-accent);
-    --rdp-background-color: var(--wm-surface-2);
-    --rdp-accent-background-color: var(--wm-accent-soft);
-    --rdp-day-font: var(--wm-font-sans);
-    --rdp-day-height: 2.1rem;
-    --rdp-day-width: 2.1rem;
-    --rdp-day_button-height: 2.1rem;
-    --rdp-day_button-width: 2.1rem;
-    --rdp-day_button-border-radius: var(--wm-radius-sm);
-    --rdp-selected-border: 2px solid var(--wm-accent);
-    --rdp-today-color: var(--wm-accent);
-    --rdp-weekday-opacity: 1;
-    --rdp-nav_button-height: 1.8rem;
-    --rdp-nav_button-width: 1.8rem;
-    --rdp-outside-opacity: 0.35;
-    --rdp-range_start-date-background-color: var(--wm-accent);
-    --rdp-range_end-date-background-color: var(--wm-accent);
-    font-size: var(--wm-fs-sm);
-    color: var(--wm-text);
-    margin: 0;
-  }
-  .wm-daypicker .rdp-caption_label,
-  .wm-daypicker .rdp-month_caption {
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    color: var(--wm-text);
-  }
-  .wm-daypicker .rdp-nav_button,
-  .wm-daypicker .rdp-button_previous,
-  .wm-daypicker .rdp-button_next {
-    color: var(--wm-text-muted);
-    border-radius: var(--wm-radius-sm);
-    transition:
-      background var(--wm-motion-fast),
-      color var(--wm-motion-fast);
-  }
-  .wm-daypicker .rdp-nav_button:hover,
-  .wm-daypicker .rdp-button_previous:hover,
-  .wm-daypicker .rdp-button_next:hover {
-    background: var(--wm-surface-2);
-    color: var(--wm-text);
-  }
-  .wm-daypicker .rdp-weekday {
-    font-size: var(--wm-fs-xs);
-    color: var(--wm-text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    font-weight: 500;
-  }
-  .wm-daypicker .rdp-day_button {
-    transition:
-      background var(--wm-motion-fast),
-      color var(--wm-motion-fast);
-    font-variant-numeric: tabular-nums;
-  }
-  .wm-daypicker .rdp-day_button:hover:not([disabled]) {
-    background: var(--wm-surface-2);
-  }
-  .wm-daypicker .rdp-day_selected .rdp-day_button,
-  .wm-daypicker .rdp-selected .rdp-day_button {
-    background: var(--wm-accent);
-    color: #121212;
-    font-weight: 600;
-  }
-  .wm-daypicker .rdp-day_today:not(.rdp-day_selected) .rdp-day_button,
-  .wm-daypicker .rdp-today:not(.rdp-selected) .rdp-day_button {
-    color: var(--wm-accent);
-    font-weight: 600;
-  }
-  .wm-daypicker .rdp-day_outside {
-    opacity: 0.35;
-  }
-  .wm-daypicker .rdp-day_disabled {
-    opacity: 0.35;
-  }
-
   /* Modal ------------------------------------------------------------ */
   .wm-modal-backdrop {
     position: fixed;
@@ -690,6 +607,128 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* DayPicker (react-day-picker v9) — UNLAYERED                         */
+/*                                                                     */
+/* Must live outside @layer because react-day-picker ships its CSS as  */
+/* unlayered, and per the CSS Cascading Layers spec unlayered rules    */
+/* always win over layered ones regardless of specificity. Keeping     */
+/* these inside @layer components made `--rdp-accent-color: blue` from */
+/* the library win, even though `.rdp-root.wm-daypicker` had higher    */
+/* specificity than `.rdp-root`.                                       */
+/* ------------------------------------------------------------------ */
+
+.rdp-root.wm-daypicker {
+  --rdp-accent-color: var(--wm-accent);
+  --rdp-background-color: var(--wm-surface-2);
+  --rdp-accent-background-color: var(--wm-accent-soft);
+  --rdp-day-font: var(--wm-font-sans);
+  --rdp-day-height: 2.1rem;
+  --rdp-day-width: 2.1rem;
+  --rdp-day_button-height: 2.1rem;
+  --rdp-day_button-width: 2.1rem;
+  --rdp-day_button-border-radius: var(--wm-radius-sm);
+  --rdp-selected-border: 2px solid var(--wm-accent);
+  --rdp-today-color: var(--wm-accent);
+  --rdp-weekday-opacity: 1;
+  --rdp-nav_button-height: 1.8rem;
+  --rdp-nav_button-width: 1.8rem;
+  --rdp-outside-opacity: 0.35;
+  --rdp-range_start-color: var(--wm-text);
+  --rdp-range_end-color: var(--wm-text);
+  --rdp-range_middle-color: var(--wm-text);
+  --rdp-range_start-date-background-color: var(--wm-accent);
+  --rdp-range_end-date-background-color: var(--wm-accent);
+  --rdp-range_middle-background-color: var(--wm-accent-soft);
+  font-size: var(--wm-fs-sm);
+  color: var(--wm-text);
+  margin: 0;
+}
+
+.wm-daypicker .rdp-caption_label,
+.wm-daypicker .rdp-month_caption {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--wm-text);
+}
+
+.wm-daypicker .rdp-nav_button,
+.wm-daypicker .rdp-button_previous,
+.wm-daypicker .rdp-button_next {
+  color: var(--wm-text-muted);
+  border-radius: var(--wm-radius-sm);
+  transition:
+    background var(--wm-motion-fast),
+    color var(--wm-motion-fast);
+}
+
+.wm-daypicker .rdp-nav_button:hover,
+.wm-daypicker .rdp-button_previous:hover,
+.wm-daypicker .rdp-button_next:hover {
+  background: var(--wm-surface-2);
+  color: var(--wm-text);
+}
+
+.wm-daypicker .rdp-weekday {
+  font-size: var(--wm-fs-xs);
+  color: var(--wm-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 500;
+}
+
+.wm-daypicker .rdp-day_button {
+  transition:
+    background var(--wm-motion-fast),
+    color var(--wm-motion-fast);
+  font-variant-numeric: tabular-nums;
+}
+
+.wm-daypicker .rdp-day_button:hover:not([disabled]) {
+  background: var(--wm-surface-2);
+}
+
+.wm-daypicker .rdp-selected .rdp-day_button {
+  background: var(--wm-accent);
+  color: var(--wm-text);
+  font-weight: 600;
+}
+
+.wm-daypicker .rdp-today:not(.rdp-selected) .rdp-day_button {
+  color: var(--wm-accent);
+  font-weight: 600;
+}
+
+.wm-daypicker .rdp-outside {
+  opacity: 0.35;
+}
+
+.wm-daypicker .rdp-disabled {
+  opacity: 0.35;
+}
+
+/* Range mode tweaks ------------------------------------------------ */
+.wm-daypicker .rdp-range_start .rdp-day_button,
+.wm-daypicker .rdp-range_end .rdp-day_button {
+  background-color: var(--wm-accent);
+  color: var(--wm-text);
+  border: none;
+}
+
+.wm-daypicker .rdp-range_middle {
+  background-color: var(--wm-accent-soft);
+}
+
+.wm-daypicker .rdp-range_middle .rdp-day_button {
+  background: transparent;
+  color: var(--wm-text);
+  border: none;
+}
+
+.wm-daypicker .rdp-range_middle .rdp-day_button:hover:not([disabled]) {
+  background: rgba(255, 106, 61, 0.22);
 }
 
 /* ------------------------------------------------------------------ */
