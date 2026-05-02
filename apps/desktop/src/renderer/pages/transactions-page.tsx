@@ -21,7 +21,7 @@ import type {
 import { apiClient } from '../lib/api-client'
 import { buildCategoryOptionGroups } from '../lib/category-label'
 import { PageHeader } from '../components/ui/page-header'
-import { DatePicker } from '../components/ui/date-picker'
+import { DateRangePicker } from '../components/ui/date-range-picker'
 import { Select } from '../components/ui/select'
 import { Button } from '../components/ui/button'
 import { Chip } from '../components/ui/chip'
@@ -273,26 +273,17 @@ export function TransactionsPage(): JSX.Element {
       <Panel>
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div className="flex flex-wrap items-end gap-2.5">
-            <Field label={t('transactions.from')}>
-              <DatePicker
-                value={from}
-                onChange={(v) => {
+            <Field label={t('common.dateRange')}>
+              <DateRangePicker
+                from={from}
+                to={to}
+                onChange={(range) => {
                   setMonthShortcut('')
-                  setFrom(v)
+                  setFrom(range.from)
+                  setTo(range.to)
                   resetPage()
                 }}
-                minWidth={160}
-              />
-            </Field>
-            <Field label={t('transactions.to')}>
-              <DatePicker
-                value={to}
-                onChange={(v) => {
-                  setMonthShortcut('')
-                  setTo(v)
-                  resetPage()
-                }}
-                minWidth={160}
+                minWidth={260}
               />
             </Field>
             <Field label={t('transactions.monthFilter')}>

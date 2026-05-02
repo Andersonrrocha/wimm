@@ -22,7 +22,9 @@
     "year": "Year",
     "from": "From",
     "to": "To",
-    "pleaseWait": "Please wait…"
+    "pleaseWait": "Please wait…",
+    "dateRange": "Date range",
+    "pickRange": "Pick a date range"
   },
   "auth": {
     "noAccountForEmail": "There is no account for this email.",

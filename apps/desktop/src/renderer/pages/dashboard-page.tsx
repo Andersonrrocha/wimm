@@ -32,7 +32,7 @@ import { useAuth } from "../context/auth-context";
 import { apiClient } from "../lib/api-client";
 import { reportCategoryDisplayName } from "../lib/category-label";
 import type { QuickAddTab } from "../components/quick-add-modal";
-import { DatePicker } from "../components/ui/date-picker";
+import { DateRangePicker } from "../components/ui/date-range-picker";
 import { Select } from "../components/ui/select";
 import { Button } from "../components/ui/button";
 import { Chip } from "../components/ui/chip";
@@ -304,18 +304,11 @@ export function DashboardPage(): JSX.Element {
             ))}
           </div>
           <div style={styles.rangeInputs}>
-            <DatePicker
-              value={range.from}
-              onChange={(v) => updateRange({ from: v })}
-              ariaLabel={t("transactions.from")}
-              minWidth={148}
-            />
-            <span style={styles.dash}>→</span>
-            <DatePicker
-              value={range.to}
-              onChange={(v) => updateRange({ to: v })}
-              ariaLabel={t("transactions.to")}
-              minWidth={148}
+            <DateRangePicker
+              from={range.from}
+              to={range.to}
+              onChange={({ from, to }) => updateRange({ from, to })}
+              minWidth={260}
             />
           </div>
         </div>

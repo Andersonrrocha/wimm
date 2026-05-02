@@ -22,7 +22,9 @@
     "year": "Ano",
     "from": "De",
     "to": "Até",
-    "pleaseWait": "Aguarde…"
+    "pleaseWait": "Aguarde…",
+    "dateRange": "Período",
+    "pickRange": "Escolher período"
   },
   "auth": {
     "noAccountForEmail": "Não há conta cadastrada com este e-mail.",
