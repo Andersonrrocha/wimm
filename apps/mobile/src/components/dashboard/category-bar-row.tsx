@@ -18,25 +18,21 @@ export function CategoryBarRow({
   color = colors.accent,
 }: CategoryBarRowProps): JSX.Element {
   const target = Math.max(2, Math.min(100, Math.round(fraction * 100)))
-  // Animated.Value can't drive a percent string directly; we animate a 0–100
-  // number and interpolate to a percent. Width animation can't use the
-  // native driver (only opacity / transform), but for a single short tween
-  // that's acceptable.
+  // Drive the fill with `transform: scaleX` from a static `width` instead of
+  // animating `width` directly. Transforms run on the native thread and
+  // don't trigger layout — no flicker, no JS frame drops. `transformOrigin:
+  // 'left'` anchors the scale to the left edge so the bar grows rightward.
   const progress = useRef(new Animated.Value(0)).current
 
   useEffect(() => {
+    progress.setValue(0)
     Animated.timing(progress, {
-      toValue: target,
-      duration: 480,
+      toValue: 1,
+      duration: 500,
       easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
+      useNativeDriver: true,
     }).start()
   }, [target, progress])
-
-  const animatedWidth = progress.interpolate({
-    inputRange: [0, 100],
-    outputRange: ['0%', '100%'],
-  })
 
   return (
     <View style={styles.row}>
@@ -50,7 +46,12 @@ export function CategoryBarRow({
         <Animated.View
           style={[
             styles.fill,
-            { width: animatedWidth, backgroundColor: color },
+            {
+              width: `${target}%`,
+              backgroundColor: color,
+              transform: [{ scaleX: progress }],
+              transformOrigin: 'left',
+            },
           ]}
         />
       </View>

@@ -408,8 +408,10 @@ function SectionHeader({
 }
 
 /**
- * Fades + scales children in whenever `viewKey` changes. First mount is
- * shown without animation to avoid the chart "popping in" on screen open.
+ * Fades children in whenever `viewKey` changes. Charts handle their own
+ * growth animation internally; the wrapper only smooths the swap.
+ * First mount renders without animation so the dashboard isn't "popping in"
+ * every time it appears.
  */
 function AnimatedSwap({
   viewKey,
@@ -419,7 +421,6 @@ function AnimatedSwap({
   children: React.ReactNode
 }): JSX.Element {
   const opacity = useRef(new Animated.Value(1)).current
-  const scale = useRef(new Animated.Value(1)).current
   const isFirst = useRef(true)
 
   useEffect(() => {
@@ -428,28 +429,15 @@ function AnimatedSwap({
       return
     }
     opacity.setValue(0)
-    scale.setValue(0.94)
-    Animated.parallel([
-      Animated.timing(opacity, {
-        toValue: 1,
-        duration: 220,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.spring(scale, {
-        toValue: 1,
-        friction: 7,
-        tension: 80,
-        useNativeDriver: true,
-      }),
-    ]).start()
-  }, [viewKey, opacity, scale])
+    Animated.timing(opacity, {
+      toValue: 1,
+      duration: 180,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start()
+  }, [viewKey, opacity])
 
-  return (
-    <Animated.View style={{ opacity, transform: [{ scale }] }}>
-      {children}
-    </Animated.View>
-  )
+  return <Animated.View style={{ opacity }}>{children}</Animated.View>
 }
 
 function Loader(): JSX.Element {

@@ -1,5 +1,5 @@
 import { StyleSheet, Text, View } from 'react-native'
-import { PieChart } from 'react-native-gifted-charts'
+import { DonutChart } from './donut-chart'
 import { formatMoney } from '../../lib/format-money'
 import { colors, fontSize, spacing, tracking } from '../../theme/tokens'
 
@@ -11,6 +11,9 @@ const PALETTE = [
   colors.chart6,
   colors.chart3,
 ]
+
+const SIZE = 176
+const STROKE = 28
 
 export interface CategorySlice {
   /** Stable id for `key` and de-duplication. */
@@ -34,21 +37,18 @@ export function CategoryDonut({
   centerLabel,
 }: CategoryDonutProps): JSX.Element {
   const data = slices.map((s, i) => ({
+    id: s.id,
     value: s.value,
     color: PALETTE[i % PALETTE.length],
   }))
 
   return (
     <View style={styles.container}>
-      <PieChart
-        data={data}
-        donut
-        isAnimated
-        animationDuration={500}
-        radius={88}
-        innerRadius={60}
-        innerCircleColor={colors.surface1}
-        centerLabelComponent={() => (
+      <DonutChart
+        slices={data}
+        size={SIZE}
+        strokeWidth={STROKE}
+        centerComponent={
           <View style={styles.center}>
             {centerLabel ? (
               <Text style={styles.centerLabel}>{centerLabel}</Text>
@@ -57,7 +57,7 @@ export function CategoryDonut({
               {centerValue}
             </Text>
           </View>
-        )}
+        }
       />
 
       <View style={styles.legend}>
