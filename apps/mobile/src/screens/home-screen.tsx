@@ -1,9 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import { CalendarRange, ChartColumn, ChartPie } from 'lucide-react-native'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -258,31 +260,33 @@ export function HomeScreen(): JSX.Element {
             <View style={styles.viewToggleRow}>
               <ViewToggle value={expenseView} onChange={setExpenseView} />
             </View>
-            {expenseView === 'donut' ? (
-              <CategoryDonut
-                slices={expenseSlices.slices}
-                centerValue={formatMoney(expenseSlices.total)}
-                centerLabel={t('dashboard.kpi.expense')}
-              />
-            ) : (
-              <View style={styles.barsList}>
-                {expenseSlices.slices.map((s, i) => (
-                  <CategoryBarRow
-                    key={s.id}
-                    label={s.label}
-                    value={formatMoney(s.value)}
-                    fraction={
-                      expenseSlices.slices[0].value > 0
-                        ? s.value / expenseSlices.slices[0].value
-                        : 0
-                    }
-                    color={
-                      CATEGORY_BAR_COLORS[i % CATEGORY_BAR_COLORS.length]
-                    }
-                  />
-                ))}
-              </View>
-            )}
+            <AnimatedSwap viewKey={expenseView}>
+              {expenseView === 'donut' ? (
+                <CategoryDonut
+                  slices={expenseSlices.slices}
+                  centerValue={formatMoney(expenseSlices.total)}
+                  centerLabel={t('dashboard.kpi.expense')}
+                />
+              ) : (
+                <View style={styles.barsList}>
+                  {expenseSlices.slices.map((s, i) => (
+                    <CategoryBarRow
+                      key={s.id}
+                      label={s.label}
+                      value={formatMoney(s.value)}
+                      fraction={
+                        expenseSlices.slices[0].value > 0
+                          ? s.value / expenseSlices.slices[0].value
+                          : 0
+                      }
+                      color={
+                        CATEGORY_BAR_COLORS[i % CATEGORY_BAR_COLORS.length]
+                      }
+                    />
+                  ))}
+                </View>
+              )}
+            </AnimatedSwap>
           </>
         )}
       </Panel>
@@ -400,6 +404,51 @@ function SectionHeader({
       <Text style={styles.sectionTitle}>{title}</Text>
       {subtitle ? <Text style={styles.sectionSub}>{subtitle}</Text> : null}
     </View>
+  )
+}
+
+/**
+ * Fades + scales children in whenever `viewKey` changes. First mount is
+ * shown without animation to avoid the chart "popping in" on screen open.
+ */
+function AnimatedSwap({
+  viewKey,
+  children,
+}: {
+  viewKey: string
+  children: React.ReactNode
+}): JSX.Element {
+  const opacity = useRef(new Animated.Value(1)).current
+  const scale = useRef(new Animated.Value(1)).current
+  const isFirst = useRef(true)
+
+  useEffect(() => {
+    if (isFirst.current) {
+      isFirst.current = false
+      return
+    }
+    opacity.setValue(0)
+    scale.setValue(0.94)
+    Animated.parallel([
+      Animated.timing(opacity, {
+        toValue: 1,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.spring(scale, {
+        toValue: 1,
+        friction: 7,
+        tension: 80,
+        useNativeDriver: true,
+      }),
+    ]).start()
+  }, [viewKey, opacity, scale])
+
+  return (
+    <Animated.View style={{ opacity, transform: [{ scale }] }}>
+      {children}
+    </Animated.View>
   )
 }
 
