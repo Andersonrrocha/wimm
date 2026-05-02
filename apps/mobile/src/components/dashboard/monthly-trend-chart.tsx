@@ -71,6 +71,8 @@ export function MonthlyTrendChart({
         spacing={10}
         initialSpacing={10}
         roundedTop
+        isAnimated
+        animationDuration={500}
         hideRules
         hideYAxisText
         yAxisThickness={0}

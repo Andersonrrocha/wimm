@@ -43,6 +43,8 @@ export function CategoryDonut({
       <PieChart
         data={data}
         donut
+        isAnimated
+        animationDuration={500}
         radius={88}
         innerRadius={60}
         innerCircleColor={colors.surface1}

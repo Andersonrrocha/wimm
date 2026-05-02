@@ -1,4 +1,5 @@
-import { StyleSheet, Text, View } from 'react-native'
+import { useEffect, useRef } from 'react'
+import { Animated, Easing, StyleSheet, Text, View } from 'react-native'
 import { colors, fontSize, radius, spacing } from '../../theme/tokens'
 
 interface CategoryBarRowProps {
@@ -16,7 +17,27 @@ export function CategoryBarRow({
   fraction,
   color = colors.accent,
 }: CategoryBarRowProps): JSX.Element {
-  const pct = Math.max(2, Math.min(100, Math.round(fraction * 100)))
+  const target = Math.max(2, Math.min(100, Math.round(fraction * 100)))
+  // Animated.Value can't drive a percent string directly; we animate a 0–100
+  // number and interpolate to a percent. Width animation can't use the
+  // native driver (only opacity / transform), but for a single short tween
+  // that's acceptable.
+  const progress = useRef(new Animated.Value(0)).current
+
+  useEffect(() => {
+    Animated.timing(progress, {
+      toValue: target,
+      duration: 480,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start()
+  }, [target, progress])
+
+  const animatedWidth = progress.interpolate({
+    inputRange: [0, 100],
+    outputRange: ['0%', '100%'],
+  })
+
   return (
     <View style={styles.row}>
       <View style={styles.headRow}>
@@ -26,10 +47,10 @@ export function CategoryBarRow({
         <Text style={styles.value}>{value}</Text>
       </View>
       <View style={styles.track}>
-        <View
+        <Animated.View
           style={[
             styles.fill,
-            { width: `${pct}%`, backgroundColor: color },
+            { width: animatedWidth, backgroundColor: color },
           ]}
         />
       </View>
