@@ -39,6 +39,9 @@ apps/desktop/release/
 apps/mobile/.expo/
 apps/mobile/dist/
 apps/mobile/web-build/
+# Native folders are generated on demand by `expo prebuild` — don't track.
+apps/mobile/ios/
+apps/mobile/android/
 
 # NestJS
 apps/api/dist/
