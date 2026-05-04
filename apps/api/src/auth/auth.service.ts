@@ -28,6 +28,8 @@ export type AuthResponseBody = {
     subscriptionPlan: 'MONTHLY' | 'ANNUAL' | 'LIFETIME' | null
     trialEndsAt: Date | null
     founderNumber: number | null
+    aiCategorizationMode: 'OFF' | 'SERVER' | 'BYOK'
+    hasAiApiKey: boolean
   }
 }
 
@@ -130,6 +132,8 @@ export class AuthService {
         subscriptionPlan: true,
         trialEndsAt: true,
         founderNumber: true,
+        aiCategorizationMode: true,
+        aiApiKeyEncrypted: true,
       },
     })
     if (!row) {
@@ -155,6 +159,8 @@ export class AuthService {
         subscriptionPlan: row.subscriptionPlan,
         trialEndsAt: row.trialEndsAt,
         founderNumber: row.founderNumber,
+        aiCategorizationMode: row.aiCategorizationMode,
+        hasAiApiKey: row.aiApiKeyEncrypted !== null,
       },
     }
   }

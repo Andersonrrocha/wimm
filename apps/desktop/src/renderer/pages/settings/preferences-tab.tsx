@@ -1,8 +1,15 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { AppLocale, ChartDateMode, User } from '@wimm/shared'
+import type {
+  AiCategorizationMode,
+  AppLocale,
+  ChartDateMode,
+  User,
+  UpdateUserMeRequest,
+} from '@wimm/shared'
 import { useAuth } from '../../context/auth-context'
 import { apiClient } from '../../lib/api-client'
+import { Button } from '../../components/ui/button'
 import { ChartDateModeToggle } from '../../components/ui/chart-date-mode-toggle'
 import { Field } from '../../components/ui/field'
 import { Panel } from '../../components/ui/panel'
@@ -13,14 +20,16 @@ export function PreferencesTab(): JSX.Element {
   const { state, refreshUser } = useAuth()
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+  const [byokInput, setByokInput] = useState('')
+  const [byokError, setByokError] = useState<string | null>(null)
 
   const user = state.status === 'authenticated' ? state.user : null
   const value = user?.preferredLocale ?? 'pt'
   const chartMode: ChartDateMode = user?.chartDateMode ?? 'BILLING_CYCLE'
+  const aiMode: AiCategorizationMode = user?.aiCategorizationMode ?? 'OFF'
+  const hasAiKey = user?.hasAiApiKey ?? false
 
-  const patchMe = async (
-    body: { preferredLocale?: AppLocale; chartDateMode?: ChartDateMode },
-  ): Promise<void> => {
+  const patchMe = async (body: UpdateUserMeRequest): Promise<void> => {
     setError(null)
     setPending(true)
     try {
@@ -40,6 +49,29 @@ export function PreferencesTab(): JSX.Element {
 
   const onModeChange = (next: ChartDateMode): void => {
     void patchMe({ chartDateMode: next })
+  }
+
+  const onAiModeChange = (next: AiCategorizationMode): void => {
+    void patchMe({ aiCategorizationMode: next })
+  }
+
+  const onSaveByokKey = async (): Promise<void> => {
+    setByokError(null)
+    const trimmed = byokInput.trim()
+    if (!trimmed.startsWith('sk-ant-')) {
+      setByokError(t('settings.aiKeyInvalid'))
+      return
+    }
+    try {
+      await patchMe({ aiApiKey: trimmed, aiCategorizationMode: 'BYOK' })
+      setByokInput('')
+    } catch {
+      setByokError(t('settings.aiKeyFailed'))
+    }
+  }
+
+  const onClearByokKey = async (): Promise<void> => {
+    await patchMe({ aiApiKey: null })
   }
 
   return (
@@ -78,6 +110,76 @@ export function PreferencesTab(): JSX.Element {
             disabled={pending || !user}
           />
         </Field>
+
+        <div>
+          <h3 className="m-0 text-wm-md font-medium text-fg">
+            {t('settings.aiTitle')}
+          </h3>
+          <p className="mt-1.5 text-wm-sm leading-relaxed text-fg-muted">
+            {t('settings.aiSubtitle')}
+          </p>
+        </div>
+
+        <Field label={t('settings.aiMode')} hint={t('settings.aiModeHint')}>
+          <Select
+            value={aiMode}
+            onChange={(v) => onAiModeChange(v as AiCategorizationMode)}
+            disabled={pending || !user}
+            options={[
+              { value: 'OFF', label: t('settings.aiModeOff') },
+              { value: 'SERVER', label: t('settings.aiModeServer') },
+              { value: 'BYOK', label: t('settings.aiModeByok') },
+            ]}
+            ariaLabel={t('settings.aiMode')}
+          />
+        </Field>
+
+        {aiMode === 'BYOK' ? (
+          <Field
+            label={t('settings.aiKeyLabel')}
+            hint={t('settings.aiKeyHint')}
+          >
+            <div className="flex flex-col gap-2">
+              {hasAiKey ? (
+                <div className="flex items-center justify-between rounded-sm border border-line bg-surface-2 px-3 py-2 text-wm-sm">
+                  <span className="text-fg">{t('settings.aiKeyConfigured')}</span>
+                  <Button
+                    variant="subtle"
+                    size="sm"
+                    onClick={() => void onClearByokKey()}
+                    disabled={pending}
+                  >
+                    {t('settings.aiKeyClear')}
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    value={byokInput}
+                    onChange={(e) => setByokInput(e.target.value)}
+                    placeholder="sk-ant-..."
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="flex-1 rounded-sm border border-line bg-surface-2 px-3 py-2 text-wm-sm font-mono text-fg focus:border-accent focus:outline-none"
+                  />
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => void onSaveByokKey()}
+                    disabled={pending || byokInput.trim().length < 20}
+                  >
+                    {t('settings.aiKeySave')}
+                  </Button>
+                </div>
+              )}
+              {byokError ? (
+                <p className="m-0 text-wm-sm text-negative">{byokError}</p>
+              ) : null}
+            </div>
+          </Field>
+        ) : null}
+
         {error ? (
           <p className="m-0 text-wm-sm text-negative">{error}</p>
         ) : null}

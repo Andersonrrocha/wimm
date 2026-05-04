@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
 } from '@nestjs/common'
 import {
   CategoryType,
@@ -9,6 +10,8 @@ import {
   SourceType,
   TransactionKind,
 } from '@prisma/client'
+import { AiKeyResolverService } from '../ai/ai-key-resolver.service'
+import { AnthropicCategorizerService } from '../ai/anthropic-categorizer.service'
 import { DefaultCategoriesService } from '../categories/default-categories.service'
 import { CategorizationRulesService } from '../categorization-rules/categorization-rules.service'
 import { PrismaService } from '../prisma/prisma.service'
@@ -76,10 +79,14 @@ function toNormalized(row: ParsedLedgerRow): NormalizedLedgerRow {
 
 @Injectable()
 export class ImportsService {
+  private readonly logger = new Logger(ImportsService.name)
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly categorizationRules: CategorizationRulesService,
     private readonly defaultCategories: DefaultCategoriesService,
+    private readonly aiKeyResolver: AiKeyResolverService,
+    private readonly aiCategorizer: AnthropicCategorizerService,
   ) {}
 
   async preview(
@@ -197,7 +204,19 @@ export class ImportsService {
     const systemCtx =
       await this.categorizationRules.loadSystemResolutionContext(userId)
 
-    const rows = normalized.map((n, i) => {
+    const rows: Array<{
+      occurredAt: string
+      kind: TransactionKind
+      amount: string
+      description: string
+      fingerprint: string
+      isDuplicate: boolean
+      suggestedCategoryId: string | null
+      aiSuggestedCategoryId?: string | null
+      aiConfidence?: number
+      installmentCurrent?: number
+      installmentTotal?: number
+    }> = normalized.map((n, i) => {
       const fingerprint = fingerprints[i]
       const isDuplicate = dupSet.has(fingerprint)
       const suggestedCategoryId =
@@ -223,6 +242,8 @@ export class ImportsService {
           : {}),
       }
     })
+
+    await this.enrichWithAiSuggestions(userId, rows)
 
     const duplicateCount = rows.filter((r) => r.isDuplicate).length
     const newCount = rows.length - duplicateCount
@@ -547,6 +568,80 @@ export class ImportsService {
     })
 
     return result
+  }
+
+  /**
+   * If the user has AI categorization enabled, asks Claude to suggest a
+   * category for any preview row that the deterministic rule pass missed.
+   * Mutates `rows` in place by setting `aiSuggestedCategoryId` and
+   * `aiConfidence`. All errors are swallowed: AI is advisory, never blocks
+   * the import preview.
+   */
+  private async enrichWithAiSuggestions(
+    userId: string,
+    rows: Array<{
+      kind: TransactionKind
+      amount: string
+      description: string
+      isDuplicate: boolean
+      suggestedCategoryId: string | null
+      aiSuggestedCategoryId?: string | null
+      aiConfidence?: number
+    }>,
+  ): Promise<void> {
+    // TODO(paywall): only call AI when subscriptionStatus === 'ACTIVE'
+    // and (mode === 'BYOK' || plan in MONTHLY|ANNUAL|LIFETIME).
+    const candidateIndexes: number[] = []
+    rows.forEach((r, i) => {
+      if (!r.isDuplicate && r.suggestedCategoryId === null) {
+        candidateIndexes.push(i)
+      }
+    })
+    if (candidateIndexes.length === 0) return
+
+    let apiKey: string | null
+    try {
+      apiKey = await this.aiKeyResolver.resolveForUser(userId)
+    } catch (err) {
+      this.logger.warn(`AI key resolver failed: ${(err as Error).message}`)
+      return
+    }
+    if (!apiKey) return
+
+    // Only suggest leaf categories (no children) — same constraint the
+    // categorization-rules service applies, so AI matches feel native.
+    const leafCategories = await this.prisma.category.findMany({
+      where: { userId, categoryKey: { not: null } },
+      select: { id: true, name: true, _count: { select: { children: true } } },
+    })
+    const candidates = leafCategories
+      .filter((c) => c._count.children === 0)
+      .map((c) => ({ id: c.id, name: c.name }))
+    if (candidates.length === 0) return
+
+    const inputs = candidateIndexes.map((idx) => ({
+      index: idx,
+      description: rows[idx]!.description,
+      amount: rows[idx]!.amount,
+    }))
+
+    try {
+      const results = await this.aiCategorizer.categorizeBatch({
+        apiKey,
+        transactions: inputs,
+        candidates,
+      })
+      for (const r of results) {
+        const row = rows[r.index]
+        if (!row) continue
+        row.aiSuggestedCategoryId = r.categoryId
+        row.aiConfidence = r.confidence
+      }
+    } catch (err) {
+      this.logger.warn(
+        `AI categorize failed for user ${userId}: ${(err as Error).message}`,
+      )
+    }
   }
 
   private async assertSourceOwned(userId: string, sourceId: string) {

@@ -9,6 +9,8 @@ import { ImportsService } from './imports.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { DefaultCategoriesService } from '../categories/default-categories.service'
 import { CategorizationRulesService } from '../categorization-rules/categorization-rules.service'
+import { AiKeyResolverService } from '../ai/ai-key-resolver.service'
+import { AnthropicCategorizerService } from '../ai/anthropic-categorizer.service'
 import { buildPdfBufferFromPlainText } from './parsers/banrisul-cc/build-pdf-fixture'
 import { extractTextFromPdfBuffer } from './parsers/banrisul-cc/extract-pdf-text'
 import * as CresolExtracted from './parsers/cresol/parse-cresol-statement-extracted-text'
@@ -50,6 +52,16 @@ describe('ImportsService', () => {
         {
           provide: CategorizationRulesService,
           useValue: categorizationRulesMock,
+        },
+        {
+          // AI is opt-in (default OFF). Resolver returns null so the AI
+          // categorizer is never called and these tests stay deterministic.
+          provide: AiKeyResolverService,
+          useValue: { resolveForUser: jest.fn().mockResolvedValue(null) },
+        },
+        {
+          provide: AnthropicCategorizerService,
+          useValue: { categorizeBatch: jest.fn().mockResolvedValue([]) },
         },
       ],
     }).compile()

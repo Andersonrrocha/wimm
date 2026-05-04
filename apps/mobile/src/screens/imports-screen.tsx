@@ -13,6 +13,8 @@ import {
   View,
 } from 'react-native'
 import type {
+  CategorizationRule,
+  Category,
   CommitImportRequest,
   CommitImportResponse,
   ImportParserWarning,
@@ -27,6 +29,10 @@ import { Field } from '../components/ui/field'
 import { PageHeader } from '../components/ui/page-header'
 import { Panel } from '../components/ui/panel'
 import { PickerModal, type PickerOption } from '../components/ui/picker-modal'
+import {
+  SaveAsRuleSheet,
+  suggestPatternFromDescription,
+} from '../components/save-as-rule-sheet'
 import { Screen } from '../components/screen'
 import { apiClient } from '../lib/api-client'
 import { dateFnsLocaleForLang, formatMediumDate } from '../lib/dates'
@@ -102,26 +108,66 @@ export function ImportsScreen(): JSX.Element {
     },
   })
 
+  const { data: categories = [] } = useQuery({
+    queryKey: ['categories'],
+    queryFn: async () => {
+      const { data } = await apiClient.get<Category[]>('/categories')
+      return data
+    },
+  })
+  const categoryNameById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of categories) m.set(c.id, c.name)
+    return m
+  }, [categories])
+
+  const [saveRuleTarget, setSaveRuleTarget] = useState<{
+    pattern: string
+    categoryId: string
+    categoryName: string
+  } | null>(null)
+
+  const saveRuleMut = useMutation({
+    mutationFn: async (body: { pattern: string; categoryId: string }) => {
+      const { data } = await apiClient.post<CategorizationRule>(
+        '/categorization-rules',
+        {
+          pattern: body.pattern,
+          categoryId: body.categoryId,
+          matchType: 'CONTAINS',
+          priority: 100,
+          active: true,
+        },
+      )
+      return data
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['rules'] })
+    },
+  })
+
   const commitMut = useMutation({
     mutationFn: async () => {
       if (!preview) throw new Error('No preview')
       const rows = preview.rows
         .filter((r) => includeByFp[r.fingerprint])
-        .map((r) => ({
-          occurredAt: r.occurredAt,
-          kind: r.kind,
-          amount: Number.parseFloat(r.amount),
-          description: r.description,
-          ...(r.suggestedCategoryId
-            ? { categoryId: r.suggestedCategoryId }
-            : {}),
-          ...(r.installmentCurrent !== undefined
-            ? { installmentCurrent: r.installmentCurrent }
-            : {}),
-          ...(r.installmentTotal !== undefined
-            ? { installmentTotal: r.installmentTotal }
-            : {}),
-        }))
+        .map((r) => {
+          // Prefer the rule match; fall back to AI when no rule fired.
+          const categoryId = r.suggestedCategoryId ?? r.aiSuggestedCategoryId
+          return {
+            occurredAt: r.occurredAt,
+            kind: r.kind,
+            amount: Number.parseFloat(r.amount),
+            description: r.description,
+            ...(categoryId ? { categoryId } : {}),
+            ...(r.installmentCurrent !== undefined
+              ? { installmentCurrent: r.installmentCurrent }
+              : {}),
+            ...(r.installmentTotal !== undefined
+              ? { installmentTotal: r.installmentTotal }
+              : {}),
+          }
+        })
       const body: CommitImportRequest = {
         sourceId,
         fileName: preview.fileName,
@@ -225,6 +271,15 @@ export function ImportsScreen(): JSX.Element {
           onCommit={() => commitMut.mutate()}
           committing={commitMut.isPending}
           error={commitMut.isError}
+          onSaveRule={(row, categoryId) => {
+            setSaveRuleTarget({
+              pattern: suggestPatternFromDescription(row.description),
+              categoryId,
+              categoryName:
+                categoryNameById.get(categoryId) ??
+                t('transactions.uncategorized'),
+            })
+          }}
         />
       ) : step === 'result' && commitResult ? (
         <ResultStep result={commitResult} onDone={reset} />
@@ -237,6 +292,21 @@ export function ImportsScreen(): JSX.Element {
         options={sourceOptions}
         selected={sourceId}
         onSelect={setSourceId}
+      />
+
+      <SaveAsRuleSheet
+        visible={saveRuleTarget !== null}
+        onClose={() => setSaveRuleTarget(null)}
+        defaultPattern={saveRuleTarget?.pattern ?? ''}
+        categoryName={saveRuleTarget?.categoryName ?? ''}
+        saving={saveRuleMut.isPending}
+        onSave={async (pattern) => {
+          if (!saveRuleTarget) return
+          await saveRuleMut.mutateAsync({
+            pattern,
+            categoryId: saveRuleTarget.categoryId,
+          })
+        }}
       />
     </Screen>
   )
@@ -378,6 +448,7 @@ function PreviewStep({
   onCommit,
   committing,
   error,
+  onSaveRule,
 }: {
   preview: ImportPreviewResponse
   includeByFp: Record<string, boolean>
@@ -387,6 +458,7 @@ function PreviewStep({
   onCommit: () => void
   committing: boolean
   error: boolean
+  onSaveRule: (row: ImportPreviewRow, categoryId: string) => void
 }): JSX.Element {
   const { t, i18n } = useTranslation()
   const dfLocale = dateFnsLocaleForLang(i18n.language)
@@ -433,6 +505,7 @@ function PreviewStep({
             included={includeByFp[item.fingerprint] ?? false}
             onToggle={(v) => onToggle(item.fingerprint, v)}
             dfLocale={dfLocale}
+            onSaveRule={onSaveRule}
           />
         )}
       />
@@ -476,14 +549,22 @@ function PreviewRowCard({
   included,
   onToggle,
   dfLocale,
+  onSaveRule,
 }: {
   row: ImportPreviewRow
   included: boolean
   onToggle: (v: boolean) => void
   dfLocale: ReturnType<typeof dateFnsLocaleForLang>
+  onSaveRule: (row: ImportPreviewRow, categoryId: string) => void
 }): JSX.Element {
+  const { t } = useTranslation()
   const isIncome = row.kind === 'INCOME'
   const amount = formatMoney(row.amount)
+  const aiPct = Math.round((row.aiConfidence ?? 0) * 100)
+  const showAi =
+    !row.isDuplicate &&
+    !row.suggestedCategoryId &&
+    row.aiSuggestedCategoryId != null
   return (
     <Pressable
       onPress={() => onToggle(!included)}
@@ -527,6 +608,25 @@ function PreviewRowCard({
             </>
           ) : null}
           {row.isDuplicate ? <Chip label="dupe" tone="warning" /> : null}
+          {showAi ? (
+            <Chip
+              label={t('imports.matchAi', { confidence: aiPct })}
+              tone="info"
+            />
+          ) : null}
+          {showAi ? (
+            <Pressable
+              onPress={(e) => {
+                e.stopPropagation()
+                onSaveRule(row, row.aiSuggestedCategoryId!)
+              }}
+              hitSlop={8}
+            >
+              <Text style={styles.saveRuleLink}>
+                {t('imports.saveAsRule')}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       </View>
     </Pressable>
@@ -822,6 +922,11 @@ const styles = StyleSheet.create({
   metaSep: {
     color: colors.fgSoft,
     fontSize: fontSize.xs,
+  },
+  saveRuleLink: {
+    color: colors.accent,
+    fontSize: fontSize.xs,
+    textDecorationLine: 'underline',
   },
   rowSep: {
     height: 6,

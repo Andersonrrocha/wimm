@@ -29,6 +29,7 @@ export interface RegisterRequest {
 export type ChartDateMode = 'BILLING_CYCLE' | 'PURCHASE_DATE'
 export type SubscriptionStatus = 'ACTIVE' | 'TRIALING' | 'EXPIRED' | 'CANCELED'
 export type SubscriptionPlan = 'MONTHLY' | 'ANNUAL' | 'LIFETIME'
+export type AiCategorizationMode = 'OFF' | 'SERVER' | 'BYOK'
 
 export interface User {
   id: string
@@ -44,6 +45,10 @@ export interface User {
   trialEndsAt: string | null
   /** 1..200 lifetime Founder slot; null when unassigned. */
   founderNumber: number | null
+  /** AI suggestion preference; OFF unless user opts in. */
+  aiCategorizationMode: AiCategorizationMode
+  /** True when a BYOK Anthropic key is stored (the value itself never leaves the server). */
+  hasAiApiKey: boolean
   createdAt: string
   updatedAt: string
 }
@@ -51,6 +56,9 @@ export interface User {
 export interface UpdateUserMeRequest {
   preferredLocale?: AppLocale
   chartDateMode?: ChartDateMode
+  aiCategorizationMode?: AiCategorizationMode
+  /** String to set/replace, null to clear, undefined to leave alone. */
+  aiApiKey?: string | null
 }
 
 // Generic API wrappers
@@ -200,7 +208,12 @@ export interface ImportPreviewRow {
   description: string
   fingerprint: string
   isDuplicate: boolean
+  /** Match from the deterministic rule pass (user + system rules). */
   suggestedCategoryId: string | null
+  /** Optional Anthropic suggestion when the user has AI enabled and the rule pass missed. */
+  aiSuggestedCategoryId?: string | null
+  /** 0..1 confidence reported by the model alongside `aiSuggestedCategoryId`. */
+  aiConfidence?: number
   /** Banrisul-style installment when parsed (current/total). */
   installmentCurrent?: number
   installmentTotal?: number

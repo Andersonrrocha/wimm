@@ -5,6 +5,7 @@ import { useOutletContext } from 'react-router-dom'
 import {
   groupSourcesForImportSelect,
   type Category,
+  type CategorizationRule,
   type CommitImportRequest,
   type CommitImportResponse,
   type ImportPreviewResponse,
@@ -20,6 +21,10 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Field } from '../components/ui/field'
 import { Panel } from '../components/ui/panel'
+import {
+  SaveAsRuleModal,
+  suggestPatternFromDescription,
+} from '../components/save-as-rule-modal'
 import { dateFnsLocaleForLang } from '../lib/date-fns-locale'
 import { formatMediumDate } from '../lib/dates'
 import type { QuickAddTab } from '../components/quick-add-modal'
@@ -71,6 +76,12 @@ export function ImportsPage(): JSX.Element {
       return data
     },
   })
+
+  const categoryNameById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of categories) m.set(c.id, c.name)
+    return m
+  }, [categories])
 
   const { leadingOptions: importCatLeadingExpense, optionGroups: importCatExpenseGroups } = useMemo(
     () =>
@@ -142,7 +153,9 @@ export function ImportsPage(): JSX.Element {
       const nextCat: Record<string, string> = {}
       for (const row of data.rows) {
         next[row.fingerprint] = !row.isDuplicate
-        nextCat[row.fingerprint] = row.suggestedCategoryId ?? ''
+        // Prefer the rule match; fall back to AI when present and no rule fired.
+        nextCat[row.fingerprint] =
+          row.suggestedCategoryId ?? row.aiSuggestedCategoryId ?? ''
       }
       setIncludeByFingerprint(next)
       setCategoryByFingerprint(nextCat)
@@ -223,6 +236,35 @@ export function ImportsPage(): JSX.Element {
       [row.fingerprint]: !prev[row.fingerprint],
     }))
   }, [])
+
+  const [saveAsRuleTarget, setSaveAsRuleTarget] = useState<{
+    pattern: string
+    categoryId: string
+    categoryName: string
+  } | null>(null)
+
+  const saveRuleMut = useMutation({
+    mutationFn: async (body: {
+      pattern: string
+      categoryId: string
+    }): Promise<CategorizationRule> => {
+      const { data } = await apiClient.post<CategorizationRule>(
+        '/categorization-rules',
+        {
+          pattern: body.pattern,
+          categoryId: body.categoryId,
+          matchType: 'CONTAINS',
+          // High priority so the rule wins over future system fallbacks.
+          priority: 100,
+          active: true,
+        },
+      )
+      return data
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['rules'] })
+    },
+  })
 
   const toggleAll = (select: boolean): void => {
     if (!preview) return
@@ -402,6 +444,7 @@ export function ImportsPage(): JSX.Element {
                   <th className="text-right">{t('imports.colAmount')}</th>
                   <th>{t('imports.colDescription')}</th>
                   <th>{t('imports.colCategory')}</th>
+                  <th>{t('imports.colMatch')}</th>
                   <th>{t('imports.colStatus')}</th>
                 </tr>
               </thead>
@@ -462,6 +505,23 @@ export function ImportsPage(): JSX.Element {
                         />
                       </td>
                       <td>
+                        <MatchCell
+                          row={row}
+                          onSaveAsRule={(catId) => {
+                            const name =
+                              categoryNameById.get(catId) ??
+                              t('transactions.uncategorized')
+                            setSaveAsRuleTarget({
+                              pattern: suggestPatternFromDescription(
+                                row.description,
+                              ),
+                              categoryId: catId,
+                              categoryName: name,
+                            })
+                          }}
+                        />
+                      </td>
+                      <td>
                         {row.isDuplicate ? (
                           <Badge variant="warning">
                             {t('imports.badgeDuplicate')}
@@ -516,8 +576,54 @@ export function ImportsPage(): JSX.Element {
           )}
         </Panel>
       )}
+
+      <SaveAsRuleModal
+        open={saveAsRuleTarget !== null}
+        onClose={() => setSaveAsRuleTarget(null)}
+        defaultPattern={saveAsRuleTarget?.pattern ?? ''}
+        categoryName={saveAsRuleTarget?.categoryName ?? ''}
+        saving={saveRuleMut.isPending}
+        onSave={async (pattern) => {
+          if (!saveAsRuleTarget) return
+          await saveRuleMut.mutateAsync({
+            pattern,
+            categoryId: saveAsRuleTarget.categoryId,
+          })
+        }}
+      />
     </div>
   )
+}
+
+function MatchCell({
+  row,
+  onSaveAsRule,
+}: {
+  row: ImportPreviewRow
+  onSaveAsRule: (categoryId: string) => void
+}): JSX.Element {
+  const { t } = useTranslation()
+  if (row.isDuplicate) return <span className="text-fg-muted">—</span>
+  if (row.suggestedCategoryId) {
+    return <Badge variant="positive">{t('imports.matchRule')}</Badge>
+  }
+  if (row.aiSuggestedCategoryId) {
+    const pct = Math.round((row.aiConfidence ?? 0) * 100)
+    return (
+      <div className="flex items-center gap-1.5">
+        <Badge variant="info">{t('imports.matchAi', { confidence: pct })}</Badge>
+        <button
+          type="button"
+          onClick={() => onSaveAsRule(row.aiSuggestedCategoryId!)}
+          className="text-wm-xs text-fg-muted underline-offset-2 hover:text-accent hover:underline"
+          title={t('imports.saveAsRuleTooltip')}
+        >
+          {t('imports.saveAsRule')}
+        </button>
+      </div>
+    )
+  }
+  return <span className="text-fg-muted">—</span>
 }
 
 function previewErrorMessage(err: unknown, fallback: string): string {

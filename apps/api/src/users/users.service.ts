@@ -1,10 +1,19 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
+import {
+  AiCategorizationMode,
+  ChartDateMode,
+  Prisma,
+} from '@prisma/client'
+import { AiKeyCrypto } from '../ai/ai-key-crypto'
 import { PrismaService } from '../prisma/prisma.service'
 import type { UpdateMeDto } from './dto/update-me.dto'
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly aiKeyCrypto: AiKeyCrypto,
+  ) {}
 
   async findByIdOrThrow(id: string) {
     const user = await this.prisma.user.findUnique({
@@ -20,6 +29,8 @@ export class UsersService {
         subscriptionPlan: true,
         trialEndsAt: true,
         founderNumber: true,
+        aiCategorizationMode: true,
+        aiApiKeyEncrypted: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -27,16 +38,27 @@ export class UsersService {
     if (!user) {
       throw new NotFoundException('User not found')
     }
-    return user
+    // Never leak the encrypted key. Surface a boolean so the UI can show
+    // "key configured" without revealing the value.
+    const { aiApiKeyEncrypted, ...rest } = user
+    return { ...rest, hasAiApiKey: aiApiKeyEncrypted !== null }
   }
 
   async updateMe(userId: string, dto: UpdateMeDto) {
-    const data: { preferredLocale?: string; chartDateMode?: 'BILLING_CYCLE' | 'PURCHASE_DATE' } = {}
+    const data: Prisma.UserUpdateInput = {}
     if (dto.preferredLocale !== undefined) {
       data.preferredLocale = dto.preferredLocale
     }
     if (dto.chartDateMode !== undefined) {
-      data.chartDateMode = dto.chartDateMode
+      data.chartDateMode = dto.chartDateMode as ChartDateMode
+    }
+    if (dto.aiCategorizationMode !== undefined) {
+      data.aiCategorizationMode =
+        dto.aiCategorizationMode as AiCategorizationMode
+    }
+    if (dto.aiApiKey !== undefined) {
+      data.aiApiKeyEncrypted =
+        dto.aiApiKey === null ? null : this.aiKeyCrypto.encrypt(dto.aiApiKey)
     }
     if (Object.keys(data).length > 0) {
       await this.prisma.user.update({

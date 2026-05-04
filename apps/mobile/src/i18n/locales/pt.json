@@ -71,6 +71,20 @@
     "languageHint": "As alterações valem na hora e ficam salvas na sua conta.",
     "chartDateMode": "Modo de data nos gráficos",
     "chartDateModeHint": "Como os gastos no cartão de crédito aparecem nos gráficos. Ciclo da fatura (padrão) é a visão de fluxo de caixa; Data da compra é a visão tradicional.",
+    "aiTitle": "Categorização por IA",
+    "aiSubtitle": "Opcional. Quando uma transação não bate com nenhuma regra sua, peça ao Claude para sugerir uma categoria. Só a descrição e o valor são enviados — nunca a conta, a fonte ou qualquer dado identificador.",
+    "aiMode": "Modo",
+    "aiModeHint": "Servidor usa nossa chave Anthropic. BYOK usa sua chave — máxima privacidade.",
+    "aiModeOff": "Off",
+    "aiModeServer": "Servidor",
+    "aiModeByok": "Sua chave",
+    "aiKeyLabel": "Chave da API Anthropic",
+    "aiKeyHint": "Pegue uma chave em console.anthropic.com. Guardada criptografada; nunca exibida de volta.",
+    "aiKeyConfigured": "Chave configurada ✓",
+    "aiKeyClear": "Remover",
+    "aiKeySave": "Salvar",
+    "aiKeyInvalid": "Chaves Anthropic começam com sk-ant-…",
+    "aiKeyFailed": "Não foi possível salvar a chave.",
     "localeEn": "English",
     "localePt": "Português (Brasil)"
   },
@@ -223,6 +237,8 @@
     "statParsed": "Lidas",
     "statNew": "Novas",
     "statDuplicates": "Duplicadas",
+    "matchAi": "IA {{confidence}}%",
+    "saveAsRule": "Salvar como regra",
     "resultTitle": "Importação concluída",
     "importAnother": "Importar outro",
     "fileTooLargeTitle": "Arquivo muito grande",
@@ -434,6 +450,16 @@
   },
   "guest": {
     "language": "Idioma"
+  },
+  "saveAsRule": {
+    "title": "Salvar como regra",
+    "body": "Próximos imports cuja descrição contenha esse padrão serão categorizados automaticamente como \"{{category}}\". Você pode editar a qualquer momento em Settings → Regras.",
+    "patternLabel": "Padrão (contém, sem distinguir maiúsculas)",
+    "patternPlaceholder": "ex: uber, mercado, netflix",
+    "tooShort": "O padrão precisa ter pelo menos 2 caracteres.",
+    "failed": "Não foi possível salvar a regra.",
+    "confirm": "Salvar regra",
+    "cancel": "Cancelar"
   },
   "onboarding": {
     "welcomeTitle": "Bem-vindo ao WIMM",

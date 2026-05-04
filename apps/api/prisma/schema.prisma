@@ -29,6 +29,15 @@ enum SubscriptionPlan {
   LIFETIME
 }
 
+enum AiCategorizationMode {
+  /** Default. No AI calls are made; only deterministic rules. */
+  OFF
+  /** Server-side: WIMM uses its own Anthropic key; cost on Anderson. */
+  SERVER
+  /** Bring Your Own Key: user provides an Anthropic key, encrypted at rest. */
+  BYOK
+}
+
 model User {
   id                   String                @id @default(uuid())
   email                String                @unique
@@ -46,6 +55,13 @@ model User {
   trialEndsAt          DateTime?
   /** 1..200 for lifetime Founder slot; NULL otherwise. Granted via CLI script. */
   founderNumber        Int?                  @unique
+  /** AI categorization preference; default OFF — opt-in, never automatic. */
+  aiCategorizationMode AiCategorizationMode  @default(OFF)
+  /**
+   * Encrypted Anthropic API key for BYOK mode (AES-256-GCM, base64).
+   * NULL when SERVER or OFF; never returned by the API.
+   */
+  aiApiKeyEncrypted    String?
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   refreshTokens        RefreshToken[]

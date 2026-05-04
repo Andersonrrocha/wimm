@@ -71,6 +71,20 @@
     "languageHint": "Changes apply immediately and are saved to your account.",
     "chartDateMode": "Chart date mode",
     "chartDateModeHint": "How credit card spending is bucketed in charts. Billing cycle (default) follows the cash-flow view; Purchase date matches typical apps.",
+    "aiTitle": "AI categorization",
+    "aiSubtitle": "Optional. When a transaction doesn't match any of your rules, ask Claude to suggest a category. Only the description and amount are sent — never your account, source, or any identifying info.",
+    "aiMode": "Mode",
+    "aiModeHint": "Server uses our Anthropic key. BYOK uses your own key — strongest privacy.",
+    "aiModeOff": "Off",
+    "aiModeServer": "Server",
+    "aiModeByok": "Your key",
+    "aiKeyLabel": "Anthropic API key",
+    "aiKeyHint": "Get a key at console.anthropic.com. Stored encrypted; never displayed back.",
+    "aiKeyConfigured": "Key configured ✓",
+    "aiKeyClear": "Remove",
+    "aiKeySave": "Save",
+    "aiKeyInvalid": "Anthropic keys start with sk-ant-…",
+    "aiKeyFailed": "Could not save the key.",
     "localeEn": "English",
     "localePt": "Portuguese (Brazil)"
   },
@@ -223,6 +237,8 @@
     "statParsed": "Parsed",
     "statNew": "New",
     "statDuplicates": "Duplicates",
+    "matchAi": "AI {{confidence}}%",
+    "saveAsRule": "Save as rule",
     "resultTitle": "Import complete",
     "importAnother": "Import another",
     "fileTooLargeTitle": "File too large",
@@ -434,6 +450,16 @@
   },
   "guest": {
     "language": "Language"
+  },
+  "saveAsRule": {
+    "title": "Save as rule",
+    "body": "Future imports whose description contains this pattern will be auto-categorized as \"{{category}}\". You can edit it any time in Settings → Rules.",
+    "patternLabel": "Pattern (case-insensitive contains)",
+    "patternPlaceholder": "e.g. uber, mercado, netflix",
+    "tooShort": "Pattern must be at least 2 characters.",
+    "failed": "Could not save the rule.",
+    "confirm": "Save rule",
+    "cancel": "Cancel"
   },
   "onboarding": {
     "welcomeTitle": "Welcome to WIMM",
