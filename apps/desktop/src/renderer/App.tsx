@@ -4,6 +4,7 @@ import { queryClient } from './query-client'
 import { AuthProvider } from './context/auth-context'
 import { AppLayout } from './components/app-layout'
 import { ProtectedRoute } from './components/protected-route'
+import { UpdateToast } from './components/update-toast'
 import { LoginPage } from './pages/login-page'
 import { RegisterPage } from './pages/register-page'
 import { DashboardPage } from './pages/dashboard-page'
@@ -17,6 +18,7 @@ function App(): JSX.Element {
     <HashRouter>
       <AuthProvider>
         <QueryClientProvider client={queryClient}>
+          <UpdateToast />
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />

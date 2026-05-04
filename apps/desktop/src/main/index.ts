@@ -7,6 +7,9 @@ import {
   getRefreshToken,
   setTokens,
 } from './store'
+import { quitAndInstallUpdate, setupAutoUpdater } from './updater'
+
+let mainWindow: BrowserWindow | null = null
 
 function registerIpcHandlers(): void {
   ipcMain.handle('tokens:getAccess', () => getAccessToken())
@@ -18,10 +21,11 @@ function registerIpcHandlers(): void {
       setTokens(access, refresh, rememberMe !== false),
   )
   ipcMain.handle('tokens:clear', () => clearTokens())
+  ipcMain.handle('updater:quitAndInstall', () => quitAndInstallUpdate())
 }
 
 function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 960,
@@ -40,11 +44,16 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
 }
 
 app.whenReady().then(() => {
   registerIpcHandlers()
   createWindow()
+  setupAutoUpdater(() => mainWindow)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

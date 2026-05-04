@@ -415,5 +415,10 @@
   },
   "guest": {
     "language": "Idioma"
+  },
+  "updater": {
+    "downloading": "Baixando atualização… {{percent}}%",
+    "readyToRestart": "Atualização {{version}} pronta",
+    "restartNow": "Reiniciar"
   }
 }
