@@ -12,10 +12,14 @@ describe('ReportsService', () => {
       aggregate: jest.fn(),
       groupBy: jest.fn(),
     },
+    user: { findUnique: jest.fn() },
   }
 
   beforeEach(async () => {
     jest.clearAllMocks()
+    // Default chartDateMode = BILLING_CYCLE preserves the historical behaviour
+    // these tests assert against. Individual tests can override per-call.
+    prismaMock.user.findUnique.mockResolvedValue({ chartDateMode: 'BILLING_CYCLE' })
     const moduleRef = await Test.createTestingModule({
       providers: [
         ReportsService,

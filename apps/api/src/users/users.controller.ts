@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Patch, Post, UseGuards } from '@nestjs/common'
 import { AuthGuard } from '@nestjs/passport'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import type { JwtPayload } from '../auth/strategies/jwt.strategy'
@@ -21,5 +21,10 @@ export class UsersController {
     @Body() dto: UpdateMeDto,
   ) {
     return this.usersService.updateMe(user.sub, dto)
+  }
+
+  @Post('me/onboarded')
+  async markOnboarded(@CurrentUser() user: JwtPayload) {
+    return this.usersService.markOnboarded(user.sub)
   }
 }

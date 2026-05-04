@@ -66,6 +66,8 @@
     "preferencesSubtitle": "Language used across the app after you sign in.",
     "language": "Language",
     "languageHint": "Changes apply immediately and are saved to your account.",
+    "chartDateMode": "Chart date mode",
+    "chartDateModeHint": "How credit card spending is bucketed in charts. Billing cycle (default) follows the cash-flow view; Purchase date matches typical apps.",
     "localeEn": "English",
     "localePt": "Portuguese (Brazil)"
   },
@@ -415,6 +417,23 @@
   },
   "guest": {
     "language": "Language"
+  },
+  "onboarding": {
+    "welcomeTitle": "Welcome to WIMM",
+    "welcomeBody": "WIMM is import-based and private. You upload statements (CSV, OFX, or PDF) and decide what gets categorized — nothing is shared with your bank.",
+    "billingTitle": "Credit cards, the WIMM way",
+    "billingBody": "Most apps show credit card spending in the month you bought. WIMM shows it in the month the bill is paid — when the money actually leaves your account. You can switch back any time.",
+    "billingExampleSpentLabel": "Spent on the card",
+    "billingExampleOtherApps": "Other apps show in",
+    "billingExampleWimm": "WIMM shows in",
+    "modeBillingCycle": "Billing cycle",
+    "modePurchaseDate": "Purchase date",
+    "modeAria": "Chart date mode",
+    "readyTitle": "You're all set",
+    "readyBody": "Add your first source (a bank account or credit card) and start importing statements. Everything else flows from there.",
+    "next": "Continue",
+    "back": "Back",
+    "getStarted": "Get started"
   },
   "updater": {
     "downloading": "Downloading update… {{percent}}%",

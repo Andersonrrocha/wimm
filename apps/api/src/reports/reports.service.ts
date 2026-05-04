@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common'
-import { Prisma, SourceType, TransactionKind } from '@prisma/client'
+import { ChartDateMode, Prisma, SourceType, TransactionKind } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import type { FutureCommitmentsQueryDto } from './dto/future-commitments-query.dto'
 import type { MonthlyQueryDto } from './dto/monthly-query.dto'
@@ -15,14 +15,26 @@ function toDecimalString(v: Prisma.Decimal | null | undefined): string {
 }
 
 /**
- * Cash-flow–oriented expense filter: credit card rows (with `expectedDueDate`)
- * are placed in the interval their payment is due; everything else uses
- * `occurredAt`.  Used by summary, byCategory, and the monthly chart.
+ * Expense filter for chart aggregation.
+ *
+ * - `BILLING_CYCLE` (default): credit card rows (with `expectedDueDate`) bucket
+ *   into the month their payment is due — the "see where money actually leaves"
+ *   view that motivates WIMM.
+ * - `PURCHASE_DATE`: every row sits on `occurredAt`, matching the conventional
+ *   view used by Mobills, Mint et al.
  */
 function expenseWhereForDateRange(
   userId: string,
   range: { gte: Date; lte: Date },
+  mode: ChartDateMode,
 ): Prisma.TransactionWhereInput {
+  if (mode === ChartDateMode.PURCHASE_DATE) {
+    return {
+      userId,
+      kind: TransactionKind.EXPENSE,
+      occurredAt: range,
+    }
+  }
   return {
     userId,
     kind: TransactionKind.EXPENSE,
@@ -42,6 +54,14 @@ function expenseWhereForDateRange(
 export class ReportsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private async chartDateModeForUser(userId: string): Promise<ChartDateMode> {
+    const row = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { chartDateMode: true },
+    })
+    return row?.chartDateMode ?? ChartDateMode.BILLING_CYCLE
+  }
+
   private dateRangeFilter(dto: ReportsQueryDto): { gte: Date; lte: Date } {
     const from = new Date(dto.from)
     const to = new Date(dto.to)
@@ -58,6 +78,7 @@ export class ReportsService {
 
   async summaryForUser(userId: string, dto: ReportsQueryDto) {
     const range = this.dateRangeFilter(dto)
+    const mode = await this.chartDateModeForUser(userId)
 
     const [incomeAgg, expenseAgg] = await Promise.all([
       this.prisma.transaction.aggregate({
@@ -65,7 +86,7 @@ export class ReportsService {
         _sum: { amount: true },
       }),
       this.prisma.transaction.aggregate({
-        where: expenseWhereForDateRange(userId, range),
+        where: expenseWhereForDateRange(userId, range, mode),
         _sum: { amount: true },
       }),
     ])
@@ -83,6 +104,7 @@ export class ReportsService {
 
   async byCategoryForUser(userId: string, dto: ReportsQueryDto) {
     const range = this.dateRangeFilter(dto)
+    const mode = await this.chartDateModeForUser(userId)
 
     const incomeGroups = await this.prisma.transaction.groupBy({
       by: ['categoryId'],
@@ -92,7 +114,7 @@ export class ReportsService {
 
     const expenseGroups = await this.prisma.transaction.groupBy({
       by: ['categoryId'],
-      where: expenseWhereForDateRange(userId, range),
+      where: expenseWhereForDateRange(userId, range, mode),
       _sum: { amount: true },
     })
 
@@ -200,6 +222,7 @@ export class ReportsService {
    */
   async monthlyForUser(userId: string, dto: MonthlyQueryDto) {
     const year = dto.year
+    const mode = await this.chartDateModeForUser(userId)
     const monthLabels = [
       'Jan',
       'Feb',
@@ -235,7 +258,7 @@ export class ReportsService {
           _sum: { amount: true },
         }),
         this.prisma.transaction.aggregate({
-          where: expenseWhereForDateRange(userId, range),
+          where: expenseWhereForDateRange(userId, range, mode),
           _sum: { amount: true },
         }),
       ])

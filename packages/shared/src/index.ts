@@ -26,17 +26,31 @@ export interface RegisterRequest {
 }
 
 // User
+export type ChartDateMode = 'BILLING_CYCLE' | 'PURCHASE_DATE'
+export type SubscriptionStatus = 'ACTIVE' | 'TRIALING' | 'EXPIRED' | 'CANCELED'
+export type SubscriptionPlan = 'MONTHLY' | 'ANNUAL' | 'LIFETIME'
+
 export interface User {
   id: string
   email: string
   username: string
   preferredLocale: AppLocale
+  /** Drives credit-card expense bucketing in reports/charts. */
+  chartDateMode: ChartDateMode
+  /** ISO timestamp when the user finished onboarding; null = show flow. */
+  onboardedAt: string | null
+  subscriptionStatus: SubscriptionStatus
+  subscriptionPlan: SubscriptionPlan | null
+  trialEndsAt: string | null
+  /** 1..200 lifetime Founder slot; null when unassigned. */
+  founderNumber: number | null
   createdAt: string
   updatedAt: string
 }
 
 export interface UpdateUserMeRequest {
   preferredLocale?: AppLocale
+  chartDateMode?: ChartDateMode
 }
 
 // Generic API wrappers

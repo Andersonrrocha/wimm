@@ -69,6 +69,8 @@
     "preferencesSubtitle": "Idioma do app após o login.",
     "language": "Idioma",
     "languageHint": "As alterações valem na hora e ficam salvas na sua conta.",
+    "chartDateMode": "Modo de data nos gráficos",
+    "chartDateModeHint": "Como os gastos no cartão de crédito aparecem nos gráficos. Ciclo da fatura (padrão) é a visão de fluxo de caixa; Data da compra é a visão tradicional.",
     "localeEn": "English",
     "localePt": "Português (Brasil)"
   },
@@ -432,5 +434,22 @@
   },
   "guest": {
     "language": "Idioma"
+  },
+  "onboarding": {
+    "welcomeTitle": "Bem-vindo ao WIMM",
+    "welcomeBody": "O WIMM é baseado em importações e privado. Você envia extratos (CSV, OFX ou PDF) e decide o que categorizar — nada é compartilhado com o banco.",
+    "billingTitle": "Cartão de crédito do jeito WIMM",
+    "billingBody": "A maioria dos apps mostra os gastos no mês da compra. O WIMM mostra no mês em que a fatura é paga — quando o dinheiro realmente sai. Você pode trocar a qualquer momento.",
+    "billingExampleSpentLabel": "Gasto no cartão",
+    "billingExampleOtherApps": "Outros apps mostram em",
+    "billingExampleWimm": "WIMM mostra em",
+    "modeBillingCycle": "Ciclo da fatura",
+    "modePurchaseDate": "Data da compra",
+    "modeAria": "Modo de data nos gráficos",
+    "readyTitle": "Tudo pronto",
+    "readyBody": "Adicione sua primeira fonte (conta ou cartão) e comece a importar extratos. O resto flui a partir daí.",
+    "next": "Continuar",
+    "back": "Voltar",
+    "getStarted": "Começar"
   }
 }

@@ -14,6 +14,12 @@ export class UsersService {
         email: true,
         username: true,
         preferredLocale: true,
+        chartDateMode: true,
+        onboardedAt: true,
+        subscriptionStatus: true,
+        subscriptionPlan: true,
+        trialEndsAt: true,
+        founderNumber: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -25,9 +31,12 @@ export class UsersService {
   }
 
   async updateMe(userId: string, dto: UpdateMeDto) {
-    const data: { preferredLocale?: string } = {}
+    const data: { preferredLocale?: string; chartDateMode?: 'BILLING_CYCLE' | 'PURCHASE_DATE' } = {}
     if (dto.preferredLocale !== undefined) {
       data.preferredLocale = dto.preferredLocale
+    }
+    if (dto.chartDateMode !== undefined) {
+      data.chartDateMode = dto.chartDateMode
     }
     if (Object.keys(data).length > 0) {
       await this.prisma.user.update({
@@ -35,6 +44,14 @@ export class UsersService {
         data,
       })
     }
+    return this.findByIdOrThrow(userId)
+  }
+
+  async markOnboarded(userId: string) {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { onboardedAt: new Date() },
+    })
     return this.findByIdOrThrow(userId)
   }
 }

@@ -8,6 +8,27 @@ datasource db {
   provider = "postgresql"
 }
 
+enum ChartDateMode {
+  /** Default. Credit card expenses bucket into the month the bill is due. */
+  BILLING_CYCLE
+  /** Traditional view: every transaction sits on its purchase date. */
+  PURCHASE_DATE
+}
+
+enum SubscriptionStatus {
+  /** Default for friends-test and pre-paywall users. */
+  ACTIVE
+  TRIALING
+  EXPIRED
+  CANCELED
+}
+
+enum SubscriptionPlan {
+  MONTHLY
+  ANNUAL
+  LIFETIME
+}
+
 model User {
   id                   String                @id @default(uuid())
   email                String                @unique
@@ -15,6 +36,16 @@ model User {
   passwordHash         String
   /** UI language: `en` | `pt` */
   preferredLocale      String                @default("pt")
+  /** Drives which date a credit card expense bucks into in reports. */
+  chartDateMode        ChartDateMode         @default(BILLING_CYCLE)
+  /** Set when the user finishes the onboarding flow. NULL = show onboarding. */
+  onboardedAt          DateTime?
+  /** Paywall scaffolding (no enforcement yet — defaults make every user pass). */
+  subscriptionStatus   SubscriptionStatus    @default(ACTIVE)
+  subscriptionPlan     SubscriptionPlan?
+  trialEndsAt          DateTime?
+  /** 1..200 for lifetime Founder slot; NULL otherwise. Granted via CLI script. */
+  founderNumber        Int?                  @unique
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   refreshTokens        RefreshToken[]

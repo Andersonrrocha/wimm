@@ -22,6 +22,12 @@ export type AuthResponseBody = {
     username: string
     createdAt: Date
     preferredLocale: string
+    chartDateMode: 'BILLING_CYCLE' | 'PURCHASE_DATE'
+    onboardedAt: Date | null
+    subscriptionStatus: 'ACTIVE' | 'TRIALING' | 'EXPIRED' | 'CANCELED'
+    subscriptionPlan: 'MONTHLY' | 'ANNUAL' | 'LIFETIME' | null
+    trialEndsAt: Date | null
+    founderNumber: number | null
   }
 }
 
@@ -118,6 +124,12 @@ export class AuthService {
         username: true,
         createdAt: true,
         preferredLocale: true,
+        chartDateMode: true,
+        onboardedAt: true,
+        subscriptionStatus: true,
+        subscriptionPlan: true,
+        trialEndsAt: true,
+        founderNumber: true,
       },
     })
     if (!row) {
@@ -137,6 +149,12 @@ export class AuthService {
         username: row.username,
         createdAt: row.createdAt,
         preferredLocale: row.preferredLocale,
+        chartDateMode: row.chartDateMode,
+        onboardedAt: row.onboardedAt,
+        subscriptionStatus: row.subscriptionStatus,
+        subscriptionPlan: row.subscriptionPlan,
+        trialEndsAt: row.trialEndsAt,
+        founderNumber: row.founderNumber,
       },
     }
   }

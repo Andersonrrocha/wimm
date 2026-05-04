@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { AppLocale, User } from '@wimm/shared'
+import type { AppLocale, ChartDateMode, User } from '@wimm/shared'
 import { useAuth } from '../../context/auth-context'
 import { apiClient } from '../../lib/api-client'
+import { ChartDateModeToggle } from '../../components/ui/chart-date-mode-toggle'
 import { Field } from '../../components/ui/field'
 import { Panel } from '../../components/ui/panel'
 import { Select } from '../../components/ui/select'
@@ -15,15 +16,15 @@ export function PreferencesTab(): JSX.Element {
 
   const user = state.status === 'authenticated' ? state.user : null
   const value = user?.preferredLocale ?? 'pt'
+  const chartMode: ChartDateMode = user?.chartDateMode ?? 'BILLING_CYCLE'
 
-  const onLocaleChange = async (next: string): Promise<void> => {
-    if (next !== 'en' && next !== 'pt') return
+  const patchMe = async (
+    body: { preferredLocale?: AppLocale; chartDateMode?: ChartDateMode },
+  ): Promise<void> => {
     setError(null)
     setPending(true)
     try {
-      await apiClient.patch<User>('/users/me', {
-        preferredLocale: next as AppLocale,
-      })
+      await apiClient.patch<User>('/users/me', body)
       await refreshUser()
     } catch {
       setError(t('quickAdd.couldNotSave'))
@@ -32,9 +33,18 @@ export function PreferencesTab(): JSX.Element {
     }
   }
 
+  const onLocaleChange = (next: string): void => {
+    if (next !== 'en' && next !== 'pt') return
+    void patchMe({ preferredLocale: next })
+  }
+
+  const onModeChange = (next: ChartDateMode): void => {
+    void patchMe({ chartDateMode: next })
+  }
+
   return (
     <Panel>
-      <div className="flex max-w-md flex-col gap-4">
+      <div className="flex max-w-md flex-col gap-5">
         <div>
           <h2 className="m-0 text-wm-md font-medium text-fg">
             {t('settings.preferencesTitle')}
@@ -49,13 +59,23 @@ export function PreferencesTab(): JSX.Element {
         >
           <Select
             value={value}
-            onChange={(v) => void onLocaleChange(v)}
+            onChange={onLocaleChange}
             disabled={pending || !user}
             options={[
               { value: 'pt', label: t('settings.localePt') },
               { value: 'en', label: t('settings.localeEn') },
             ]}
             ariaLabel={t('settings.language')}
+          />
+        </Field>
+        <Field
+          label={t('settings.chartDateMode')}
+          hint={t('settings.chartDateModeHint')}
+        >
+          <ChartDateModeToggle
+            value={chartMode}
+            onChange={onModeChange}
+            disabled={pending || !user}
           />
         </Field>
         {error ? (

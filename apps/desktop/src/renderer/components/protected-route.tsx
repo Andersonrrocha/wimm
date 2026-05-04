@@ -1,4 +1,4 @@
-import { Navigate } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/auth-context";
 
 type ProtectedRouteProps = {
@@ -7,6 +7,7 @@ type ProtectedRouteProps = {
 
 export function ProtectedRoute({ children }: ProtectedRouteProps): JSX.Element {
   const { state } = useAuth();
+  const location = useLocation();
 
   if (state.status === "loading") {
     return (
@@ -18,6 +19,16 @@ export function ProtectedRoute({ children }: ProtectedRouteProps): JSX.Element {
 
   if (state.status === "unauthenticated") {
     return <Navigate to="/login" replace />;
+  }
+
+  // First-run gate: send the user to onboarding until they finish it.
+  // The onboarding route itself uses ProtectedRoute too — bypass the check
+  // there to avoid an infinite redirect.
+  if (
+    state.user.onboardedAt === null &&
+    location.pathname !== "/onboarding"
+  ) {
+    return <Navigate to="/onboarding" replace />;
   }
 
   return children;

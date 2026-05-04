@@ -7,6 +7,7 @@ import { ProtectedRoute } from './components/protected-route'
 import { UpdateToast } from './components/update-toast'
 import { LoginPage } from './pages/login-page'
 import { RegisterPage } from './pages/register-page'
+import { OnboardingPage } from './pages/onboarding-page'
 import { DashboardPage } from './pages/dashboard-page'
 import { TransactionsPage } from './pages/transactions-page'
 import { ImportsPage } from './pages/imports-page'
@@ -22,6 +23,14 @@ function App(): JSX.Element {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            <Route
+              path="/onboarding"
+              element={
+                <ProtectedRoute>
+                  <OnboardingPage />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/"
               element={
