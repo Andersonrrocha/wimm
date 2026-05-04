@@ -32,10 +32,8 @@ enum SubscriptionPlan {
 enum AiCategorizationMode {
   /** Default. No AI calls are made; only deterministic rules. */
   OFF
-  /** Server-side: WIMM uses its own Anthropic key; cost on Anderson. */
-  SERVER
-  /** Bring Your Own Key: user provides an Anthropic key, encrypted at rest. */
-  BYOK
+  /** AI runs against the server's Anthropic key (when ANTHROPIC_API_KEY is set). */
+  ON
 }
 
 model User {
@@ -57,11 +55,6 @@ model User {
   founderNumber        Int?                  @unique
   /** AI categorization preference; default OFF — opt-in, never automatic. */
   aiCategorizationMode AiCategorizationMode  @default(OFF)
-  /**
-   * Encrypted Anthropic API key for BYOK mode (AES-256-GCM, base64).
-   * NULL when SERVER or OFF; never returned by the API.
-   */
-  aiApiKeyEncrypted    String?
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   refreshTokens        RefreshToken[]

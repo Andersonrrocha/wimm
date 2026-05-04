@@ -4,16 +4,12 @@ import {
   ChartDateMode,
   Prisma,
 } from '@prisma/client'
-import { AiKeyCrypto } from '../ai/ai-key-crypto'
 import { PrismaService } from '../prisma/prisma.service'
 import type { UpdateMeDto } from './dto/update-me.dto'
 
 @Injectable()
 export class UsersService {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly aiKeyCrypto: AiKeyCrypto,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async findByIdOrThrow(id: string) {
     const user = await this.prisma.user.findUnique({
@@ -30,7 +26,6 @@ export class UsersService {
         trialEndsAt: true,
         founderNumber: true,
         aiCategorizationMode: true,
-        aiApiKeyEncrypted: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -38,10 +33,7 @@ export class UsersService {
     if (!user) {
       throw new NotFoundException('User not found')
     }
-    // Never leak the encrypted key. Surface a boolean so the UI can show
-    // "key configured" without revealing the value.
-    const { aiApiKeyEncrypted, ...rest } = user
-    return { ...rest, hasAiApiKey: aiApiKeyEncrypted !== null }
+    return user
   }
 
   async updateMe(userId: string, dto: UpdateMeDto) {
@@ -55,10 +47,6 @@ export class UsersService {
     if (dto.aiCategorizationMode !== undefined) {
       data.aiCategorizationMode =
         dto.aiCategorizationMode as AiCategorizationMode
-    }
-    if (dto.aiApiKey !== undefined) {
-      data.aiApiKeyEncrypted =
-        dto.aiApiKey === null ? null : this.aiKeyCrypto.encrypt(dto.aiApiKey)
     }
     if (Object.keys(data).length > 0) {
       await this.prisma.user.update({

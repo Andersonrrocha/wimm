@@ -29,7 +29,7 @@ export interface RegisterRequest {
 export type ChartDateMode = 'BILLING_CYCLE' | 'PURCHASE_DATE'
 export type SubscriptionStatus = 'ACTIVE' | 'TRIALING' | 'EXPIRED' | 'CANCELED'
 export type SubscriptionPlan = 'MONTHLY' | 'ANNUAL' | 'LIFETIME'
-export type AiCategorizationMode = 'OFF' | 'SERVER' | 'BYOK'
+export type AiCategorizationMode = 'OFF' | 'ON'
 
 export interface User {
   id: string
@@ -47,8 +47,6 @@ export interface User {
   founderNumber: number | null
   /** AI suggestion preference; OFF unless user opts in. */
   aiCategorizationMode: AiCategorizationMode
-  /** True when a BYOK Anthropic key is stored (the value itself never leaves the server). */
-  hasAiApiKey: boolean
   createdAt: string
   updatedAt: string
 }
@@ -57,8 +55,6 @@ export interface UpdateUserMeRequest {
   preferredLocale?: AppLocale
   chartDateMode?: ChartDateMode
   aiCategorizationMode?: AiCategorizationMode
-  /** String to set/replace, null to clear, undefined to leave alone. */
-  aiApiKey?: string | null
 }
 
 // Generic API wrappers
