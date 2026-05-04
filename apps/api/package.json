@@ -7,12 +7,13 @@
     "dev": "pnpm --filter @wimm/shared run build && prisma generate && node ./scripts/ensure-nest-main.cjs && nest start --watch --exec \"node -r ./scripts/register-prisma-paths.js\"",
     "start": "node dist/main",
     "start:debug": "nest start --debug --watch --exec \"node -r ./scripts/register-prisma-paths.js\"",
-    "lint": "tsc --noEmit",
+    "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest",
     "clean": "rm -rf dist src/generated",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:migrate:deploy": "prisma migrate deploy"
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "seed:personal": "tsx scripts/seed-personal-rules.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
@@ -53,6 +54,7 @@
     "ts-jest": "^29.4.9",
     "tsc-alias": "^1.8.16",
     "tsconfig-paths": "^4.2.0",
+    "tsx": "^4.20.0",
     "typescript": "^5.5.0"
   }
 }
