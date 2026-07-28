@@ -1,0 +1,93 @@
+import {
+  AiCategorizationMode,
+  CategorizationMatchType,
+  CategoryType,
+  ChartDateMode,
+  ImportBatchFormat,
+  ImportBatchStatus,
+  RecurrenceEndMode,
+  RecurrenceFrequency,
+  SourceType,
+  SubscriptionPlan,
+  SubscriptionStatus,
+  TransactionKind,
+} from './enums'
+
+/**
+ * These literals are persisted in the database. Changing one is a data
+ * migration, never a rename. This test exists to make that impossible by accident.
+ */
+describe('domain enums', () => {
+  it('exposes the persisted literals', () => {
+    expect(ChartDateMode).toEqual({
+      BILLING_CYCLE: 'BILLING_CYCLE',
+      PURCHASE_DATE: 'PURCHASE_DATE',
+    })
+    expect(SubscriptionStatus).toEqual({
+      ACTIVE: 'ACTIVE',
+      TRIALING: 'TRIALING',
+      EXPIRED: 'EXPIRED',
+      CANCELED: 'CANCELED',
+    })
+    expect(SubscriptionPlan).toEqual({
+      MONTHLY: 'MONTHLY',
+      ANNUAL: 'ANNUAL',
+      LIFETIME: 'LIFETIME',
+    })
+    expect(AiCategorizationMode).toEqual({
+      OFF: 'OFF',
+      SERVER: 'SERVER',
+      BYOK: 'BYOK',
+    })
+    expect(SourceType).toEqual({
+      BANK_ACCOUNT: 'BANK_ACCOUNT',
+      CREDIT_CARD: 'CREDIT_CARD',
+      CASH: 'CASH',
+      MANUAL: 'MANUAL',
+    })
+    expect(CategoryType).toEqual({ INCOME: 'INCOME', EXPENSE: 'EXPENSE' })
+    expect(TransactionKind).toEqual({ INCOME: 'INCOME', EXPENSE: 'EXPENSE' })
+    expect(RecurrenceFrequency).toEqual({
+      WEEKLY: 'WEEKLY',
+      MONTHLY: 'MONTHLY',
+      YEARLY: 'YEARLY',
+    })
+    expect(RecurrenceEndMode).toEqual({
+      INDEFINITE: 'INDEFINITE',
+      UNTIL_DATE: 'UNTIL_DATE',
+    })
+    expect(CategorizationMatchType).toEqual({
+      CONTAINS: 'CONTAINS',
+      EQUALS: 'EQUALS',
+    })
+    expect(ImportBatchFormat).toEqual({
+      CSV: 'CSV',
+      OFX: 'OFX',
+      PDF_BANRISUL_CC: 'PDF_BANRISUL_CC',
+      PDF_CRESOL_STATEMENT: 'PDF_CRESOL_STATEMENT',
+    })
+    expect(ImportBatchStatus).toEqual({ COMPLETED: 'COMPLETED' })
+  })
+
+  it('uses each key as its own value', () => {
+    const all = [
+      ChartDateMode,
+      SubscriptionStatus,
+      SubscriptionPlan,
+      AiCategorizationMode,
+      SourceType,
+      CategoryType,
+      TransactionKind,
+      RecurrenceFrequency,
+      RecurrenceEndMode,
+      CategorizationMatchType,
+      ImportBatchFormat,
+      ImportBatchStatus,
+    ]
+    for (const e of all) {
+      for (const [key, value] of Object.entries(e)) {
+        expect(key).toBe(value)
+      }
+    }
+  })
+})

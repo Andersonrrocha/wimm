@@ -1,3 +1,19 @@
+import type {
+  AiCategorizationMode,
+  CategorizationMatchType,
+  CategoryType,
+  ChartDateMode,
+  ImportBatchFormat,
+  RecurrenceEndMode,
+  RecurrenceFrequency,
+  SourceType,
+  SubscriptionPlan,
+  SubscriptionStatus,
+  TransactionKind,
+} from './enums'
+
+export * from './enums'
+
 // Auth
 export interface AuthTokens {
   accessToken: string
@@ -26,11 +42,6 @@ export interface RegisterRequest {
 }
 
 // User
-export type ChartDateMode = 'BILLING_CYCLE' | 'PURCHASE_DATE'
-export type SubscriptionStatus = 'ACTIVE' | 'TRIALING' | 'EXPIRED' | 'CANCELED'
-export type SubscriptionPlan = 'MONTHLY' | 'ANNUAL' | 'LIFETIME'
-export type AiCategorizationMode = 'OFF' | 'SERVER' | 'BYOK'
-
 export interface User {
   id: string
   email: string
@@ -86,10 +97,6 @@ export interface PaginationParams {
 }
 
 // Master data (aligned with Prisma enums)
-export type SourceType = 'BANK_ACCOUNT' | 'CREDIT_CARD' | 'CASH' | 'MANUAL'
-export type CategoryType = 'INCOME' | 'EXPENSE'
-export type TransactionKind = 'INCOME' | 'EXPENSE'
-
 export interface Source {
   id: string
   userId: string
@@ -144,9 +151,6 @@ export interface Transaction {
   updatedAt: string
 }
 
-export type RecurrenceFrequency = 'WEEKLY' | 'MONTHLY' | 'YEARLY'
-export type RecurrenceEndMode = 'INDEFINITE' | 'UNTIL_DATE'
-
 export interface Recurrence {
   id: string
   userId: string
@@ -174,12 +178,6 @@ export interface MaterializeResponse {
 }
 
 // Imports (CSV / OFX / bank-specific PDF)
-export type ImportBatchFormat =
-  | 'CSV'
-  | 'OFX'
-  | 'PDF_BANRISUL_CC'
-  | 'PDF_CRESOL_STATEMENT'
-
 export type ImportParserWarningSeverity = 'info' | 'warning'
 
 /**
@@ -318,8 +316,6 @@ export interface ReportFutureCommitmentsResponse {
   totalCommittedExpense: string
   cardBySource: ReportFutureCommitmentsCardRow[]
 }
-
-export type CategorizationMatchType = 'CONTAINS' | 'EQUALS'
 
 export interface CategorizationRule {
   id: string
