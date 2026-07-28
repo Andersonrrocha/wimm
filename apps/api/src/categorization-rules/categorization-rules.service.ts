@@ -113,7 +113,7 @@ export class CategorizationRulesService {
   async loadActiveSystemRulesOrdered(): Promise<SystemCategorizationRule[]> {
     return this.prisma.systemCategorizationRule.findMany({
       where: { active: true },
-      orderBy: [{ priority: 'asc' }, { pattern: 'asc' }],
+      orderBy: [{ priority: 'asc' }, { pattern: 'asc' }, { id: 'asc' }],
     })
   }
 

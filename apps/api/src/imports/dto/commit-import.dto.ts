@@ -36,7 +36,9 @@ export class CommitImportRowDto {
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
-  @Max(999999999999.99)
+  // Bound tracks int4's ceiling in cents (2147483647 / 100). Update this
+  // alongside any future change to the `amountCents` column width.
+  @Max(21474836.47)
   amount!: number
 
   @IsString()

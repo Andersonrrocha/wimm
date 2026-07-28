@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common'
-import { Prisma } from '@prisma/client'
+import type { Prisma } from '@prisma/client'
 import {
   ChartDateMode,
   fromCents,
@@ -16,7 +16,7 @@ import {
   utcMonthBounds,
 } from './future-commitments.util'
 
-function toDecimalString(cents: number | null | undefined): string {
+function centsToString(cents: number | null | undefined): string {
   return fromCents(cents ?? 0)
 }
 
@@ -104,9 +104,9 @@ export class ReportsService {
     const net = income - expense
 
     return {
-      income: toDecimalString(income),
-      expense: toDecimalString(expense),
-      net: toDecimalString(net),
+      income: centsToString(income),
+      expense: centsToString(expense),
+      net: centsToString(net),
     }
   }
 
@@ -215,7 +215,7 @@ export class ReportsService {
       categoryKey: r.categoryKey,
       name: r.name,
       kind: r.kind,
-      total: toDecimalString(r.total),
+      total: centsToString(r.total),
     }))
 
     items.sort((a, b) => Number.parseFloat(b.total) - Number.parseFloat(a.total))
@@ -278,9 +278,9 @@ export class ReportsService {
       months.push({
         month: m + 1,
         label: monthLabels[m] ?? String(m + 1),
-        income: toDecimalString(income),
-        expense: toDecimalString(expense),
-        net: toDecimalString(net),
+        income: centsToString(income),
+        expense: centsToString(expense),
+        net: centsToString(net),
       })
     }
 
@@ -357,10 +357,7 @@ export class ReportsService {
 
     const { recurringExpenseCents, recurringIncomeCents } =
       sumRecurrenceCommitmentsInUtcMonth(
-        // `amountCents` is nullable at the schema level (Task 7); the `?? 0`
-        // guard mirrors the aggregate guards below until Task 10 makes the
-        // column non-nullable.
-        recurrences.map((r) => ({ ...r, amountCents: r.amountCents ?? 0 })),
+        recurrences,
         sourceBillingById,
         year,
         month,
@@ -410,16 +407,16 @@ export class ReportsService {
     return {
       year,
       month,
-      recurringExpenseTotal: toDecimalString(recurringExpenseCents),
-      recurringIncomeTotal: toDecimalString(recurringIncomeCents),
-      cardInstallmentsTotal: toDecimalString(cardInstallments),
-      totalCommittedExpense: toDecimalString(totalCommittedExpense),
+      recurringExpenseTotal: centsToString(recurringExpenseCents),
+      recurringIncomeTotal: centsToString(recurringIncomeCents),
+      cardInstallmentsTotal: centsToString(cardInstallments),
+      totalCommittedExpense: centsToString(totalCommittedExpense),
       cardBySource: cardBySource
         .filter((g) => g.sourceId != null)
         .map((g) => ({
           sourceId: g.sourceId as string,
           sourceName: nameById.get(g.sourceId as string) ?? 'Unknown',
-          total: toDecimalString(g._sum.amountCents ?? 0),
+          total: centsToString(g._sum.amountCents ?? 0),
         }))
         .sort(
           (a, b) =>
