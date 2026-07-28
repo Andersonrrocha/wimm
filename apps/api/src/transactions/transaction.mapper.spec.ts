@@ -1,4 +1,3 @@
-import { Prisma } from '@prisma/client'
 import { toTransactionDto } from './transaction.mapper'
 
 describe('toTransactionDto', () => {
@@ -13,7 +12,7 @@ describe('toTransactionDto', () => {
     isConfirmedFromImport: false,
     recurrenceId: null,
     kind: 'EXPENSE' as const,
-    amount: new Prisma.Decimal('150.45'),
+    amountCents: 15045,
     description: 'Mercado Central',
     occurredAt: new Date('2026-03-15T00:00:00.000Z'),
     fingerprint: 'abc',
@@ -57,9 +56,7 @@ describe('toTransactionDto', () => {
   })
 
   it('renders whole values with trailing zeros', () => {
-    expect(toTransactionDto({ ...row, amount: new Prisma.Decimal('7') }).amount).toBe(
-      '7.00',
-    )
+    expect(toTransactionDto({ ...row, amountCents: 700 }).amount).toBe('7.00')
   })
 
   it('renders dates as ISO strings', () => {

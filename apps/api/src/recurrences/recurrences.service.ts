@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
-import { RecurrenceEndMode, toCents } from '@wimm/shared'
+import { fromCents, RecurrenceEndMode, toCents } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import { assertCategoryIsLeaf } from '../categories/assert-category-leaf'
 import {
@@ -207,7 +207,10 @@ export class RecurrencesService {
       id: string
       userId: string
       kind: string
-      amount: Prisma.Decimal
+      // Still nullable until Task 10 makes the column NOT NULL; Task 7's
+      // backfill and dual-write mean every row has it populated in practice
+      // by this phase.
+      amountCents: number | null
       description: string
       sourceId: string | null
       categoryId: string | null
@@ -266,13 +269,19 @@ export class RecurrencesService {
 
       if (!existing) {
         const billing = resolveTransactionBillingFields(sourceBilling, cursor)
+        // `rec.amountCents` is nullable only until Task 10's NOT NULL
+        // constraint; Task 7's backfill and dual-write mean it is always
+        // populated in practice by this phase. `amount` (Decimal) is derived
+        // from it here purely to keep the dual-write intact until Task 10
+        // drops that column.
+        const recAmountCents = rec.amountCents ?? 0
         await this.prisma.transaction.create({
           data: {
             userId,
             recurrenceId: rec.id,
             kind: rec.kind,
-            amount: rec.amount,
-            amountCents: toCents(rec.amount.toFixed(2)),
+            amount: new Prisma.Decimal(fromCents(recAmountCents)),
+            amountCents: recAmountCents,
             description: rec.description,
             occurredAt: cursor,
             sourceId: rec.sourceId,

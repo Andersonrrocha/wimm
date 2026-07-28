@@ -1,10 +1,10 @@
-import type { Prisma } from '@prisma/client'
-import { parseEnum, TransactionKind, type Transaction } from '@wimm/shared'
+import { fromCents, parseEnum, TransactionKind, type Transaction } from '@wimm/shared'
 
 /**
  * Shape this mapper accepts. Declared structurally rather than importing the
- * Prisma model so the money field can change representation (Task 9 moves it
- * from `Decimal` to integer cents) without rippling through call sites.
+ * Prisma model so the money field can change representation independently of
+ * call sites. Task 9 moved it from `Decimal` to integer cents; Task 10 drops
+ * the `Decimal` column entirely.
  */
 export type TransactionRow = {
   id: string
@@ -17,7 +17,9 @@ export type TransactionRow = {
   isConfirmedFromImport: boolean
   recurrenceId: string | null
   kind: string
-  amount: Prisma.Decimal
+  // Still nullable until Task 10 makes the column NOT NULL; Task 7's backfill
+  // and dual-write mean every row has it populated in practice by this phase.
+  amountCents: number | null
   description: string
   occurredAt: Date
   fingerprint: string | null
@@ -40,7 +42,7 @@ export function toTransactionDto(row: TransactionRow): Transaction {
     recurrenceId: row.recurrenceId,
     // Task 3 added parseEnum for exactly this boundary — do not cast blindly.
     kind: parseEnum(TransactionKind, row.kind, 'kind'),
-    amount: row.amount.toFixed(2),
+    amount: fromCents(row.amountCents ?? 0),
     description: row.description,
     occurredAt: row.occurredAt.toISOString(),
     fingerprint: row.fingerprint,

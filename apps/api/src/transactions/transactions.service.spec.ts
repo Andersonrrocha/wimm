@@ -54,6 +54,7 @@ describe('TransactionsService', () => {
     recurrenceId: null,
     kind: 'EXPENSE',
     amount: new Prisma.Decimal(10.5),
+    amountCents: 1050,
     description: 'Coffee',
     occurredAt: new Date('2024-01-10T00:00:00.000Z'),
     fingerprint: null,

@@ -1,5 +1,5 @@
-import type { Prisma } from '@prisma/client'
 import {
+  fromCents,
   parseEnum,
   RecurrenceEndMode,
   RecurrenceFrequency,
@@ -9,14 +9,17 @@ import {
 
 /**
  * Shape this mapper accepts. Declared structurally rather than importing the
- * Prisma model so the money field can change representation (Task 9 moves it
- * from `Decimal` to integer cents) without rippling through call sites.
+ * Prisma model so the money field can change representation independently of
+ * call sites. Task 9 moved it from `Decimal` to integer cents; Task 10 drops
+ * the `Decimal` column entirely.
  */
 export type RecurrenceRow = {
   id: string
   userId: string
   kind: string
-  amount: Prisma.Decimal
+  // Still nullable until Task 10 makes the column NOT NULL; Task 7's backfill
+  // and dual-write mean every row has it populated in practice by this phase.
+  amountCents: number | null
   description: string
   sourceId: string | null
   categoryId: string | null
@@ -35,7 +38,7 @@ export function toRecurrenceDto(row: RecurrenceRow): Recurrence {
     userId: row.userId,
     // Task 3 added parseEnum for exactly this boundary — do not cast blindly.
     kind: parseEnum(TransactionKind, row.kind, 'kind'),
-    amount: row.amount.toFixed(2),
+    amount: fromCents(row.amountCents ?? 0),
     description: row.description,
     sourceId: row.sourceId,
     categoryId: row.categoryId,

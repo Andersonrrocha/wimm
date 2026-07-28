@@ -51,6 +51,7 @@ describe('RecurrencesService', () => {
     userId: 'user-1',
     kind: 'EXPENSE',
     amount: new Prisma.Decimal(150.45),
+    amountCents: 15045,
     description: 'Gym membership',
     sourceId: null,
     categoryId: null,

@@ -1,4 +1,3 @@
-import { Prisma } from '@prisma/client'
 import { toRecurrenceDto } from './recurrence.mapper'
 
 describe('toRecurrenceDto', () => {
@@ -6,7 +5,7 @@ describe('toRecurrenceDto', () => {
     id: 'r-1',
     userId: 'u-1',
     kind: 'EXPENSE' as const,
-    amount: new Prisma.Decimal('99.90'),
+    amountCents: 9990,
     description: 'Streaming',
     sourceId: 's-1',
     categoryId: 'c-1',
@@ -43,9 +42,7 @@ describe('toRecurrenceDto', () => {
   })
 
   it('renders whole values with trailing zeros', () => {
-    expect(toRecurrenceDto({ ...row, amount: new Prisma.Decimal('50') }).amount).toBe(
-      '50.00',
-    )
+    expect(toRecurrenceDto({ ...row, amountCents: 5000 }).amount).toBe('50.00')
   })
 
   it('renders dates as ISO strings', () => {
