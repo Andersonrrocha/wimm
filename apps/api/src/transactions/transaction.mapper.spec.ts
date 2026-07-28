@@ -26,6 +26,32 @@ describe('toTransactionDto', () => {
     updatedAt: new Date('2026-03-16T10:00:00.000Z'),
   }
 
+  it('maps every DTO field to its expected value (full-shape contract)', () => {
+    expect(toTransactionDto(row)).toEqual({
+      id: 't-1',
+      userId: 'u-1',
+      sourceId: 's-1',
+      categoryId: 'c-1',
+      importBatchId: null,
+      recurrenceId: null,
+      kind: 'EXPENSE',
+      amount: '150.45',
+      description: 'Mercado Central',
+      occurredAt: '2026-03-15T00:00:00.000Z',
+      fingerprint: 'abc',
+      billingCycleMonth: 3,
+      billingCycleYear: 2026,
+      expectedDueDate: '2026-04-10T00:00:00.000Z',
+      installmentCurrent: 2,
+      installmentTotal: 12,
+      installmentPlanId: null,
+      isProjected: false,
+      isConfirmedFromImport: false,
+      createdAt: '2026-03-16T10:00:00.000Z',
+      updatedAt: '2026-03-16T10:00:00.000Z',
+    })
+  })
+
   it('renders amount as a two-decimal string', () => {
     expect(toTransactionDto(row).amount).toBe('150.45')
   })

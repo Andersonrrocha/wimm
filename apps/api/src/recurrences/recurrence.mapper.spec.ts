@@ -19,6 +19,25 @@ describe('toRecurrenceDto', () => {
     updatedAt: new Date('2026-01-10T10:00:00.000Z'),
   }
 
+  it('maps every DTO field to its expected value (full-shape contract)', () => {
+    expect(toRecurrenceDto(row)).toEqual({
+      id: 'r-1',
+      userId: 'u-1',
+      kind: 'EXPENSE',
+      amount: '99.90',
+      description: 'Streaming',
+      sourceId: 's-1',
+      categoryId: 'c-1',
+      frequency: 'MONTHLY',
+      startDate: '2026-01-10T00:00:00.000Z',
+      endMode: 'INDEFINITE',
+      endDate: null,
+      active: true,
+      createdAt: '2026-01-10T10:00:00.000Z',
+      updatedAt: '2026-01-10T10:00:00.000Z',
+    })
+  })
+
   it('renders amount as a two-decimal string', () => {
     expect(toRecurrenceDto(row).amount).toBe('99.90')
   })
