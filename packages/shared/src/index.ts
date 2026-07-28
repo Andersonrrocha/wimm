@@ -13,6 +13,7 @@ import type {
 } from './enums'
 
 export * from './enums'
+export * from './money'
 
 // Auth
 export interface AuthTokens {
