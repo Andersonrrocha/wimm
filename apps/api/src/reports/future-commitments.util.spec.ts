@@ -1,4 +1,3 @@
-import { Prisma } from '@prisma/client'
 import { RecurrenceEndMode, TransactionKind } from '@wimm/shared'
 import { sumRecurrenceCommitmentsInUtcMonth } from './future-commitments.util'
 
@@ -10,7 +9,7 @@ describe('sumRecurrenceCommitmentsInUtcMonth', () => {
       {
         id: 'r1',
         kind: TransactionKind.EXPENSE,
-        amount: new Prisma.Decimal(50),
+        amountCents: 5000,
         frequency: 'MONTHLY' as const,
         startDate: new Date(Date.UTC(2026, 0, 15, 12, 0, 0)),
         endMode: RecurrenceEndMode.INDEFINITE,
@@ -24,14 +23,14 @@ describe('sumRecurrenceCommitmentsInUtcMonth', () => {
       2026,
       1,
     )
-    expect(jan.recurringExpense.toFixed(2)).toBe('50.00')
+    expect(jan.recurringExpenseCents).toBe(5000)
     const feb = sumRecurrenceCommitmentsInUtcMonth(
       recurrences,
       emptySources,
       2026,
       2,
     )
-    expect(feb.recurringExpense.toFixed(2)).toBe('50.00')
+    expect(feb.recurringExpenseCents).toBe(5000)
   })
 
   it('uses billing due month for credit card recurrences, not purchase month', () => {
@@ -40,7 +39,7 @@ describe('sumRecurrenceCommitmentsInUtcMonth', () => {
       {
         id: 'r1',
         kind: TransactionKind.EXPENSE,
-        amount: new Prisma.Decimal(100),
+        amountCents: 10000,
         frequency: 'MONTHLY' as const,
         startDate: new Date(Date.UTC(2026, 0, 5, 12, 0, 0)),
         endMode: RecurrenceEndMode.INDEFINITE,
@@ -59,17 +58,17 @@ describe('sumRecurrenceCommitmentsInUtcMonth', () => {
       ],
     ])
     const jan = sumRecurrenceCommitmentsInUtcMonth(recurrences, sources, 2026, 1)
-    expect(jan.recurringExpense.toFixed(2)).toBe('0.00')
+    expect(jan.recurringExpenseCents).toBe(0)
     const feb = sumRecurrenceCommitmentsInUtcMonth(recurrences, sources, 2026, 2)
-    expect(feb.recurringExpense.toFixed(2)).toBe('100.00')
+    expect(feb.recurringExpenseCents).toBe(10000)
   })
 
-  it('routes income recurrences to recurringIncome', () => {
+  it('routes income recurrences to recurringIncomeCents', () => {
     const recurrences = [
       {
         id: 'r1',
         kind: TransactionKind.INCOME,
-        amount: new Prisma.Decimal(200),
+        amountCents: 20000,
         frequency: 'MONTHLY' as const,
         startDate: new Date(Date.UTC(2026, 3, 1, 12, 0, 0)),
         endMode: RecurrenceEndMode.INDEFINITE,
@@ -83,7 +82,7 @@ describe('sumRecurrenceCommitmentsInUtcMonth', () => {
       2026,
       4,
     )
-    expect(apr.recurringIncome.toFixed(2)).toBe('200.00')
-    expect(apr.recurringExpense.toFixed(2)).toBe('0.00')
+    expect(apr.recurringIncomeCents).toBe(20000)
+    expect(apr.recurringExpenseCents).toBe(0)
   })
 })

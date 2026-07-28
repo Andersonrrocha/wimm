@@ -1,4 +1,3 @@
-import { Prisma } from '@prisma/client'
 import { RecurrenceEndMode, TransactionKind } from '@wimm/shared'
 import {
   resolveTransactionBillingFields,
@@ -24,7 +23,7 @@ const MAX_RECURRENCE_STEPS = 5_000
 export type RecurrenceRowForForecast = {
   id: string
   kind: string
-  amount: Prisma.Decimal
+  amountCents: number
   frequency: string
   startDate: Date
   endMode: string
@@ -64,10 +63,10 @@ export function sumRecurrenceCommitmentsInUtcMonth(
   sourceBillingById: Map<string, SourceBillingInput>,
   year: number,
   month: number,
-): { recurringExpense: Prisma.Decimal; recurringIncome: Prisma.Decimal } {
+): { recurringExpenseCents: number; recurringIncomeCents: number } {
   const { monthStart, monthEnd } = utcMonthBounds(year, month)
-  let recurringExpense = new Prisma.Decimal(0)
-  let recurringIncome = new Prisma.Decimal(0)
+  let recurringExpenseCents = 0
+  let recurringIncomeCents = 0
 
   for (const rec of recurrences) {
     const ruleEnd =
@@ -106,9 +105,9 @@ export function sumRecurrenceCommitmentsInUtcMonth(
 
       if (isWithinRange(impactAt, monthStart, monthEnd)) {
         if (rec.kind === TransactionKind.EXPENSE) {
-          recurringExpense = recurringExpense.plus(rec.amount)
+          recurringExpenseCents += rec.amountCents
         } else {
-          recurringIncome = recurringIncome.plus(rec.amount)
+          recurringIncomeCents += rec.amountCents
         }
       }
 
@@ -119,5 +118,5 @@ export function sumRecurrenceCommitmentsInUtcMonth(
     }
   }
 
-  return { recurringExpense, recurringIncome }
+  return { recurringExpenseCents, recurringIncomeCents }
 }

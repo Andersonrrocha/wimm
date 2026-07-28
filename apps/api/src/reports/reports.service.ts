@@ -1,6 +1,12 @@
 import { BadRequestException, Injectable } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
-import { ChartDateMode, parseEnum, SourceType, TransactionKind } from '@wimm/shared'
+import {
+  ChartDateMode,
+  fromCents,
+  parseEnum,
+  SourceType,
+  TransactionKind,
+} from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import type { FutureCommitmentsQueryDto } from './dto/future-commitments-query.dto'
 import type { MonthlyQueryDto } from './dto/monthly-query.dto'
@@ -10,9 +16,8 @@ import {
   utcMonthBounds,
 } from './future-commitments.util'
 
-function toDecimalString(v: Prisma.Decimal | null | undefined): string {
-  if (v == null) return '0.00'
-  return v.toFixed(2)
+function toDecimalString(cents: number | null | undefined): string {
+  return fromCents(cents ?? 0)
 }
 
 /**
@@ -86,17 +91,17 @@ export class ReportsService {
     const [incomeAgg, expenseAgg] = await Promise.all([
       this.prisma.transaction.aggregate({
         where: { userId, kind: TransactionKind.INCOME, occurredAt: range },
-        _sum: { amount: true },
+        _sum: { amountCents: true },
       }),
       this.prisma.transaction.aggregate({
         where: expenseWhereForDateRange(userId, range, mode),
-        _sum: { amount: true },
+        _sum: { amountCents: true },
       }),
     ])
 
-    const income = new Prisma.Decimal(incomeAgg._sum.amount ?? 0)
-    const expense = new Prisma.Decimal(expenseAgg._sum.amount ?? 0)
-    const net = income.minus(expense)
+    const income = incomeAgg._sum.amountCents ?? 0
+    const expense = expenseAgg._sum.amountCents ?? 0
+    const net = income - expense
 
     return {
       income: toDecimalString(income),
@@ -112,13 +117,13 @@ export class ReportsService {
     const incomeGroups = await this.prisma.transaction.groupBy({
       by: ['categoryId'],
       where: { userId, kind: TransactionKind.INCOME, occurredAt: range },
-      _sum: { amount: true },
+      _sum: { amountCents: true },
     })
 
     const expenseGroups = await this.prisma.transaction.groupBy({
       by: ['categoryId'],
       where: expenseWhereForDateRange(userId, range, mode),
-      _sum: { amount: true },
+      _sum: { amountCents: true },
     })
 
     const groups = [
@@ -163,12 +168,12 @@ export class ReportsService {
       categoryKey: string | null
       name: string
       kind: TransactionKind
-      total: Prisma.Decimal
+      total: number
     }
     const rollupMap = new Map<string, RollupEntry>()
 
     for (const g of groups) {
-      const raw = new Prisma.Decimal(g._sum.amount ?? 0)
+      const raw = g._sum.amountCents ?? 0
       const cat = g.categoryId ? catById.get(g.categoryId) : undefined
 
       let rollupId: string | null
@@ -193,7 +198,7 @@ export class ReportsService {
       const mapKey = `${rollupId ?? 'null'}:${g.kind}`
       const entry = rollupMap.get(mapKey)
       if (entry) {
-        entry.total = entry.total.plus(raw)
+        entry.total += raw
       } else {
         rollupMap.set(mapKey, {
           categoryId: rollupId,
@@ -258,17 +263,17 @@ export class ReportsService {
       const [incomeAgg, expenseAgg] = await Promise.all([
         this.prisma.transaction.aggregate({
           where: { userId, kind: TransactionKind.INCOME, occurredAt: range },
-          _sum: { amount: true },
+          _sum: { amountCents: true },
         }),
         this.prisma.transaction.aggregate({
           where: expenseWhereForDateRange(userId, range, mode),
-          _sum: { amount: true },
+          _sum: { amountCents: true },
         }),
       ])
 
-      const income = new Prisma.Decimal(incomeAgg._sum.amount ?? 0)
-      const expense = new Prisma.Decimal(expenseAgg._sum.amount ?? 0)
-      const net = income.minus(expense)
+      const income = incomeAgg._sum.amountCents ?? 0
+      const expense = expenseAgg._sum.amountCents ?? 0
+      const net = income - expense
 
       months.push({
         month: m + 1,
@@ -314,7 +319,7 @@ export class ReportsService {
       select: {
         id: true,
         kind: true,
-        amount: true,
+        amountCents: true,
         frequency: true,
         startDate: true,
         endMode: true,
@@ -350,12 +355,16 @@ export class ReportsService {
       ]),
     )
 
-    const { recurringExpense, recurringIncome } = sumRecurrenceCommitmentsInUtcMonth(
-      recurrences,
-      sourceBillingById,
-      year,
-      month,
-    )
+    const { recurringExpenseCents, recurringIncomeCents } =
+      sumRecurrenceCommitmentsInUtcMonth(
+        // `amountCents` is nullable at the schema level (Task 7); the `?? 0`
+        // guard mirrors the aggregate guards below until Task 10 makes the
+        // column non-nullable.
+        recurrences.map((r) => ({ ...r, amountCents: r.amountCents ?? 0 })),
+        sourceBillingById,
+        year,
+        month,
+      )
 
     const cardWhere: Prisma.TransactionWhereInput = {
       userId,
@@ -373,13 +382,13 @@ export class ReportsService {
 
     const cardAgg = await this.prisma.transaction.aggregate({
       where: cardWhere,
-      _sum: { amount: true },
+      _sum: { amountCents: true },
     })
 
     const cardBySource = await this.prisma.transaction.groupBy({
       by: ['sourceId'],
       where: cardWhere,
-      _sum: { amount: true },
+      _sum: { amountCents: true },
     })
 
     const cardSourceIds = cardBySource
@@ -395,14 +404,14 @@ export class ReportsService {
           })
     const nameById = new Map(cardSources.map((s) => [s.id, s.name]))
 
-    const cardInstallments = new Prisma.Decimal(cardAgg._sum.amount ?? 0)
-    const totalCommittedExpense = recurringExpense.plus(cardInstallments)
+    const cardInstallments = cardAgg._sum.amountCents ?? 0
+    const totalCommittedExpense = recurringExpenseCents + cardInstallments
 
     return {
       year,
       month,
-      recurringExpenseTotal: toDecimalString(recurringExpense),
-      recurringIncomeTotal: toDecimalString(recurringIncome),
+      recurringExpenseTotal: toDecimalString(recurringExpenseCents),
+      recurringIncomeTotal: toDecimalString(recurringIncomeCents),
       cardInstallmentsTotal: toDecimalString(cardInstallments),
       totalCommittedExpense: toDecimalString(totalCommittedExpense),
       cardBySource: cardBySource
@@ -410,7 +419,7 @@ export class ReportsService {
         .map((g) => ({
           sourceId: g.sourceId as string,
           sourceName: nameById.get(g.sourceId as string) ?? 'Unknown',
-          total: toDecimalString(new Prisma.Decimal(g._sum.amount ?? 0)),
+          total: toDecimalString(g._sum.amountCents ?? 0),
         }))
         .sort(
           (a, b) =>

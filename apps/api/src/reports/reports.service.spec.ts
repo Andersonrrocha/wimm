@@ -1,5 +1,5 @@
 import { Test } from '@nestjs/testing'
-import { Prisma } from '@prisma/client'
+import type { Prisma } from '@prisma/client'
 import { TransactionKind } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import { ReportsService } from './reports.service'
@@ -34,10 +34,10 @@ describe('ReportsService', () => {
     it('filters card installment totals by expectedDueDate and excludes recurrence rows', async () => {
       prismaMock.recurrence.findMany.mockResolvedValue([])
       prismaMock.transaction.aggregate.mockResolvedValue({
-        _sum: { amount: new Prisma.Decimal(45.5) },
+        _sum: { amountCents: 4550 },
       })
       prismaMock.transaction.groupBy.mockResolvedValue([
-        { sourceId: 's-cc', _sum: { amount: new Prisma.Decimal(45.5) } },
+        { sourceId: 's-cc', _sum: { amountCents: 4550 } },
       ])
       prismaMock.source.findMany.mockResolvedValue([
         { id: 's-cc', name: 'Platinum' },
@@ -63,7 +63,7 @@ describe('ReportsService', () => {
             { installmentTotal: { not: null } },
           ],
         }),
-        _sum: { amount: true },
+        _sum: { amountCents: true },
       })
     })
   })
@@ -76,7 +76,7 @@ describe('ReportsService', () => {
           if (args.where.kind === TransactionKind.EXPENSE) {
             expenseWheres.push(args.where)
           }
-          return Promise.resolve({ _sum: { amount: new Prisma.Decimal(0) } })
+          return Promise.resolve({ _sum: { amountCents: 0 } })
         },
       )
 
