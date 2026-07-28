@@ -411,10 +411,53 @@ git commit -m "refactor(api): import domain enums from shared instead of prisma 
 **Files:**
 - Modify: `apps/api/prisma/schema.prisma`
 - Create: `apps/api/prisma/migrations/20260729120000_enums_to_text/migration.sql`
+- Modify: `packages/shared/src/enums.ts`, `packages/shared/src/enums.spec.ts` (add `parseEnum`)
+- Modify: `apps/api/src/auth/auth.service.ts`, `apps/api/src/reports/reports.service.ts`, `apps/api/src/recurrences/recurrences.service.ts`, `apps/api/src/transactions/transaction-billing.util.ts`, `apps/api/src/reports/future-commitments.util.ts`
 
 **Interfaces:**
 - Consumes: nothing at the type level — Task 2 already removed every dependency on generated enums.
-- Produces: generated Prisma types for the 14 affected fields become `string`, which the shared union types satisfy.
+- Produces: generated Prisma types for the 14 affected fields become `string`, plus
+  `parseEnum(enumObject, value, fieldName)` in `@wimm/shared` for narrowing at read boundaries.
+
+> **Correction (discovered during execution).** An earlier draft of this task claimed the
+> generated `string` types "satisfy the shared union types". That holds for **writes** — a
+> literal like `'EXPENSE'` is assignable to `string` — but not for **reads**: `string` is not
+> assignable to a narrow union, so every site reading an enum column into a domain-typed
+> object fails to compile. This produced 13 errors across 5 files. The schema change and the
+> narrowing fix below therefore land as **one commit**; splitting them leaves the build red.
+
+The 13 errors fall into two classes, with different correct fixes:
+
+**Class 1 — DTO construction boundaries → narrow, with validation.** `auth.service.ts:156-162`
+and `reports.service.ts:63` build `@wimm/shared` DTOs out of raw Prisma rows. This is where
+untyped-from-database becomes typed-domain, so validate rather than cast. Add one generic helper
+to `packages/shared/src/enums.ts` (not twelve):
+
+```ts
+export function parseEnum<T extends Record<string, string>>(
+  enumObject: T,
+  value: string,
+  fieldName: string,
+): T[keyof T] {
+  const allowed = Object.values(enumObject)
+  if (!allowed.includes(value)) {
+    throw new RangeError(
+      `Invalid ${fieldName}: ${JSON.stringify(value)} (expected one of ${allowed.join(', ')})`,
+    )
+  }
+  return value as T[keyof T]
+}
+```
+
+Nullable columns pass null through: `row.subscriptionPlan === null ? null : parseEnum(...)`.
+
+**Class 2 — internal row-shape types → widen to `string`.** `SourceBillingInput`
+(`transaction-billing.util.ts:3-7`), `RecurrenceRowForForecast` (`future-commitments.util.ts:16-25`),
+and the local shape at `recurrences.service.ts:176` are our own declarations describing *a row
+selected from Prisma*. They should say `string`, because that is what the database layer now
+provides. This is safe here because the only consumption is an equality comparison
+(`transaction-billing.util.ts:28`), not an exhaustive switch — verify that property before
+widening any further type. The `CHECK` constraints are what make this safe at runtime.
 
 - [ ] **Step 1: Edit the schema**
 
@@ -563,7 +606,7 @@ Expected: clean typecheck; all specs pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/prisma
+git add apps/api/prisma apps/api/src packages/shared/src
 git commit -m "feat(database): replace enums with text columns and check constraints"
 ```
 
@@ -943,7 +986,8 @@ export function toTransactionDto(row: TransactionRow): Transaction {
     categoryId: row.categoryId,
     importBatchId: row.importBatchId,
     recurrenceId: row.recurrenceId,
-    kind: row.kind as Transaction['kind'],
+    // Task 3 added parseEnum for exactly this boundary — do not cast blindly.
+    kind: parseEnum(TransactionKind, row.kind, 'kind'),
     amount: row.amount.toFixed(2),
     description: row.description,
     occurredAt: row.occurredAt.toISOString(),
