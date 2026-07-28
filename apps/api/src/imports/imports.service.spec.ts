@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing'
+import { Prisma } from '@prisma/client'
 import {
   CategoryType,
   ImportBatchFormat,
@@ -247,6 +248,7 @@ ${'note '.repeat(30)}
   describe('commit', () => {
     it('persists billing and installment metadata for credit card source', async () => {
       const createdRows: Record<string, unknown>[] = []
+      const planCreate = jest.fn().mockResolvedValue({ id: 'plan-1' })
       prismaMock.$transaction.mockImplementation(
         async (fn: (tx: object) => Promise<unknown>) => {
           const tx = {
@@ -254,7 +256,7 @@ ${'note '.repeat(30)}
               create: jest.fn().mockResolvedValue({ id: 'batch-1' }),
             },
             installmentPlan: {
-              create: jest.fn().mockResolvedValue({ id: 'plan-1' }),
+              create: planCreate,
             },
             transaction: {
               findFirst: jest.fn().mockResolvedValue(null),
@@ -285,7 +287,9 @@ ${'note '.repeat(30)}
           {
             occurredAt: '2024-01-10T00:00:00.000Z',
             kind: TransactionKind.EXPENSE,
-            amount: 10,
+            // Non-whole cents (150.45 -> 15045) so a dropped-fraction bug in
+            // any of the three money write sites below would fail this test.
+            amount: 150.45,
             description: 'MERCADO 01/05',
             installmentCurrent: 1,
             installmentTotal: 5,
@@ -295,6 +299,13 @@ ${'note '.repeat(30)}
 
       expect(result.created).toBe(5)
       expect(createdRows).toHaveLength(5)
+      // installmentPlan.create (imports.service.ts write site)
+      expect(planCreate).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          amountEach: new Prisma.Decimal('150.45'),
+          amountEachCents: 15045,
+        }),
+      })
       expect(createdRows[0]).toMatchObject({
         billingCycleMonth: 1,
         billingCycleYear: 2024,
@@ -304,6 +315,9 @@ ${'note '.repeat(30)}
         isConfirmedFromImport: true,
         installmentPlanId: 'plan-1',
         occurredAt: new Date('2024-01-10T00:00:00.000Z'),
+        // transaction.create for the imported (non-projected) leg
+        amount: new Prisma.Decimal('150.45'),
+        amountCents: 15045,
       })
       expect(createdRows[0].expectedDueDate).toEqual(
         new Date(Date.UTC(2024, 1, 10)),
@@ -314,6 +328,9 @@ ${'note '.repeat(30)}
         installmentTotal: 5,
         importBatchId: null,
         installmentPlanId: 'plan-1',
+        // transaction.create for a projected installment leg
+        amount: new Prisma.Decimal('150.45'),
+        amountCents: 15045,
       })
       expect(createdRows[1].billingCycleMonth).toBe(2)
       expect(createdRows[4]).toMatchObject({
