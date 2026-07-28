@@ -16,7 +16,7 @@ import {
   RecurrenceEndMode,
   RecurrenceFrequency,
   TransactionKind,
-} from '@prisma/client'
+} from '@wimm/shared'
 
 export class UpdateRecurrenceDto {
   @IsOptional()

@@ -1,9 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
-import {
-  AiCategorizationMode,
-  ChartDateMode,
-  Prisma,
-} from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import { AiCategorizationMode, ChartDateMode } from '@wimm/shared'
 import { AiKeyCrypto } from '../ai/ai-key-crypto'
 import { PrismaService } from '../prisma/prisma.service'
 import type { UpdateMeDto } from './dto/update-me.dto'

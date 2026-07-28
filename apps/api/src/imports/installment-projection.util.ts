@@ -1,4 +1,4 @@
-import { TransactionKind } from '@prisma/client'
+import { TransactionKind } from '@wimm/shared'
 import { billingFieldsForProjectedInstallmentLeg } from './import-statement-billing.util'
 import { computeProjectedInstallmentFingerprint } from './fingerprint'
 import {

@@ -8,7 +8,7 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator'
-import { SourceType } from '@prisma/client'
+import { SourceType } from '@wimm/shared'
 
 export class UpdateSourceDto {
   @IsOptional()

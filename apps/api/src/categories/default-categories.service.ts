@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common'
-import { CategoryType, Prisma } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import { CategoryType } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 
 type CategoryNode = {

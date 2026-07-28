@@ -1,4 +1,4 @@
-import { SourceType } from '@prisma/client'
+import { SourceType } from '@wimm/shared'
 import {
   resolveTransactionBillingFields,
   TransactionBillingConfigError,

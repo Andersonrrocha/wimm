@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common'
-import { ChartDateMode, Prisma, SourceType, TransactionKind } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import { ChartDateMode, SourceType, TransactionKind } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import type { FutureCommitmentsQueryDto } from './dto/future-commitments-query.dto'
 import type { MonthlyQueryDto } from './dto/monthly-query.dto'

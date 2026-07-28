@@ -1,4 +1,4 @@
-import { SourceType, TransactionKind } from '@prisma/client'
+import { SourceType, TransactionKind } from '@wimm/shared'
 import {
   addCalendarMonthsUtc,
   buildProjectedInstallmentDescription,

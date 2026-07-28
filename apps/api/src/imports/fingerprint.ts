@@ -1,5 +1,5 @@
 import { createHash } from 'crypto'
-import { TransactionKind } from '@prisma/client'
+import { TransactionKind } from '@wimm/shared'
 
 export function normalizeDescription(s: string): string {
   return s.trim().replace(/\s+/g, ' ').toLowerCase()

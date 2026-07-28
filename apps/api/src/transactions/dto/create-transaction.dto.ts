@@ -11,7 +11,7 @@ import {
   Min,
   MinLength,
 } from 'class-validator'
-import { TransactionKind } from '@prisma/client'
+import { TransactionKind } from '@wimm/shared'
 
 export class CreateTransactionDto {
   @IsEnum(TransactionKind)

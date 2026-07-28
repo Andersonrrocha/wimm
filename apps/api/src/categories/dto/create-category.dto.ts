@@ -1,5 +1,5 @@
 import { IsEnum, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator'
-import { CategoryType } from '@prisma/client'
+import { CategoryType } from '@wimm/shared'
 
 export class CreateCategoryDto {
   @IsString()

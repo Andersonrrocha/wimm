@@ -17,7 +17,7 @@ import {
   RecurrenceEndMode,
   RecurrenceFrequency,
   TransactionKind,
-} from '@prisma/client'
+} from '@wimm/shared'
 
 export class CreateRecurrenceDto {
   @IsEnum(TransactionKind)

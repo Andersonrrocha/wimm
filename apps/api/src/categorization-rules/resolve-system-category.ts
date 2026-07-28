@@ -1,4 +1,5 @@
-import { TransactionKind, type SystemCategorizationRule } from '@prisma/client'
+import type { SystemCategorizationRule } from '@prisma/client'
+import { TransactionKind } from '@wimm/shared'
 
 /**
  * Generic pattern `mercado` must not match Mercado Livre descriptors: those

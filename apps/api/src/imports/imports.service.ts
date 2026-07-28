@@ -3,13 +3,13 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common'
+import { Prisma } from '@prisma/client'
 import {
   CategoryType,
   ImportBatchFormat,
-  Prisma,
   SourceType,
   TransactionKind,
-} from '@prisma/client'
+} from '@wimm/shared'
 import { AiKeyResolverService } from '../ai/ai-key-resolver.service'
 import { AnthropicCategorizerService } from '../ai/anthropic-categorizer.service'
 import { DefaultCategoriesService } from '../categories/default-categories.service'

@@ -15,7 +15,7 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator'
-import { ImportBatchFormat, TransactionKind } from '@prisma/client'
+import { ImportBatchFormat, TransactionKind } from '@wimm/shared'
 
 export class ImportStatementBillingDto {
   @IsDateString()

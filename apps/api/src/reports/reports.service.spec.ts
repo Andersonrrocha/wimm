@@ -1,5 +1,6 @@
 import { Test } from '@nestjs/testing'
-import { Prisma, TransactionKind } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import { TransactionKind } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import { ReportsService } from './reports.service'
 

@@ -3,7 +3,7 @@
  */
 
 import { BadRequestException } from '@nestjs/common'
-import { ImportBatchFormat } from '@prisma/client'
+import { ImportBatchFormat } from '@wimm/shared'
 import { extractTextFromPdfBuffer } from './parsers/banrisul-cc/extract-pdf-text'
 import { canParseBanrisulCreditCardPdf } from './parsers/banrisul-cc/banrisul-layout-guard'
 import { canParseCresolStatementPdf } from './parsers/cresol/cresol-layout-guard'

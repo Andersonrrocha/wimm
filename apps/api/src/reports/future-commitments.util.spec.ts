@@ -1,4 +1,5 @@
-import { Prisma, RecurrenceEndMode, TransactionKind } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import { RecurrenceEndMode, TransactionKind } from '@wimm/shared'
 import { sumRecurrenceCommitmentsInUtcMonth } from './future-commitments.util'
 
 describe('sumRecurrenceCommitmentsInUtcMonth', () => {

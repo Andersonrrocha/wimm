@@ -4,13 +4,12 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import {
-  CategoryType,
   Prisma,
-  TransactionKind,
   type CategorizationRule,
   type Category,
   type SystemCategorizationRule,
 } from '@prisma/client'
+import { CategoryType, TransactionKind } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import { DefaultCategoriesService } from '../categories/default-categories.service'
 import { assertCategoryIsLeaf } from '../categories/assert-category-leaf'

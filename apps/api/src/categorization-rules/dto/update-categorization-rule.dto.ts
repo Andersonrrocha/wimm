@@ -10,7 +10,7 @@ import {
   Min,
   MinLength,
 } from 'class-validator'
-import { CategorizationMatchType } from '@prisma/client'
+import { CategorizationMatchType } from '@wimm/shared'
 
 export class UpdateCategorizationRuleDto {
   @IsOptional()

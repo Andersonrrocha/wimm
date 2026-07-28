@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { AiCategorizationMode } from '@prisma/client'
+import { AiCategorizationMode } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import { AiKeyCrypto } from './ai-key-crypto'
 

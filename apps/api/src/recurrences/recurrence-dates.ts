@@ -1,4 +1,4 @@
-import { RecurrenceFrequency } from '@prisma/client'
+import { RecurrenceFrequency } from '@wimm/shared'
 
 /** Stable day key for idempotent recurrence transaction fingerprints */
 export function dateKeyUtc(d: Date): string {

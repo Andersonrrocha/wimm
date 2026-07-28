@@ -1,4 +1,4 @@
-import { TransactionKind } from '@prisma/client'
+import { TransactionKind } from '@wimm/shared'
 import { resolveFirstSystemCategoryId } from './resolve-system-category'
 
 describe('resolveFirstSystemCategoryId', () => {

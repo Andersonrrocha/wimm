@@ -1,4 +1,4 @@
-import { ImportBatchFormat } from '@prisma/client'
+import { ImportBatchFormat } from '@wimm/shared'
 import {
   detectImportFormat,
   isBanrisulPdfFormat,

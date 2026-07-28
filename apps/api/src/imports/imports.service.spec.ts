@@ -4,7 +4,7 @@ import {
   ImportBatchFormat,
   SourceType,
   TransactionKind,
-} from '@prisma/client'
+} from '@wimm/shared'
 import { ImportsService } from './imports.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { DefaultCategoriesService } from '../categories/default-categories.service'

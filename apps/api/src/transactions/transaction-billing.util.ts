@@ -1,5 +1,4 @@
-import { calculateCreditCardBillingCycleContext } from '@wimm/shared'
-import { SourceType } from '@prisma/client'
+import { calculateCreditCardBillingCycleContext, SourceType } from '@wimm/shared'
 
 export type SourceBillingInput = {
   type: SourceType

@@ -4,7 +4,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import { Prisma, SourceType } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import { SourceType } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import type { CreateSourceDto } from './dto/create-source.dto'
 import type { UpdateSourceDto } from './dto/update-source.dto'

@@ -1,5 +1,9 @@
-import { Prisma, RecurrenceEndMode, TransactionKind } from '@prisma/client'
-import type { RecurrenceFrequency } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import {
+  RecurrenceEndMode,
+  TransactionKind,
+  type RecurrenceFrequency,
+} from '@wimm/shared'
 import {
   resolveTransactionBillingFields,
   type SourceBillingInput,

@@ -3,11 +3,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import {
-  Prisma,
-  RecurrenceEndMode,
-  type RecurrenceFrequency,
-} from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import { RecurrenceEndMode, type RecurrenceFrequency } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import { assertCategoryIsLeaf } from '../categories/assert-category-leaf'
 import {
@@ -186,7 +183,7 @@ export class RecurrencesService {
     rec: {
       id: string
       userId: string
-      kind: import('@prisma/client').TransactionKind
+      kind: import('@wimm/shared').TransactionKind
       amount: Prisma.Decimal
       description: string
       sourceId: string | null
