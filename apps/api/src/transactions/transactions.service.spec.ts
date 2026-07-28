@@ -1,5 +1,4 @@
 import { Test } from '@nestjs/testing'
-import { Prisma } from '@prisma/client'
 import { SourceType, TransactionKind } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import { TransactionsService } from './transactions.service'
@@ -53,7 +52,6 @@ describe('TransactionsService', () => {
     isConfirmedFromImport: false,
     recurrenceId: null,
     kind: 'EXPENSE',
-    amount: new Prisma.Decimal(10.5),
     amountCents: 1050,
     description: 'Coffee',
     occurredAt: new Date('2024-01-10T00:00:00.000Z'),
@@ -94,9 +92,8 @@ describe('TransactionsService', () => {
           billingCycleMonth: 1,
           billingCycleYear: 2024,
           expectedDueDate: new Date(Date.UTC(2024, 1, 10)),
-          amount: new Prisma.Decimal(10.5),
-          // Integer-cent sibling written alongside the Decimal (expand step
-          // of the Decimal -> integer-cents migration); 10.50 -> 1050.
+          // Non-whole cents source value (10.50 -> 1050) so a dropped-fraction
+          // bug in the cents conversion would fail this assertion.
           amountCents: 1050,
         }),
       })
@@ -255,7 +252,7 @@ describe('TransactionsService', () => {
       expect(result.amount).toBe('10.50')
     })
 
-    it('dual-writes amount and amountCents together when amount changes', async () => {
+    it('writes amountCents converted from the input value when amount changes', async () => {
       prismaMock.transaction.findFirst.mockResolvedValue({
         id: 't1',
         userId: 'user-1',
@@ -264,7 +261,7 @@ describe('TransactionsService', () => {
       })
       prismaMock.transaction.update.mockResolvedValue({
         ...baseRow,
-        amount: new Prisma.Decimal(150.45),
+        amountCents: 15045,
       })
 
       await service.updateForUser('user-1', 't1', { amount: 150.45 })
@@ -272,7 +269,6 @@ describe('TransactionsService', () => {
       expect(prismaMock.transaction.update).toHaveBeenCalledWith({
         where: { id: 't1' },
         data: expect.objectContaining({
-          amount: new Prisma.Decimal(150.45),
           // Non-whole cents (150.45 -> 15045) so a dropped-fraction bug in
           // the conditional update branch would fail this assertion.
           amountCents: 15045,

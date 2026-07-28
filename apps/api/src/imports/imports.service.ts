@@ -3,7 +3,6 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common'
-import { Prisma } from '@prisma/client'
 import {
   CategoryType,
   ImportBatchFormat,
@@ -441,7 +440,7 @@ export class ImportsService {
               installmentTotal: installment.installmentTotal,
               billingCycleMonth: billing.billingCycleMonth,
               billingCycleYear: billing.billingCycleYear,
-              amount: new Prisma.Decimal(row.amount.toFixed(2)),
+              amountCents: toCents(row.amount),
             },
             select: { id: true, description: true },
           })
@@ -480,7 +479,6 @@ export class ImportsService {
               sourceId: dto.sourceId,
               originatingBatchId: batch.id,
               installmentTotal: installment.installmentTotal,
-              amountEach: new Prisma.Decimal(row.amount.toFixed(2)),
               amountEachCents: toCents(row.amount),
             },
           })
@@ -493,7 +491,6 @@ export class ImportsService {
             sourceId: dto.sourceId,
             importBatchId: batch.id,
             kind: row.kind,
-            amount: new Prisma.Decimal(row.amount.toFixed(2)),
             amountCents: toCents(row.amount),
             description: row.description.trim(),
             occurredAt,
@@ -544,7 +541,6 @@ export class ImportsService {
                 importBatchId: null,
                 installmentPlanId,
                 kind: row.kind,
-                amount: new Prisma.Decimal(row.amount.toFixed(2)),
                 amountCents: toCents(row.amount),
                 description: p.description,
                 occurredAt: p.occurredAt,

@@ -1,5 +1,4 @@
 import { Test } from '@nestjs/testing'
-import { Prisma } from '@prisma/client'
 import {
   CategoryType,
   ImportBatchFormat,
@@ -302,7 +301,6 @@ ${'note '.repeat(30)}
       // installmentPlan.create (imports.service.ts write site)
       expect(planCreate).toHaveBeenCalledWith({
         data: expect.objectContaining({
-          amountEach: new Prisma.Decimal('150.45'),
           amountEachCents: 15045,
         }),
       })
@@ -316,7 +314,6 @@ ${'note '.repeat(30)}
         installmentPlanId: 'plan-1',
         occurredAt: new Date('2024-01-10T00:00:00.000Z'),
         // transaction.create for the imported (non-projected) leg
-        amount: new Prisma.Decimal('150.45'),
         amountCents: 15045,
       })
       expect(createdRows[0].expectedDueDate).toEqual(
@@ -329,7 +326,6 @@ ${'note '.repeat(30)}
         importBatchId: null,
         installmentPlanId: 'plan-1',
         // transaction.create for a projected installment leg
-        amount: new Prisma.Decimal('150.45'),
         amountCents: 15045,
       })
       expect(createdRows[1].billingCycleMonth).toBe(2)

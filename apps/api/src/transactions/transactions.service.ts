@@ -69,8 +69,8 @@ export class TransactionsService {
 
   /**
    * Raw-row fetch shared by `findOneForUser` (mapped, controller-facing) and
-   * internal callers (`updateForUser`, `deleteForUser`) that need `Decimal`
-   * amounts and `Date` fields for further computation rather than the wire DTO.
+   * internal callers (`updateForUser`, `deleteForUser`) that need `Date`
+   * fields for further computation rather than the wire DTO.
    */
   private async findRowForUser(userId: string, id: string) {
     const row = await this.prisma.transaction.findFirst({
@@ -94,7 +94,6 @@ export class TransactionsService {
       data: {
         userId,
         kind: dto.kind,
-        amount: new Prisma.Decimal(dto.amount),
         amountCents: toCents(dto.amount),
         description: dto.description.trim(),
         occurredAt,
@@ -133,7 +132,6 @@ export class TransactionsService {
     }
     if (dto.kind !== undefined) data.kind = dto.kind
     if (dto.amount !== undefined) {
-      data.amount = new Prisma.Decimal(dto.amount)
       data.amountCents = toCents(dto.amount)
     }
     if (dto.description !== undefined) data.description = dto.description.trim()

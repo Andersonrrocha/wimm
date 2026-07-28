@@ -1,5 +1,4 @@
 import { Test } from '@nestjs/testing'
-import { Prisma } from '@prisma/client'
 import {
   RecurrenceEndMode,
   RecurrenceFrequency,
@@ -50,7 +49,6 @@ describe('RecurrencesService', () => {
     id: 'r1',
     userId: 'user-1',
     kind: 'EXPENSE',
-    amount: new Prisma.Decimal(150.45),
     amountCents: 15045,
     description: 'Gym membership',
     sourceId: null,
@@ -65,14 +63,13 @@ describe('RecurrencesService', () => {
   }
 
   describe('createForUser', () => {
-    it('dual-writes amount and amountCents from the same input value', async () => {
+    it('writes amountCents converted from the input value', async () => {
       prismaMock.recurrence.create.mockResolvedValue(baseRow)
 
       await service.createForUser('user-1', baseDto)
 
       expect(prismaMock.recurrence.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
-          amount: new Prisma.Decimal(150.45),
           // Non-whole cents (150.45 -> 15045); a whole-dollar fixture would
           // mask several classes of conversion error here.
           amountCents: 15045,
@@ -82,11 +79,11 @@ describe('RecurrencesService', () => {
   })
 
   describe('updateForUser', () => {
-    it('dual-writes amount and amountCents together when amount changes', async () => {
+    it('writes amountCents converted from the input value when amount changes', async () => {
       prismaMock.recurrence.findFirst.mockResolvedValue(baseRow)
       prismaMock.recurrence.update.mockResolvedValue({
         ...baseRow,
-        amount: new Prisma.Decimal(75.31),
+        amountCents: 7531,
       })
 
       await service.updateForUser('user-1', 'r1', { amount: 75.31 })
@@ -94,7 +91,6 @@ describe('RecurrencesService', () => {
       expect(prismaMock.recurrence.update).toHaveBeenCalledWith({
         where: { id: 'r1' },
         data: expect.objectContaining({
-          amount: new Prisma.Decimal(75.31),
           amountCents: 7531,
         }),
       })
@@ -102,7 +98,7 @@ describe('RecurrencesService', () => {
   })
 
   describe('materializeForUser', () => {
-    it('dual-writes amount and amountCents on each generated transaction', async () => {
+    it('writes amountCents from the recurrence on each generated transaction', async () => {
       prismaMock.recurrence.findFirst.mockResolvedValue(baseRow)
       prismaMock.transaction.findFirst.mockResolvedValue(null)
       prismaMock.transaction.create.mockResolvedValue({})
@@ -115,7 +111,6 @@ describe('RecurrencesService', () => {
       expect(result.created).toBe(1)
       expect(prismaMock.transaction.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
-          amount: baseRow.amount,
           amountCents: 15045,
         }),
       })

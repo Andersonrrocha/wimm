@@ -3,7 +3,7 @@ import { fromCents, parseEnum, TransactionKind, type Transaction } from '@wimm/s
 /**
  * Shape this mapper accepts. Declared structurally rather than importing the
  * Prisma model so the money field can change representation independently of
- * call sites. Task 9 moved it from `Decimal` to integer cents; Task 10 drops
+ * call sites. Task 9 moved it from `Decimal` to integer cents; Task 10 dropped
  * the `Decimal` column entirely.
  */
 export type TransactionRow = {
@@ -17,9 +17,7 @@ export type TransactionRow = {
   isConfirmedFromImport: boolean
   recurrenceId: string | null
   kind: string
-  // Still nullable until Task 10 makes the column NOT NULL; Task 7's backfill
-  // and dual-write mean every row has it populated in practice by this phase.
-  amountCents: number | null
+  amountCents: number
   description: string
   occurredAt: Date
   fingerprint: string | null
@@ -42,7 +40,7 @@ export function toTransactionDto(row: TransactionRow): Transaction {
     recurrenceId: row.recurrenceId,
     // Task 3 added parseEnum for exactly this boundary — do not cast blindly.
     kind: parseEnum(TransactionKind, row.kind, 'kind'),
-    amount: fromCents(row.amountCents ?? 0),
+    amount: fromCents(row.amountCents),
     description: row.description,
     occurredAt: row.occurredAt.toISOString(),
     fingerprint: row.fingerprint,
