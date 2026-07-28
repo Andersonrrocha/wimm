@@ -5,6 +5,7 @@ import {
   ChartDateMode,
   ImportBatchFormat,
   ImportBatchStatus,
+  parseEnum,
   RecurrenceEndMode,
   RecurrenceFrequency,
   SourceType,
@@ -89,5 +90,28 @@ describe('domain enums', () => {
         expect(key).toBe(value)
       }
     }
+  })
+})
+
+/**
+ * `parseEnum` narrows a raw TEXT column value (read from the database, typed
+ * `string` by Prisma) back into the literal-union type these enums declare.
+ * The database CHECK constraint guarantees the runtime value is valid; this
+ * throws loudly if that guarantee is ever violated instead of trusting a
+ * blind cast.
+ */
+describe('parseEnum', () => {
+  it('returns the value narrowed to the enum type when it is a member', () => {
+    const result = parseEnum(TransactionKind, 'EXPENSE', 'kind')
+    expect(result).toBe('EXPENSE')
+  })
+
+  it('throws a RangeError naming the field when the value is not a member', () => {
+    expect(() => parseEnum(TransactionKind, 'NOT_A_KIND', 'kind')).toThrow(
+      RangeError,
+    )
+    expect(() => parseEnum(TransactionKind, 'NOT_A_KIND', 'kind')).toThrow(
+      /kind/,
+    )
   })
 })

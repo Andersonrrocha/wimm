@@ -96,3 +96,27 @@ export const ImportBatchStatus = {
 } as const
 export type ImportBatchStatus =
   (typeof ImportBatchStatus)[keyof typeof ImportBatchStatus]
+
+/**
+ * Narrows a raw `string` (as read from a TEXT column) into one of these enum
+ * const objects' literal values, throwing if it isn't one.
+ *
+ * The database `CHECK` constraint is the runtime guarantee that a persisted
+ * value is always a member of the enum; this function is the corresponding
+ * static-to-dynamic boundary check on the read path, so a value that somehow
+ * violates that guarantee fails loudly instead of silently corrupting a
+ * downstream DTO.
+ */
+export function parseEnum<T extends Record<string, string>>(
+  enumObject: T,
+  value: string,
+  fieldName: string,
+): T[keyof T] {
+  const allowed = Object.values(enumObject)
+  if (!allowed.includes(value)) {
+    throw new RangeError(
+      `Invalid ${fieldName}: ${JSON.stringify(value)} (expected one of ${allowed.join(', ')})`,
+    )
+  }
+  return value as T[keyof T]
+}

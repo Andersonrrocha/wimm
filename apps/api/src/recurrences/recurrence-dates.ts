@@ -1,5 +1,3 @@
-import { RecurrenceFrequency } from '@wimm/shared'
-
 /** Stable day key for idempotent recurrence transaction fingerprints */
 export function dateKeyUtc(d: Date): string {
   const y = d.getUTCFullYear()
@@ -34,10 +32,13 @@ export function addYearsUtc(d: Date, years: number): Date {
   return addMonthsUtc(d, years * 12)
 }
 
-export function nextOccurrence(
-  d: Date,
-  frequency: RecurrenceFrequency,
-): Date {
+/**
+ * `frequency` is `string`, not the narrower `RecurrenceFrequency`, because
+ * callers now pass values read straight off a TEXT+CHECK `Recurrence.frequency`
+ * column. The `switch` below has a `default` fallback, so there is no
+ * exhaustiveness check to lose by widening.
+ */
+export function nextOccurrence(d: Date, frequency: string): Date {
   switch (frequency) {
     case 'WEEKLY':
       return addWeeksUtc(d, 1)

@@ -14,11 +14,8 @@
  */
 import 'dotenv/config'
 import { PrismaPg } from '@prisma/adapter-pg'
-import {
-  PrismaClient,
-  SubscriptionPlan,
-  SubscriptionStatus,
-} from '../src/generated/prisma/client'
+import { SubscriptionPlan, SubscriptionStatus } from '@wimm/shared'
+import { PrismaClient } from '../src/generated/prisma/client'
 
 function parseArg(name: string): string | undefined {
   return process.argv.find((a) => a.startsWith(`--${name}=`))?.split('=')[1]

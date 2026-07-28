@@ -1,9 +1,5 @@
 import { Prisma } from '@prisma/client'
-import {
-  RecurrenceEndMode,
-  TransactionKind,
-  type RecurrenceFrequency,
-} from '@wimm/shared'
+import { RecurrenceEndMode, TransactionKind } from '@wimm/shared'
 import {
   resolveTransactionBillingFields,
   type SourceBillingInput,
@@ -17,13 +13,21 @@ import {
 
 const MAX_RECURRENCE_STEPS = 5_000
 
+/**
+ * Shape of a `Recurrence` row as selected for the forecast calculation.
+ * `kind`, `frequency`, and `endMode` are `string`, not their narrower
+ * `@wimm/shared` enum types, because that is honestly what a TEXT+CHECK
+ * column selection returns. Every consumer below is an equality check
+ * (`===`) or a `switch` with a `default` fallback (in `nextOccurrence`), so
+ * widening loses no completeness guarantee.
+ */
 export type RecurrenceRowForForecast = {
   id: string
-  kind: TransactionKind
+  kind: string
   amount: Prisma.Decimal
-  frequency: RecurrenceFrequency
+  frequency: string
   startDate: Date
-  endMode: RecurrenceEndMode
+  endMode: string
   endDate: Date | null
   sourceId: string | null
 }

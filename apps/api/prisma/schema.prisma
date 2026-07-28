@@ -8,36 +8,6 @@ datasource db {
   provider = "postgresql"
 }
 
-enum ChartDateMode {
-  /** Default. Credit card expenses bucket into the month the bill is due. */
-  BILLING_CYCLE
-  /** Traditional view: every transaction sits on its purchase date. */
-  PURCHASE_DATE
-}
-
-enum SubscriptionStatus {
-  /** Default for friends-test and pre-paywall users. */
-  ACTIVE
-  TRIALING
-  EXPIRED
-  CANCELED
-}
-
-enum SubscriptionPlan {
-  MONTHLY
-  ANNUAL
-  LIFETIME
-}
-
-enum AiCategorizationMode {
-  /** Default. No AI calls are made; only deterministic rules. */
-  OFF
-  /** Server-side: WIMM uses its own Anthropic key; cost on Anderson. */
-  SERVER
-  /** Bring Your Own Key: user provides an Anthropic key, encrypted at rest. */
-  BYOK
-}
-
 model User {
   id                   String                @id @default(uuid())
   email                String                @unique
@@ -46,17 +16,17 @@ model User {
   /** UI language: `en` | `pt` */
   preferredLocale      String                @default("pt")
   /** Drives which date a credit card expense bucks into in reports. */
-  chartDateMode        ChartDateMode         @default(BILLING_CYCLE)
+  chartDateMode        String                @default("BILLING_CYCLE")
   /** Set when the user finishes the onboarding flow. NULL = show onboarding. */
   onboardedAt          DateTime?
   /** Paywall scaffolding (no enforcement yet — defaults make every user pass). */
-  subscriptionStatus   SubscriptionStatus    @default(ACTIVE)
-  subscriptionPlan     SubscriptionPlan?
+  subscriptionStatus   String                @default("ACTIVE")
+  subscriptionPlan     String?
   trialEndsAt          DateTime?
   /** 1..200 for lifetime Founder slot; NULL otherwise. Granted via CLI script. */
   founderNumber        Int?                  @unique
   /** AI categorization preference; default OFF — opt-in, never automatic. */
-  aiCategorizationMode AiCategorizationMode  @default(OFF)
+  aiCategorizationMode String                @default("OFF")
   /**
    * Encrypted Anthropic API key for BYOK mode (AES-256-GCM, base64).
    * NULL when SERVER or OFF; never returned by the API.
@@ -74,40 +44,12 @@ model User {
   installmentPlans     InstallmentPlan[]
 }
 
-enum SourceType {
-  BANK_ACCOUNT
-  CREDIT_CARD
-  CASH
-  MANUAL
-}
-
-enum CategoryType {
-  INCOME
-  EXPENSE
-}
-
-enum TransactionKind {
-  INCOME
-  EXPENSE
-}
-
-enum RecurrenceFrequency {
-  WEEKLY
-  MONTHLY
-  YEARLY
-}
-
-enum RecurrenceEndMode {
-  INDEFINITE
-  UNTIL_DATE
-}
-
 model Source {
   id             String          @id @default(uuid())
   userId         String
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   name           String
-  type           SourceType
+  type           String
   /** Statement closing day (1–31). Required when type is CREDIT_CARD; must be null otherwise. */
   closingDay     Int?
   /** Payment due day (1–31). Required when type is CREDIT_CARD; must be null otherwise. */
@@ -128,7 +70,7 @@ model Category {
   userId               String
   user                 User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   name                 String
-  type                 CategoryType
+  type                 String
   categoryKey          String?
   parentId             String?
   parent               Category?            @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
@@ -149,7 +91,7 @@ model SystemCategorizationRule {
   id          String            @id @default(uuid())
   pattern     String
   categoryKey String
-  kind        TransactionKind
+  kind        String
   priority    Int
   ruleGroup   String
   active      Boolean           @default(true)
@@ -160,17 +102,12 @@ model SystemCategorizationRule {
   @@index([active, priority, pattern])
 }
 
-enum CategorizationMatchType {
-  CONTAINS
-  EQUALS
-}
-
 model CategorizationRule {
   id          String                   @id @default(uuid())
   userId      String
   user        User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
   priority    Int
-  matchType   CategorizationMatchType
+  matchType   String
   pattern     String
   categoryId  String
   category    Category                 @relation(fields: [categoryId], references: [id], onDelete: Cascade)
@@ -181,17 +118,6 @@ model CategorizationRule {
   @@index([userId, priority])
 }
 
-enum ImportBatchFormat {
-  CSV
-  OFX
-  PDF_BANRISUL_CC
-  PDF_CRESOL_STATEMENT
-}
-
-enum ImportBatchStatus {
-  COMPLETED
-}
-
 model ImportBatch {
   id           String             @id @default(uuid())
   userId       String
@@ -199,8 +125,8 @@ model ImportBatch {
   sourceId     String
   source       Source             @relation(fields: [sourceId], references: [id], onDelete: Cascade)
   fileName     String
-  format       ImportBatchFormat
-  status       ImportBatchStatus  @default(COMPLETED)
+  format       String
+  status       String             @default("COMPLETED")
   createdAt    DateTime           @default(now())
   transactions Transaction[]
   installmentPlans InstallmentPlan[]
@@ -232,16 +158,16 @@ model Recurrence {
   id           String               @id @default(uuid())
   userId       String
   user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  kind         TransactionKind
+  kind         String
   amount       Decimal              @db.Decimal(14, 2)
   description  String
   sourceId     String?
   source       Source?              @relation(fields: [sourceId], references: [id], onDelete: SetNull)
   categoryId   String?
   category     Category?            @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  frequency    RecurrenceFrequency
+  frequency    String
   startDate    DateTime
-  endMode      RecurrenceEndMode
+  endMode      String
   endDate      DateTime?
   active       Boolean              @default(true)
   createdAt    DateTime             @default(now())
@@ -269,7 +195,7 @@ model Transaction {
   isConfirmedFromImport Boolean     @default(false)
   recurrenceId   String?
   recurrence     Recurrence?       @relation(fields: [recurrenceId], references: [id], onDelete: SetNull)
-  kind           TransactionKind
+  kind           String
   amount         Decimal           @db.Decimal(14, 2)
   description    String
   occurredAt     DateTime

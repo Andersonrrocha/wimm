@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
-import { ChartDateMode, SourceType, TransactionKind } from '@wimm/shared'
+import { ChartDateMode, parseEnum, SourceType, TransactionKind } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import type { FutureCommitmentsQueryDto } from './dto/future-commitments-query.dto'
 import type { MonthlyQueryDto } from './dto/monthly-query.dto'
@@ -60,7 +60,9 @@ export class ReportsService {
       where: { id: userId },
       select: { chartDateMode: true },
     })
-    return row?.chartDateMode ?? ChartDateMode.BILLING_CYCLE
+    return row
+      ? parseEnum(ChartDateMode, row.chartDateMode, 'chartDateMode')
+      : ChartDateMode.BILLING_CYCLE
   }
 
   private dateRangeFilter(dto: ReportsQueryDto): { gte: Date; lte: Date } {

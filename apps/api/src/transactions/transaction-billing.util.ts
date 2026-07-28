@@ -1,7 +1,14 @@
 import { calculateCreditCardBillingCycleContext, SourceType } from '@wimm/shared'
 
+/**
+ * Shape of a `Source` row as selected for billing-field resolution. `type` is
+ * `string`, not the narrower `SourceType`, because it describes what the
+ * database layer actually returns for a TEXT+CHECK column — the only
+ * consumer here is an equality check against `SourceType.CREDIT_CARD`, which
+ * works the same either way.
+ */
 export type SourceBillingInput = {
-  type: SourceType
+  type: string
   closingDay: number | null
   dueDay: number | null
 } | null

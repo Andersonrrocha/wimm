@@ -12,7 +12,8 @@
  */
 import 'dotenv/config'
 import { PrismaPg } from '@prisma/adapter-pg'
-import { PrismaClient, CategorizationMatchType } from '../src/generated/prisma/client'
+import { CategorizationMatchType } from '@wimm/shared'
+import { PrismaClient } from '../src/generated/prisma/client'
 
 type PersonalRule = {
   pattern: string

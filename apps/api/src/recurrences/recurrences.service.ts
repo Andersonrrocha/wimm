@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
-import { RecurrenceEndMode, type RecurrenceFrequency } from '@wimm/shared'
+import { RecurrenceEndMode } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import { assertCategoryIsLeaf } from '../categories/assert-category-leaf'
 import {
@@ -179,18 +179,25 @@ export class RecurrencesService {
     return { created: totalCreated }
   }
 
+  /**
+   * `rec`'s `kind`, `frequency`, and `endMode` are `string`, not their
+   * narrower `@wimm/shared` enum types, because this describes a `Recurrence`
+   * row exactly as selected from the database (TEXT+CHECK columns). Every use
+   * below is an equality check or a `switch` with a `default` fallback (in
+   * `nextOccurrence`), so widening loses no completeness guarantee.
+   */
   private async materializeOne(
     rec: {
       id: string
       userId: string
-      kind: import('@wimm/shared').TransactionKind
+      kind: string
       amount: Prisma.Decimal
       description: string
       sourceId: string | null
       categoryId: string | null
-      frequency: RecurrenceFrequency
+      frequency: string
       startDate: Date
-      endMode: RecurrenceEndMode
+      endMode: string
       endDate: Date | null
     },
     userId: string,
@@ -270,10 +277,13 @@ export class RecurrencesService {
     return created
   }
 
-  private assertEndModeConsistency(
-    endMode: RecurrenceEndMode,
-    endDate: Date | null,
-  ) {
+  /**
+   * `endMode` is `string`, not the narrower `RecurrenceEndMode`, because
+   * callers pass a mix of validated DTO input and `existing.endMode` read
+   * straight off a TEXT+CHECK column. Only equality checks against
+   * `RecurrenceEndMode` members happen below, so this loses no safety.
+   */
+  private assertEndModeConsistency(endMode: string, endDate: Date | null) {
     if (endMode === RecurrenceEndMode.UNTIL_DATE && !endDate) {
       throw new BadRequestException(
         'endDate is required when endMode is UNTIL_DATE',

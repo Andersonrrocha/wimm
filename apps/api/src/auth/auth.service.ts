@@ -7,6 +7,13 @@ import { ConfigService } from '@nestjs/config'
 import { JwtService } from '@nestjs/jwt'
 import * as bcrypt from 'bcrypt'
 import { createHash, randomBytes } from 'crypto'
+import {
+  AiCategorizationMode,
+  ChartDateMode,
+  parseEnum,
+  SubscriptionPlan,
+  SubscriptionStatus,
+} from '@wimm/shared'
 import { DefaultCategoriesService } from '../categories/default-categories.service'
 import { PrismaService } from '../prisma/prisma.service'
 import type { LoginDto } from './dto/login.dto'
@@ -153,13 +160,24 @@ export class AuthService {
         username: row.username,
         createdAt: row.createdAt,
         preferredLocale: row.preferredLocale,
-        chartDateMode: row.chartDateMode,
+        chartDateMode: parseEnum(ChartDateMode, row.chartDateMode, 'chartDateMode'),
         onboardedAt: row.onboardedAt,
-        subscriptionStatus: row.subscriptionStatus,
-        subscriptionPlan: row.subscriptionPlan,
+        subscriptionStatus: parseEnum(
+          SubscriptionStatus,
+          row.subscriptionStatus,
+          'subscriptionStatus',
+        ),
+        subscriptionPlan:
+          row.subscriptionPlan === null
+            ? null
+            : parseEnum(SubscriptionPlan, row.subscriptionPlan, 'subscriptionPlan'),
         trialEndsAt: row.trialEndsAt,
         founderNumber: row.founderNumber,
-        aiCategorizationMode: row.aiCategorizationMode,
+        aiCategorizationMode: parseEnum(
+          AiCategorizationMode,
+          row.aiCategorizationMode,
+          'aiCategorizationMode',
+        ),
         hasAiApiKey: row.aiApiKeyEncrypted !== null,
       },
     }
