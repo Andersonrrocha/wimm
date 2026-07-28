@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
-import { RecurrenceEndMode } from '@wimm/shared'
+import { RecurrenceEndMode, toCents } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import { assertCategoryIsLeaf } from '../categories/assert-category-leaf'
 import {
@@ -84,6 +84,7 @@ export class RecurrencesService {
         userId,
         kind: dto.kind,
         amount: new Prisma.Decimal(dto.amount.toFixed(2)),
+        amountCents: toCents(dto.amount),
         description: dto.description.trim(),
         sourceId: dto.sourceId ?? null,
         categoryId: dto.categoryId ?? null,
@@ -137,6 +138,7 @@ export class RecurrencesService {
     if (dto.kind !== undefined) data.kind = dto.kind
     if (dto.amount !== undefined) {
       data.amount = new Prisma.Decimal(dto.amount.toFixed(2))
+      data.amountCents = toCents(dto.amount)
     }
     if (dto.description !== undefined) data.description = dto.description.trim()
     if (dto.frequency !== undefined) data.frequency = dto.frequency
@@ -270,6 +272,7 @@ export class RecurrencesService {
             recurrenceId: rec.id,
             kind: rec.kind,
             amount: rec.amount,
+            amountCents: toCents(rec.amount.toFixed(2)),
             description: rec.description,
             occurredAt: cursor,
             sourceId: rec.sourceId,

@@ -9,6 +9,7 @@ import {
   ImportBatchFormat,
   SourceType,
   TransactionKind,
+  toCents,
 } from '@wimm/shared'
 import { AiKeyResolverService } from '../ai/ai-key-resolver.service'
 import { AnthropicCategorizerService } from '../ai/anthropic-categorizer.service'
@@ -480,6 +481,7 @@ export class ImportsService {
               originatingBatchId: batch.id,
               installmentTotal: installment.installmentTotal,
               amountEach: new Prisma.Decimal(row.amount.toFixed(2)),
+              amountEachCents: toCents(row.amount),
             },
           })
           installmentPlanId = plan.id
@@ -492,6 +494,7 @@ export class ImportsService {
             importBatchId: batch.id,
             kind: row.kind,
             amount: new Prisma.Decimal(row.amount.toFixed(2)),
+            amountCents: toCents(row.amount),
             description: row.description.trim(),
             occurredAt,
             fingerprint: fp,
@@ -542,6 +545,7 @@ export class ImportsService {
                 installmentPlanId,
                 kind: row.kind,
                 amount: new Prisma.Decimal(row.amount.toFixed(2)),
+                amountCents: toCents(row.amount),
                 description: p.description,
                 occurredAt: p.occurredAt,
                 fingerprint: p.fingerprint,

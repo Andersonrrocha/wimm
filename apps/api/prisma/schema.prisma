@@ -146,6 +146,7 @@ model InstallmentPlan {
   originatingBatch   ImportBatch?  @relation(fields: [originatingBatchId], references: [id], onDelete: SetNull)
   installmentTotal   Int
   amountEach         Decimal       @db.Decimal(14, 2)
+  amountEachCents    Int?
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
   transactions       Transaction[]
@@ -160,6 +161,7 @@ model Recurrence {
   user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   kind         String
   amount       Decimal              @db.Decimal(14, 2)
+  amountCents  Int?
   description  String
   sourceId     String?
   source       Source?              @relation(fields: [sourceId], references: [id], onDelete: SetNull)
@@ -197,6 +199,7 @@ model Transaction {
   recurrence     Recurrence?       @relation(fields: [recurrenceId], references: [id], onDelete: SetNull)
   kind           String
   amount         Decimal           @db.Decimal(14, 2)
+  amountCents    Int?
   description    String
   occurredAt     DateTime
   fingerprint    String?

@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
+import { toCents } from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import { assertCategoryIsLeaf } from '../categories/assert-category-leaf'
 import type { BulkCategorizeDto } from './dto/bulk-categorize.dto'
@@ -94,6 +95,7 @@ export class TransactionsService {
         userId,
         kind: dto.kind,
         amount: new Prisma.Decimal(dto.amount),
+        amountCents: toCents(dto.amount),
         description: dto.description.trim(),
         occurredAt,
         sourceId: dto.sourceId ?? null,
@@ -130,7 +132,10 @@ export class TransactionsService {
       expectedDueDate: billing.expectedDueDate,
     }
     if (dto.kind !== undefined) data.kind = dto.kind
-    if (dto.amount !== undefined) data.amount = new Prisma.Decimal(dto.amount)
+    if (dto.amount !== undefined) {
+      data.amount = new Prisma.Decimal(dto.amount)
+      data.amountCents = toCents(dto.amount)
+    }
     if (dto.description !== undefined) data.description = dto.description.trim()
     if (dto.occurredAt !== undefined) data.occurredAt = new Date(dto.occurredAt)
     if (dto.sourceId !== undefined) {
