@@ -37,6 +37,35 @@ describe('TransactionsService', () => {
     occurredAt: '2024-01-10T00:00:00.000Z',
   }
 
+  /**
+   * Full row shape the mapper requires. `create`/`update` mocks below extend
+   * this rather than returning a bare `{ id: 't1' }`, since `toTransactionDto`
+   * now runs on whatever Prisma resolves with.
+   */
+  const baseRow = {
+    id: 't1',
+    userId: 'user-1',
+    sourceId: null,
+    categoryId: null,
+    importBatchId: null,
+    installmentPlanId: null,
+    isProjected: false,
+    isConfirmedFromImport: false,
+    recurrenceId: null,
+    kind: 'EXPENSE',
+    amount: new Prisma.Decimal(10.5),
+    description: 'Coffee',
+    occurredAt: new Date('2024-01-10T00:00:00.000Z'),
+    fingerprint: null,
+    billingCycleMonth: null,
+    billingCycleYear: null,
+    expectedDueDate: null,
+    installmentCurrent: null,
+    installmentTotal: null,
+    createdAt: new Date('2024-01-10T00:00:00.000Z'),
+    updatedAt: new Date('2024-01-10T00:00:00.000Z'),
+  }
+
   describe('createForUser', () => {
     it('persists billing metadata for credit card source', async () => {
       prismaMock.source.findFirst.mockResolvedValue({
@@ -44,9 +73,15 @@ describe('TransactionsService', () => {
         closingDay: 25,
         dueDay: 10,
       })
-      prismaMock.transaction.create.mockResolvedValue({ id: 't1' })
+      prismaMock.transaction.create.mockResolvedValue({
+        ...baseRow,
+        sourceId: 'src-cc',
+        billingCycleMonth: 1,
+        billingCycleYear: 2024,
+        expectedDueDate: new Date(Date.UTC(2024, 1, 10)),
+      })
 
-      await service.createForUser('user-1', {
+      const result = await service.createForUser('user-1', {
         ...baseDto,
         sourceId: 'src-cc',
       })
@@ -61,6 +96,9 @@ describe('TransactionsService', () => {
           amount: new Prisma.Decimal(10.5),
         }),
       })
+      // Mapped DTO shape: amount is a two-decimal string, dates are ISO strings.
+      expect(result.amount).toBe('10.50')
+      expect(result.expectedDueDate).toBe(new Date(Date.UTC(2024, 1, 10)).toISOString())
     })
 
     it('sets billing fields null for bank account source', async () => {
@@ -69,7 +107,10 @@ describe('TransactionsService', () => {
         closingDay: null,
         dueDay: null,
       })
-      prismaMock.transaction.create.mockResolvedValue({ id: 't1' })
+      prismaMock.transaction.create.mockResolvedValue({
+        ...baseRow,
+        sourceId: 'src-bank',
+      })
 
       await service.createForUser('user-1', {
         ...baseDto,
@@ -91,7 +132,13 @@ describe('TransactionsService', () => {
         closingDay: 25,
         dueDay: 12,
       })
-      prismaMock.transaction.create.mockResolvedValue({ id: 't1' })
+      prismaMock.transaction.create.mockResolvedValue({
+        ...baseRow,
+        sourceId: 'src-cc',
+        billingCycleMonth: 1,
+        billingCycleYear: 2025,
+        expectedDueDate: new Date(Date.UTC(2025, 1, 12)),
+      })
 
       await service.createForUser('user-1', {
         ...baseDto,
@@ -178,9 +225,16 @@ describe('TransactionsService', () => {
         closingDay: 25,
         dueDay: 10,
       })
-      prismaMock.transaction.update.mockResolvedValue({ id: 't1' })
+      prismaMock.transaction.update.mockResolvedValue({
+        ...baseRow,
+        sourceId: 'src-cc',
+        description: 'Tea',
+        billingCycleMonth: 1,
+        billingCycleYear: 2024,
+        expectedDueDate: new Date(Date.UTC(2024, 1, 10)),
+      })
 
-      await service.updateForUser('user-1', 't1', { description: 'Tea' })
+      const result = await service.updateForUser('user-1', 't1', { description: 'Tea' })
 
       expect(prismaMock.transaction.update).toHaveBeenCalledWith({
         where: { id: 't1' },
@@ -191,6 +245,8 @@ describe('TransactionsService', () => {
           expectedDueDate: new Date(Date.UTC(2024, 1, 10)),
         }),
       })
+      expect(result.description).toBe('Tea')
+      expect(result.amount).toBe('10.50')
     })
   })
 })

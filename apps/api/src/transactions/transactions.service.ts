@@ -15,6 +15,7 @@ import {
   type SourceBillingInput,
   TransactionBillingConfigError,
 } from './transaction-billing.util'
+import { toTransactionDto } from './transaction.mapper'
 
 @Injectable()
 export class TransactionsService {
@@ -58,10 +59,19 @@ export class TransactionsService {
       this.prisma.transaction.count({ where }),
     ])
 
-    return { items, total, page, pageSize }
+    return { items: items.map(toTransactionDto), total, page, pageSize }
   }
 
   async findOneForUser(userId: string, id: string) {
+    return toTransactionDto(await this.findRowForUser(userId, id))
+  }
+
+  /**
+   * Raw-row fetch shared by `findOneForUser` (mapped, controller-facing) and
+   * internal callers (`updateForUser`, `deleteForUser`) that need `Decimal`
+   * amounts and `Date` fields for further computation rather than the wire DTO.
+   */
+  private async findRowForUser(userId: string, id: string) {
     const row = await this.prisma.transaction.findFirst({
       where: { id, userId },
     })
@@ -79,7 +89,7 @@ export class TransactionsService {
     const occurredAt = new Date(dto.occurredAt)
     const billing = this.billingForCreateOrUpdate(sourceBilling, occurredAt)
 
-    return this.prisma.transaction.create({
+    const created = await this.prisma.transaction.create({
       data: {
         userId,
         kind: dto.kind,
@@ -91,10 +101,11 @@ export class TransactionsService {
         ...billing,
       },
     })
+    return toTransactionDto(created)
   }
 
   async updateForUser(userId: string, id: string, dto: UpdateTransactionDto) {
-    const existing = await this.findOneForUser(userId, id)
+    const existing = await this.findRowForUser(userId, id)
     if (dto.sourceId != null) {
       await this.assertSourceOwned(userId, dto.sourceId)
     }
@@ -135,14 +146,15 @@ export class TransactionsService {
           : { connect: { id: dto.categoryId } }
     }
 
-    return this.prisma.transaction.update({
+    const updated = await this.prisma.transaction.update({
       where: { id },
       data,
     })
+    return toTransactionDto(updated)
   }
 
   async deleteForUser(userId: string, id: string) {
-    await this.findOneForUser(userId, id)
+    await this.findRowForUser(userId, id)
     await this.prisma.transaction.delete({ where: { id } })
   }
 

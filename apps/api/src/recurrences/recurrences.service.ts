@@ -21,6 +21,7 @@ import {
 import type { CreateRecurrenceDto } from './dto/create-recurrence.dto'
 import type { MaterializeDto } from './dto/materialize.dto'
 import type { UpdateRecurrenceDto } from './dto/update-recurrence.dto'
+import { toRecurrenceDto } from './recurrence.mapper'
 
 const MAX_MATERIALIZE_STEPS = 10_000
 const MAX_HORIZON_MONTHS = 24
@@ -30,13 +31,24 @@ export class RecurrencesService {
   constructor(private readonly prisma: PrismaService) {}
 
   async listForUser(userId: string) {
-    return this.prisma.recurrence.findMany({
+    const rows = await this.prisma.recurrence.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
     })
+    return rows.map(toRecurrenceDto)
   }
 
   async findOneForUser(userId: string, id: string) {
+    return toRecurrenceDto(await this.findRowForUser(userId, id))
+  }
+
+  /**
+   * Raw-row fetch shared by `findOneForUser` (mapped, controller-facing) and
+   * internal callers (`updateForUser`, `deleteForUser`, `materializeForUser`)
+   * that need `Decimal`/`Date`/raw-string-enum fields for further computation
+   * rather than the wire DTO.
+   */
+  private async findRowForUser(userId: string, id: string) {
     const row = await this.prisma.recurrence.findFirst({
       where: { id, userId },
     })
@@ -67,7 +79,7 @@ export class RecurrencesService {
       throw new BadRequestException('startDate must be on or before endDate')
     }
 
-    return this.prisma.recurrence.create({
+    const created = await this.prisma.recurrence.create({
       data: {
         userId,
         kind: dto.kind,
@@ -82,10 +94,11 @@ export class RecurrencesService {
         active: dto.active ?? true,
       },
     })
+    return toRecurrenceDto(created)
   }
 
   async updateForUser(userId: string, id: string, dto: UpdateRecurrenceDto) {
-    const existing = await this.findOneForUser(userId, id)
+    const existing = await this.findRowForUser(userId, id)
 
     let endMode = dto.endMode ?? existing.endMode
     let endDate: Date | null =
@@ -145,14 +158,15 @@ export class RecurrencesService {
           : { connect: { id: dto.categoryId } }
     }
 
-    return this.prisma.recurrence.update({
+    const updated = await this.prisma.recurrence.update({
       where: { id },
       data,
     })
+    return toRecurrenceDto(updated)
   }
 
   async deleteForUser(userId: string, id: string) {
-    await this.findOneForUser(userId, id)
+    await this.findRowForUser(userId, id)
     await this.prisma.recurrence.delete({ where: { id } })
   }
 
@@ -164,7 +178,7 @@ export class RecurrencesService {
     const cap = untilEnd.getTime() < hardCap.getTime() ? untilEnd : hardCap
 
     const recs = dto.recurrenceId
-      ? [await this.findOneForUser(userId, dto.recurrenceId)]
+      ? [await this.findRowForUser(userId, dto.recurrenceId)]
       : await this.prisma.recurrence.findMany({
           where: { userId, active: true },
         })
