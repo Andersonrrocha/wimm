@@ -40,6 +40,13 @@ function appliedMigrationRows(file: string): Array<{ migration_name: string; che
   return rows
 }
 
+function countRows(file: string, table: string): number {
+  const db = openLocalDatabase(file, { readonly: true })
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM "${table}"`).get() as { n: number }
+  db.close()
+  return row.n
+}
+
 describe('applyPendingMigrations', () => {
   beforeEach(() => {
     mkdirSync(ROOT, { recursive: true })
@@ -356,11 +363,13 @@ describe('applyPendingMigrations', () => {
     expect(appliedMigrationRows(DB_FILE)).toEqual([])
   })
 
-  it('throws naming the offending table when the batch leaves referential violations, since foreign keys were off for the whole batch', () => {
+  it('rejects a migration that leaves referential violations behind, rolling the whole batch back before it commits', () => {
     const migrationsDir = join(ROOT, 'migrations-dangling')
+    // Applied first, in its own call, so there is real pre-existing state (a committed migration
+    // row and real parent/child data) that the later failing call must leave completely untouched.
     writeMigration(
       migrationsDir,
-      '0000_dangling',
+      '0000_setup',
       `
         CREATE TABLE "parent" ("id" TEXT NOT NULL PRIMARY KEY);
         CREATE TABLE "child" (
@@ -368,9 +377,27 @@ describe('applyPendingMigrations', () => {
           "parentId" TEXT NOT NULL,
           CONSTRAINT "fk_child_parent" FOREIGN KEY ("parentId") REFERENCES "parent" ("id")
         );
-        INSERT INTO "child" VALUES ('c1', 'does-not-exist');
+        INSERT INTO "parent" VALUES ('p1');
+        INSERT INTO "child" VALUES ('c1', 'p1');
       `,
     )
+
+    const first = applyPendingMigrations({
+      file: DB_FILE,
+      migrationsDir,
+      backupDir: BACKUP_DIR,
+      databaseId: DATABASE_ID,
+      now: new Date('2026-01-01T00:00:00.000Z'),
+    })
+    expect(first.applied).toEqual(['0000_setup'])
+
+    const rowCountsBefore = { parent: countRows(DB_FILE, 'parent'), child: countRows(DB_FILE, 'child') }
+    const appliedRowsBefore = appliedMigrationRows(DB_FILE)
+
+    // A second migration that introduces a dangling reference. Foreign key enforcement is off for
+    // the whole batch (see the module doc comment), so nothing stops this INSERT from running --
+    // the `PRAGMA foreign_key_check` safety net must catch it before the batch commits.
+    writeMigration(migrationsDir, '0001_dangling', `INSERT INTO "child" VALUES ('c2', 'does-not-exist');`)
 
     let thrown: Error | undefined
     try {
@@ -379,20 +406,23 @@ describe('applyPendingMigrations', () => {
         migrationsDir,
         backupDir: BACKUP_DIR,
         databaseId: DATABASE_ID,
-        now: new Date('2026-01-01T00:00:00.000Z'),
+        now: new Date('2026-01-01T01:00:00.000Z'),
       })
     } catch (err) {
       thrown = err as Error
     }
 
     expect(thrown).toBeDefined()
-    expect(thrown!.message).toMatch(/0000_dangling/)
+    expect(thrown!.message).toMatch(/0001_dangling/)
     expect(thrown!.message).toMatch(/child/)
     expect(thrown!.message).toMatch(/\.snapshot\.db/)
 
-    // Unlike the mid-batch failure case above, this migration DID commit: the safety net runs
-    // after commit, on the same connection, since foreign keys were off for the whole batch.
-    const sql = readFileSync(join(migrationsDir, '0000_dangling', 'migration.sql'), 'utf8')
-    expect(appliedMigrationRows(DB_FILE)).toEqual([{ migration_name: '0000_dangling', checksum: sha256(sql) }])
+    // The migration was rejected, not merely reported: nothing it did landed. Row counts in the
+    // affected tables are exactly what they were before this call, and `_prisma_migrations` has no
+    // row for the failed migration.
+    const rowCountsAfter = { parent: countRows(DB_FILE, 'parent'), child: countRows(DB_FILE, 'child') }
+    expect(rowCountsAfter).toEqual(rowCountsBefore)
+    expect(appliedMigrationRows(DB_FILE)).toEqual(appliedRowsBefore)
+    expect(appliedMigrationRows(DB_FILE).some((r) => r.migration_name === '0001_dangling')).toBe(false)
   })
 })
