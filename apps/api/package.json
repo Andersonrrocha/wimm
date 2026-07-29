@@ -13,7 +13,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
-    "seed:personal": "tsx scripts/seed-personal-rules.ts"
+    "seed:personal": "tsx scripts/seed-personal-rules.ts",
+    "assert:constraints": "tsx scripts/assert-check-constraints.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
