@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "prisma generate && prisma generate --schema prisma/schema.sqlite.prisma && node ./scripts/clean-dist.cjs && nest build && tsc-alias -p tsconfig.build.json",
-    "dev": "pnpm --filter @wimm/shared run build && prisma generate && node ./scripts/ensure-nest-main.cjs && nest start --watch --exec \"node -r ./scripts/register-prisma-paths.js\"",
+    "dev": "pnpm --filter @wimm/shared run build && prisma generate && prisma generate --schema prisma/schema.sqlite.prisma && node ./scripts/ensure-nest-main.cjs && nest start --watch --exec \"node -r ./scripts/register-prisma-paths.js\"",
     "start": "node dist/main",
     "start:debug": "nest start --debug --watch --exec \"node -r ./scripts/register-prisma-paths.js\"",
     "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
@@ -16,7 +16,7 @@
     "seed:personal": "tsx scripts/seed-personal-rules.ts",
     "assert:constraints": "tsx scripts/assert-check-constraints.ts",
     "gen:sqlite-schema": "tsx scripts/generate-sqlite-schema.ts",
-    "gen:sqlite-baseline": "mkdir -p prisma/migrations-sqlite/0000_baseline && prisma migrate diff --from-empty --to-schema prisma/schema.sqlite.prisma --script > prisma/migrations-sqlite/0000_baseline/migration.sql && tsx scripts/inject-check-constraints.ts prisma/migrations-sqlite/0000_baseline/migration.sql",
+    "gen:sqlite-baseline": "mkdir -p prisma/migrations-sqlite/0000_baseline && prisma migrate diff --from-empty --to-schema prisma/schema.sqlite.prisma --script > prisma/migrations-sqlite/0000_baseline/migration.sql.tmp && tsx scripts/inject-check-constraints.ts prisma/migrations-sqlite/0000_baseline/migration.sql.tmp && mv prisma/migrations-sqlite/0000_baseline/migration.sql.tmp prisma/migrations-sqlite/0000_baseline/migration.sql",
     "assert:parity": "tsx scripts/assert-schema-parity.ts"
   },
   "dependencies": {

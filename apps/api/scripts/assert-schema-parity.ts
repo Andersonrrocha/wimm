@@ -29,8 +29,7 @@ import { spawnSync } from 'child_process'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { deriveSqliteSchema } from './generate-sqlite-schema'
-import { injectCheckConstraints, renderCheck } from './inject-check-constraints'
-import { CHECK_CONSTRAINTS } from '../src/prisma/check-constraints'
+import { findConstraintProblems, injectCheckConstraints } from './inject-check-constraints'
 
 const API_DIR = join(__dirname, '..')
 const PRISMA_DIR = join(API_DIR, 'prisma')
@@ -46,24 +45,6 @@ type CheckResult = {
   ok: boolean
   /** Present only when `ok` is false; always ends with the exact fix command. */
   message?: string
-}
-
-/**
- * Splits SQLite DDL into its CREATE TABLE blocks, keyed by table name.
- *
- * Deliberately table-scoped rather than a single string search: several
- * tables share column names (`kind` on Transaction and Recurrence, for
- * instance), so a constraint rendered for one table would satisfy a global
- * `.includes()` even sitting in another table's block entirely. Matches the
- * same block boundary inject-check-constraints.ts uses, so "does the
- * baseline carry this constraint" is asked the same way it was written.
- */
-function tableBlocks(ddl: string): Map<string, string> {
-  const blocks = new Map<string, string>()
-  for (const match of ddl.matchAll(/CREATE TABLE "(\w+)" \([\s\S]*?\n\);/g)) {
-    blocks.set(match[1], match[0])
-  }
-  return blocks
 }
 
 /** Check 1: schema.sqlite.prisma matches deriving it from schema.prisma, byte for byte. */
@@ -83,25 +64,28 @@ function checkDerivedSchemaCurrent(): CheckResult {
   }
 }
 
-/** Check 2: every declared CHECK_CONSTRAINTS entry appears in its table's block in the committed baseline. */
+/**
+ * Check 2: every table's block in the committed baseline carries exactly the
+ * CHECK clauses CHECK_CONSTRAINTS declares for it — count, not just
+ * presence. A presence-only check cannot catch a constraint declared for the
+ * wrong table (or a table renamed via `@@map`): several constraints render
+ * byte-identical CHECK text (see inject-check-constraints.ts's module
+ * header), so the text can be "present" in a block it was never meant to be
+ * in, or absent from a block that owns zero declared constraints, without a
+ * plain substring search ever noticing.
+ */
 function checkBaselineCarriesConstraints(): CheckResult {
   const name = 'Baseline carries every CHECK constraint'
-  const blocks = tableBlocks(readFileSync(BASELINE, 'utf8'))
+  const problems = findConstraintProblems(readFileSync(BASELINE, 'utf8'))
 
-  const missing = CHECK_CONSTRAINTS.filter((c) => {
-    const block = blocks.get(c.table)
-    return block === undefined || !block.includes(renderCheck(c))
-  })
-
-  if (missing.length === 0) return { name, ok: true }
+  if (problems.length === 0) return { name, ok: true }
 
   return {
     name,
     ok: false,
     message:
-      `${missing.length} of ${CHECK_CONSTRAINTS.length} CHECK constraints are missing from the ` +
-      'committed baseline:\n' +
-      missing.map((c) => `    - ${c.name} (table "${c.table}", column "${c.column}")`).join('\n') +
+      'The committed baseline does not carry exactly what CHECK_CONSTRAINTS declares, per table:\n' +
+      problems.map((p) => `    - ${p}`).join('\n') +
       `\n  Fix: ${FIX_BASELINE}`,
   }
 }
