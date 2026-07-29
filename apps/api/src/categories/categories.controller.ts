@@ -7,9 +7,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
-  UseGuards,
 } from '@nestjs/common'
-import { AuthGuard } from '@nestjs/passport'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import type { JwtPayload } from '../auth/strategies/jwt.strategy'
 import { CategoriesService } from './categories.service'
@@ -17,7 +15,6 @@ import { CreateCategoryDto } from './dto/create-category.dto'
 import { UpdateCategoryDto } from './dto/update-category.dto'
 
 @Controller('categories')
-@UseGuards(AuthGuard('jwt'))
 export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
 

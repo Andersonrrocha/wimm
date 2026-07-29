@@ -7,9 +7,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
-  UseGuards,
 } from '@nestjs/common'
-import { AuthGuard } from '@nestjs/passport'
 import type { JwtPayload } from '../auth/strategies/jwt.strategy'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { CategorizationRulesService } from './categorization-rules.service'
@@ -17,7 +15,6 @@ import { CreateCategorizationRuleDto } from './dto/create-categorization-rule.dt
 import { UpdateCategorizationRuleDto } from './dto/update-categorization-rule.dto'
 
 @Controller('categorization-rules')
-@UseGuards(AuthGuard('jwt'))
 export class CategorizationRulesController {
   constructor(
     private readonly categorizationRulesService: CategorizationRulesService,

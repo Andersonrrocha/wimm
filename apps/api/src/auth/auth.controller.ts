@@ -1,6 +1,7 @@
 import { Body, Controller, ForbiddenException, Post } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Throttle } from '@nestjs/throttler'
+import { Public } from '../common/decorators/public.decorator'
 import { AuthService } from './auth.service'
 import { LoginDto } from './dto/login.dto'
 import { RefreshTokenDto } from './dto/refresh-token.dto'
@@ -14,6 +15,7 @@ export class AuthController {
   ) {}
 
   // Tight cap: registration is rare and a brute-force target.
+  @Public()
   @Throttle({ default: { ttl: 3_600_000, limit: 5 } })
   @Post('register')
   register(@Body() dto: RegisterDto) {
@@ -24,6 +26,7 @@ export class AuthController {
   }
 
   // Anti brute-force: 10 attempts per 15 min per IP, then 429.
+  @Public()
   @Throttle({ default: { ttl: 900_000, limit: 10 } })
   @Post('login')
   login(@Body() dto: LoginDto) {
@@ -31,6 +34,7 @@ export class AuthController {
   }
 
   // Refresh runs hot from desktop clients — keep generous but bounded.
+  @Public()
   @Throttle({ default: { ttl: 3_600_000, limit: 60 } })
   @Post('refresh')
   refresh(@Body() dto: RefreshTokenDto) {

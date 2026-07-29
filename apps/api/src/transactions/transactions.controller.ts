@@ -8,9 +8,7 @@ import {
   Patch,
   Post,
   Query,
-  UseGuards,
 } from '@nestjs/common'
-import { AuthGuard } from '@nestjs/passport'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import type { JwtPayload } from '../auth/strategies/jwt.strategy'
 import { BulkCategorizeDto } from './dto/bulk-categorize.dto'
@@ -20,7 +18,6 @@ import { UpdateTransactionDto } from './dto/update-transaction.dto'
 import { TransactionsService } from './transactions.service'
 
 @Controller('transactions')
-@UseGuards(AuthGuard('jwt'))
 export class TransactionsController {
   constructor(private readonly transactionsService: TransactionsService) {}
 

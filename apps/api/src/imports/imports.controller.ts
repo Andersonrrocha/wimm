@@ -3,10 +3,8 @@ import {
   Controller,
   Post,
   UploadedFile,
-  UseGuards,
   UseInterceptors,
 } from '@nestjs/common'
-import { AuthGuard } from '@nestjs/passport'
 import { FileInterceptor } from '@nestjs/platform-express'
 import type { JwtPayload } from '../auth/strategies/jwt.strategy'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
@@ -17,7 +15,6 @@ import { ImportsService } from './imports.service'
 const PREVIEW_MAX_BYTES = 5 * 1024 * 1024
 
 @Controller('imports')
-@UseGuards(AuthGuard('jwt'))
 export class ImportsController {
   constructor(private readonly importsService: ImportsService) {}
 

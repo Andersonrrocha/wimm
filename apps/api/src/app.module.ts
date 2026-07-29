@@ -6,6 +6,7 @@ import { AiModule } from './ai/ai.module'
 import { AppController } from './app.controller'
 import { AppService } from './app.service'
 import { AuthModule } from './auth/auth.module'
+import { JwtAuthGuard } from './auth/jwt-auth.guard'
 import { CategoriesModule } from './categories/categories.module'
 import { CategorizationRulesModule } from './categorization-rules/categorization-rules.module'
 import { ImportsModule } from './imports/imports.module'
@@ -36,6 +37,10 @@ import { UsersModule } from './users/users.module'
     AiModule,
   ],
   controllers: [AppController],
-  providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
+  ],
 })
 export class AppModule {}

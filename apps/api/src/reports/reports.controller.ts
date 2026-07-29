@@ -1,5 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common'
-import { AuthGuard } from '@nestjs/passport'
+import { Controller, Get, Query } from '@nestjs/common'
 import type { JwtPayload } from '../auth/strategies/jwt.strategy'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { FutureCommitmentsQueryDto } from './dto/future-commitments-query.dto'
@@ -8,7 +7,6 @@ import { ReportsQueryDto } from './dto/reports-query.dto'
 import { ReportsService } from './reports.service'
 
 @Controller('reports')
-@UseGuards(AuthGuard('jwt'))
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 

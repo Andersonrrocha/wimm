@@ -7,9 +7,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
-  UseGuards,
 } from '@nestjs/common'
-import { AuthGuard } from '@nestjs/passport'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import type { JwtPayload } from '../auth/strategies/jwt.strategy'
 import { CreateSourceDto } from './dto/create-source.dto'
@@ -17,7 +15,6 @@ import { UpdateSourceDto } from './dto/update-source.dto'
 import { SourcesService } from './sources.service'
 
 @Controller('sources')
-@UseGuards(AuthGuard('jwt'))
 export class SourcesController {
   constructor(private readonly sourcesService: SourcesService) {}
 

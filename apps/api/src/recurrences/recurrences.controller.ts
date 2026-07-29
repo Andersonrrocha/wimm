@@ -7,9 +7,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
-  UseGuards,
 } from '@nestjs/common'
-import { AuthGuard } from '@nestjs/passport'
 import type { JwtPayload } from '../auth/strategies/jwt.strategy'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { CreateRecurrenceDto } from './dto/create-recurrence.dto'
@@ -18,7 +16,6 @@ import { UpdateRecurrenceDto } from './dto/update-recurrence.dto'
 import { RecurrencesService } from './recurrences.service'
 
 @Controller('recurrences')
-@UseGuards(AuthGuard('jwt'))
 export class RecurrencesController {
   constructor(private readonly recurrencesService: RecurrencesService) {}
 
