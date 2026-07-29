@@ -1,4 +1,9 @@
-import { RecurrenceEndMode, TransactionKind } from '@wimm/shared'
+import {
+  parseEnum,
+  RecurrenceEndMode,
+  RecurrenceFrequency,
+  TransactionKind,
+} from '@wimm/shared'
 import { sumRecurrenceCommitmentsInUtcMonth } from './future-commitments.util'
 
 describe('sumRecurrenceCommitmentsInUtcMonth', () => {
@@ -84,5 +89,27 @@ describe('sumRecurrenceCommitmentsInUtcMonth', () => {
     )
     expect(apr.recurringIncomeCents).toBe(20000)
     expect(apr.recurringExpenseCents).toBe(0)
+  })
+})
+
+describe('recurrence enum parsing at the read boundary', () => {
+  it('rejects a corrupt kind instead of counting it as income', () => {
+    expect(() => parseEnum(TransactionKind, 'GARBAGE', 'kind')).toThrow(RangeError)
+  })
+
+  it('names the offending field and value', () => {
+    expect(() => parseEnum(TransactionKind, 'GARBAGE', 'kind')).toThrow(/kind/)
+    expect(() => parseEnum(TransactionKind, 'GARBAGE', 'kind')).toThrow(/GARBAGE/)
+  })
+
+  it('rejects a corrupt frequency instead of defaulting to monthly', () => {
+    expect(() =>
+      parseEnum(RecurrenceFrequency, 'FORTNIGHTLY', 'frequency'),
+    ).toThrow(RangeError)
+  })
+
+  it('passes valid values through unchanged', () => {
+    expect(parseEnum(TransactionKind, 'EXPENSE', 'kind')).toBe('EXPENSE')
+    expect(parseEnum(RecurrenceFrequency, 'WEEKLY', 'frequency')).toBe('WEEKLY')
   })
 })

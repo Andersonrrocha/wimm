@@ -4,6 +4,8 @@ import {
   ChartDateMode,
   fromCents,
   parseEnum,
+  RecurrenceEndMode,
+  RecurrenceFrequency,
   SourceType,
   TransactionKind,
 } from '@wimm/shared'
@@ -314,19 +316,26 @@ export class ReportsService {
     const { year, month } = this.resolveForecastMonth(dto)
     const { monthStart, monthEnd } = utcMonthBounds(year, month)
 
-    const recurrences = await this.prisma.recurrence.findMany({
-      where: { userId, active: true },
-      select: {
-        id: true,
-        kind: true,
-        amountCents: true,
-        frequency: true,
-        startDate: true,
-        endMode: true,
-        endDate: true,
-        sourceId: true,
-      },
-    })
+    const recurrences = (
+      await this.prisma.recurrence.findMany({
+        where: { userId, active: true },
+        select: {
+          id: true,
+          kind: true,
+          amountCents: true,
+          frequency: true,
+          startDate: true,
+          endMode: true,
+          endDate: true,
+          sourceId: true,
+        },
+      })
+    ).map((r) => ({
+      ...r,
+      kind: parseEnum(TransactionKind, r.kind, 'kind'),
+      frequency: parseEnum(RecurrenceFrequency, r.frequency, 'frequency'),
+      endMode: parseEnum(RecurrenceEndMode, r.endMode, 'endMode'),
+    }))
 
     const sourceIds = [
       ...new Set(

@@ -1,4 +1,8 @@
-import { RecurrenceEndMode, TransactionKind } from '@wimm/shared'
+import {
+  RecurrenceEndMode,
+  type RecurrenceFrequency,
+  TransactionKind,
+} from '@wimm/shared'
 import {
   resolveTransactionBillingFields,
   type SourceBillingInput,
@@ -14,19 +18,19 @@ const MAX_RECURRENCE_STEPS = 5_000
 
 /**
  * Shape of a `Recurrence` row as selected for the forecast calculation.
- * `kind`, `frequency`, and `endMode` are `string`, not their narrower
- * `@wimm/shared` enum types, because that is honestly what a TEXT+CHECK
- * column selection returns. Every consumer below is an equality check
- * (`===`) or a `switch` with a `default` fallback (in `nextOccurrence`), so
- * widening loses no completeness guarantee.
+ *
+ * `kind`, `frequency`, and `endMode` are the narrow `@wimm/shared` union types,
+ * not `string`. Callers parse them with `parseEnum` at the query boundary, so
+ * everything below can rely on them. A corrupt value fails there — loudly, naming
+ * the field — instead of silently taking an `else` branch or a `default:` case.
  */
 export type RecurrenceRowForForecast = {
   id: string
-  kind: string
+  kind: TransactionKind
   amountCents: number
-  frequency: string
+  frequency: RecurrenceFrequency
   startDate: Date
-  endMode: string
+  endMode: RecurrenceEndMode
   endDate: Date | null
   sourceId: string | null
 }

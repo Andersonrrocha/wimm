@@ -4,7 +4,13 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
-import { RecurrenceEndMode, toCents } from '@wimm/shared'
+import {
+  parseEnum,
+  RecurrenceEndMode,
+  RecurrenceFrequency,
+  toCents,
+  TransactionKind,
+} from '@wimm/shared'
 import { PrismaService } from '../prisma/prisma.service'
 import { assertCategoryIsLeaf } from '../categories/assert-category-leaf'
 import {
@@ -177,11 +183,21 @@ export class RecurrencesService {
 
     const cap = untilEnd.getTime() < hardCap.getTime() ? untilEnd : hardCap
 
-    const recs = dto.recurrenceId
+    const rawRecs = dto.recurrenceId
       ? [await this.findRowForUser(userId, dto.recurrenceId)]
       : await this.prisma.recurrence.findMany({
           where: { userId, active: true },
         })
+
+    // Parse here, not inside materializeOne: this is where rows leave the
+    // database. `nextOccurrence` drives the `occurredAt` of transactions this
+    // path creates, so a corrupt frequency would persist rows on wrong dates.
+    const recs = rawRecs.map((r) => ({
+      ...r,
+      kind: parseEnum(TransactionKind, r.kind, 'kind'),
+      frequency: parseEnum(RecurrenceFrequency, r.frequency, 'frequency'),
+      endMode: parseEnum(RecurrenceEndMode, r.endMode, 'endMode'),
+    }))
 
     let totalCreated = 0
 
@@ -193,25 +209,18 @@ export class RecurrencesService {
     return { created: totalCreated }
   }
 
-  /**
-   * `rec`'s `kind`, `frequency`, and `endMode` are `string`, not their
-   * narrower `@wimm/shared` enum types, because this describes a `Recurrence`
-   * row exactly as selected from the database (TEXT+CHECK columns). Every use
-   * below is an equality check or a `switch` with a `default` fallback (in
-   * `nextOccurrence`), so widening loses no completeness guarantee.
-   */
   private async materializeOne(
     rec: {
       id: string
       userId: string
-      kind: string
+      kind: TransactionKind
       amountCents: number
       description: string
       sourceId: string | null
       categoryId: string | null
-      frequency: string
+      frequency: RecurrenceFrequency
       startDate: Date
-      endMode: string
+      endMode: RecurrenceEndMode
       endDate: Date | null
     },
     userId: string,
