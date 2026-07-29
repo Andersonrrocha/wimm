@@ -21,7 +21,7 @@
 import { readFileSync, writeFileSync } from 'fs'
 import { CHECK_CONSTRAINTS, type CheckConstraint } from '../src/prisma/check-constraints'
 
-function renderCheck(c: CheckConstraint): string {
+export function renderCheck(c: CheckConstraint): string {
   const list = c.values.map((v) => `'${v}'`).join(', ')
   const test = `"${c.column}" IN (${list})`
   return c.nullable ? `CHECK ("${c.column}" IS NULL OR ${test})` : `CHECK (${test})`
@@ -45,15 +45,41 @@ export function injectCheckConstraints(ddl: string): string {
   })
 }
 
+/**
+ * `injectCheckConstraints` silently skips any constraint whose table (or
+ * column) is not present in the DDL — that tolerance is deliberate, it's what
+ * lets a focused test fixture work. But the CLI is the last line of defense
+ * before a hand-edited or drifted schema ships without a guarantee it was
+ * meant to have, so here we verify every declared constraint actually landed
+ * before trusting — or writing — the result.
+ */
 function main(): void {
   const file = process.argv[2]
   if (!file) {
     console.error('usage: inject-check-constraints <migration.sql>')
     process.exit(1)
   }
+
   const injected = injectCheckConstraints(readFileSync(file, 'utf8'))
+
+  const missing = CHECK_CONSTRAINTS.filter((c) => !injected.includes(renderCheck(c)))
+  if (missing.length > 0) {
+    console.error(
+      `Refusing to write ${file}: ${missing.length} of ${CHECK_CONSTRAINTS.length} CHECK constraints could not be injected:`,
+    )
+    for (const c of missing) {
+      console.error(`  - ${c.name} (table "${c.table}", column "${c.column}")`)
+    }
+    console.error(
+      "A missing constraint means the local SQLite database will not enforce that column's allowed values — " +
+        'writing a half-constrained baseline is worse than writing none.',
+    )
+    process.exit(1)
+  }
+
   writeFileSync(file, injected, 'utf8')
-  console.log(`Injected ${CHECK_CONSTRAINTS.length} CHECK constraints into ${file}`)
+  const verified = CHECK_CONSTRAINTS.length - missing.length
+  console.log(`Injected ${verified} CHECK constraints into ${file}`)
 }
 
 if (require.main === module) main()
