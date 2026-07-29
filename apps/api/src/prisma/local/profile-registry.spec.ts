@@ -52,16 +52,118 @@ describe('profile registry (listProfiles / createProfile / touchProfile / profil
       expect(() => listProfiles(ROOT)).toThrow(REGISTRY_FILE)
       expect(() => listProfiles(ROOT)).toThrow(/[Cc]orrupt/)
     })
+  })
 
-    it('does not surface a plain JSON.parse SyntaxError as the whole error -- the message names the file', () => {
-      writeFileSync(REGISTRY_FILE, 'not json')
+  describe('forward compatibility -- entries carrying fields this version does not recognize', () => {
+    it('does not throw when an entry has an extra field, and includes that field in the result', () => {
+      writeFileSync(
+        REGISTRY_FILE,
+        JSON.stringify([
+          {
+            id: 'alice-id',
+            name: 'Alice',
+            dbFileName: 'alice-id.db',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            lastOpenedAt: null,
+            syncCursor: 'from-a-newer-build',
+          },
+        ]),
+      )
 
-      try {
-        listProfiles(ROOT)
-        throw new Error('expected listProfiles to throw')
-      } catch (err) {
-        expect((err as Error).message).toContain(REGISTRY_FILE)
-      }
+      const profiles = listProfiles(ROOT)
+
+      expect(profiles).toHaveLength(1)
+      expect((profiles[0] as unknown as Record<string, unknown>).syncCursor).toBe('from-a-newer-build')
+    })
+
+    it('preserves an unrecognized field on an entry untouched by touchProfile, byte-for-byte, across a write', () => {
+      writeFileSync(
+        REGISTRY_FILE,
+        JSON.stringify([
+          {
+            id: 'alice-id',
+            name: 'Alice',
+            dbFileName: 'alice-id.db',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            lastOpenedAt: null,
+            syncCursor: 'from-a-newer-build',
+          },
+          {
+            id: 'bob-id',
+            name: 'Bob',
+            dbFileName: 'bob-id.db',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            lastOpenedAt: null,
+          },
+        ]),
+      )
+
+      touchProfile(ROOT, 'bob-id', new Date('2026-02-01T00:00:00.000Z'))
+
+      const rewritten = JSON.parse(readFileSync(REGISTRY_FILE, 'utf8'))
+      const alice = rewritten.find((p: Record<string, unknown>) => p.id === 'alice-id')
+      expect(alice.syncCursor).toBe('from-a-newer-build')
+      expect(alice).toEqual({
+        id: 'alice-id',
+        name: 'Alice',
+        dbFileName: 'alice-id.db',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        lastOpenedAt: null,
+        syncCursor: 'from-a-newer-build',
+      })
+    })
+
+    it('preserves an unrecognized field on the entry touchProfile itself updates', () => {
+      writeFileSync(
+        REGISTRY_FILE,
+        JSON.stringify([
+          {
+            id: 'alice-id',
+            name: 'Alice',
+            dbFileName: 'alice-id.db',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            lastOpenedAt: null,
+            syncCursor: 'from-a-newer-build',
+          },
+        ]),
+      )
+
+      touchProfile(ROOT, 'alice-id', new Date('2026-02-01T00:00:00.000Z'))
+
+      const rewritten = JSON.parse(readFileSync(REGISTRY_FILE, 'utf8'))
+      expect(rewritten[0].syncCursor).toBe('from-a-newer-build')
+      expect(rewritten[0].lastOpenedAt).toBe('2026-02-01T00:00:00.000Z')
+    })
+
+    it('preserves an unrecognized field on an existing entry when createProfile appends a new one', () => {
+      writeFileSync(
+        REGISTRY_FILE,
+        JSON.stringify([
+          {
+            id: 'alice-id',
+            name: 'Alice',
+            dbFileName: 'alice-id.db',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            lastOpenedAt: null,
+            syncCursor: 'from-a-newer-build',
+          },
+        ]),
+      )
+
+      createProfile(ROOT, 'Bob', 'bob-id', new Date('2026-01-02T00:00:00.000Z'))
+
+      const rewritten = JSON.parse(readFileSync(REGISTRY_FILE, 'utf8'))
+      const alice = rewritten.find((p: Record<string, unknown>) => p.id === 'alice-id')
+      expect(alice.syncCursor).toBe('from-a-newer-build')
+    })
+
+    it('still throws, naming the file, when an entry is missing a field this version genuinely requires', () => {
+      writeFileSync(
+        REGISTRY_FILE,
+        JSON.stringify([{ id: 'alice-id', name: 'Alice', syncCursor: 'from-a-newer-build' }]),
+      )
+
+      expect(() => listProfiles(ROOT)).toThrow(REGISTRY_FILE)
     })
   })
 
@@ -236,13 +338,6 @@ describe('profile registry (listProfiles / createProfile / touchProfile / profil
 
       const leftovers = readdirSync(ROOT).filter((name) => name.includes('.tmp'))
       expect(leftovers).toEqual([])
-    })
-
-    it('produces a registry file that still parses correctly after a normal (non-interrupted) write', () => {
-      createProfile(ROOT, 'Alice', 'alice-id', new Date('2026-01-01T00:00:00.000Z'))
-
-      const raw = readFileSync(REGISTRY_FILE, 'utf8')
-      expect(() => JSON.parse(raw)).not.toThrow()
     })
   })
 })

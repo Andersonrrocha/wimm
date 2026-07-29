@@ -46,6 +46,26 @@ export interface Profile {
   lastOpenedAt: string | null
 }
 
+/**
+ * A profile entry exactly as it comes off disk.
+ *
+ * WIMM auto-updates. A newer build of the app may add a field to profile
+ * entries; an older build then has to read (and possibly rewrite) a
+ * registry it does not fully understand. `StoredProfile` names that
+ * reality: it is a `Profile` -- the fields *this* version requires,
+ * correctly typed -- plus whatever else happens to be on the object.
+ *
+ * This type exists so `readRegistry` and `touchProfile` never reconstruct
+ * an entry field-by-field from a `Profile`-shaped object literal. Doing
+ * that would keep only the fields this version recognizes and quietly
+ * drop the rest; the next write would persist that loss, and a later
+ * upgrade would find the dropped fields permanently gone. Both functions
+ * instead only ever spread or pass through existing entries, so a field
+ * this version has never heard of survives every read/write cycle
+ * unchanged.
+ */
+type StoredProfile = Profile & Record<string, unknown>
+
 /** Name of the registry file, relative to the profiles directory. */
 const REGISTRY_FILE_NAME = 'profiles.json'
 
@@ -56,7 +76,20 @@ function registryPath(dir: string): string {
   return join(dir, REGISTRY_FILE_NAME)
 }
 
-function isValidProfileShape(entry: unknown): entry is Profile {
+/**
+ * Checks that `entry` carries every field this version of `Profile`
+ * requires, correctly typed. It deliberately does NOT check that `entry`
+ * has *only* those fields: an entry from a newer build of the app may
+ * carry additional fields this version has never heard of, and that is
+ * not corruption -- see `StoredProfile`. Rejecting an entry for carrying
+ * extra fields would treat a version difference as a broken registry and
+ * lock the user out of every profile in it.
+ *
+ * Genuine corruption -- a required field missing or the wrong type -- is
+ * still rejected. Tolerating unknown *extra* fields is not the same as
+ * tolerating *missing* ones.
+ */
+function isValidProfileShape(entry: unknown): entry is StoredProfile {
   if (typeof entry !== 'object' || entry === null) return false
   const candidate = entry as Record<string, unknown>
   return (
@@ -73,12 +106,21 @@ function isValidProfileShape(entry: unknown): entry is Profile {
  *
  * Returns `[]` if the file does not exist yet -- see the module doc
  * comment for why that is "no profiles" and not an error. Throws, naming
- * the file, for every other way the registry can fail to be read: it is
- * not valid JSON, it does not parse to an array, or an entry in it does
- * not have the shape of a `Profile`. All of those are corruption, and must
- * never be silently downgraded to "no profiles".
+ * the file and the offending entry's index, for every other way the
+ * registry can fail to be read: it is not valid JSON, it does not parse to
+ * an array, or an entry in it is missing a field this version genuinely
+ * requires. All of those are corruption, and must never be silently
+ * downgraded to "no profiles" -- and never silently downgraded to "drop
+ * just that entry" either: a profile vanishing from the list is the same
+ * invisible data loss in a different costume.
+ *
+ * An entry carrying *extra* fields this version does not recognize is not
+ * corruption -- see `StoredProfile` and `isValidProfileShape`. Entries are
+ * returned exactly as parsed, never reconstructed field-by-field, so any
+ * such extra fields ride along unchanged for `touchProfile` and
+ * `createProfile` to write back out.
  */
-function readRegistry(dir: string): Profile[] {
+function readRegistry(dir: string): StoredProfile[] {
   const file = registryPath(dir)
 
   if (!existsSync(file)) return []
@@ -107,7 +149,7 @@ function readRegistry(dir: string): Profile[] {
     }
   })
 
-  return parsed as Profile[]
+  return parsed as StoredProfile[]
 }
 
 /**
@@ -122,8 +164,13 @@ function readRegistry(dir: string): Profile[] {
  * rethrown; `profiles.json` itself is never touched until the rename, so a
  * failure at any point before it leaves the existing registry exactly as
  * it was.
+ *
+ * Takes whatever entries it is given and serializes them as-is. It never
+ * reconstructs an entry from a `Profile`-shaped literal, so a caller that
+ * passes through a `StoredProfile` carrying fields this version does not
+ * recognize writes those fields back out unchanged.
  */
-function writeRegistry(dir: string, profiles: Profile[]): void {
+function writeRegistry(dir: string, profiles: readonly Profile[]): void {
   mkdirSync(dir, { recursive: true })
 
   const file = registryPath(dir)
@@ -144,7 +191,9 @@ function writeRegistry(dir: string, profiles: Profile[]): void {
  * Returns `[]` if the registry does not exist yet (first run -- send the
  * user to onboarding). Throws, naming the file, if the registry exists but
  * is corrupt. See the module doc comment for why conflating these two
- * outcomes is the one mistake this function must never make.
+ * outcomes is the one mistake this function must never make. An entry
+ * carrying fields this version does not recognize is not corruption --
+ * see `StoredProfile` -- so it is included, extra fields and all.
  */
 export function listProfiles(dir: string): Profile[] {
   return readRegistry(dir)
@@ -166,6 +215,11 @@ export function listProfiles(dir: string): Profile[] {
  * the registry -- silently overwriting that entry would repoint an
  * existing profile's index at a different identity, which is exactly the
  * kind of quiet data loss this whole module exists to prevent.
+ *
+ * Every existing profile is passed through to `writeRegistry` exactly as
+ * `readRegistry` returned it, so any fields an existing entry carries that
+ * this version does not recognize are written back unchanged -- only the
+ * new profile is appended.
  */
 export function createProfile(dir: string, name: string, id: string, now: Date): Profile {
   const profiles = readRegistry(dir)
@@ -193,6 +247,13 @@ export function createProfile(dir: string, name: string, id: string, now: Date):
  *
  * Throws if `id` does not identify a profile in the registry -- there is no
  * profile to mark as opened.
+ *
+ * The matching entry is updated by spreading it, not by rebuilding a fresh
+ * `Profile` literal -- so a field this version does not recognize survives
+ * on the very entry being touched, not just on the others. Every other
+ * entry is passed through unchanged for the same reason `createProfile`
+ * does: `writeRegistry` never reconstructs an entry it wasn't asked to
+ * change.
  */
 export function touchProfile(dir: string, id: string, now: Date): void {
   const profiles = readRegistry(dir)
