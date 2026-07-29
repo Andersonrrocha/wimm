@@ -60,7 +60,19 @@ function main(): void {
     process.exit(1)
   }
 
-  const injected = injectCheckConstraints(readFileSync(file, 'utf8'))
+  let injected: string
+  try {
+    injected = injectCheckConstraints(readFileSync(file, 'utf8'))
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`Refusing to write ${file}: a CHECK constraint could not be injected:`)
+    console.error(`  - ${message}`)
+    console.error(
+      "A constraint that cannot be injected means the local SQLite database will not enforce that column's " +
+        'allowed values — writing a half-constrained baseline is worse than writing none.',
+    )
+    process.exit(1)
+  }
 
   const missing = CHECK_CONSTRAINTS.filter((c) => !injected.includes(renderCheck(c)))
   if (missing.length > 0) {

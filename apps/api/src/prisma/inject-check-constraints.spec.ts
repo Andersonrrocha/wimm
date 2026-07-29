@@ -33,13 +33,38 @@ function tableBlock(ddl: string, table: string): string {
   return m[1]
 }
 
+/**
+ * Assert a table's block carries exactly the CHECK clauses CHECK_CONSTRAINTS
+ * declares for it — no more, no fewer — and that each expected clause is
+ * present.
+ *
+ * A plain `toContain` on a rendered clause cannot catch misrouting: several
+ * tables share column names (`kind` on Transaction, Recurrence and
+ * SystemCategorizationRule), so their constraints render to byte-identical
+ * strings. A constraint that leaked from one table into another would satisfy
+ * `toContain` in both places. Counting CHECK clauses per block is what makes
+ * that leak visible — the donor block ends up short one clause, the
+ * recipient block carries one extra.
+ */
+function expectTableConstraints(out: string, table: string): void {
+  const block = tableBlock(out, table)
+  const expected = CHECK_CONSTRAINTS.filter((c) => c.table === table)
+  const actual = block.match(/CHECK \(/g) ?? []
+  expect(actual).toHaveLength(expected.length)
+  for (const c of expected) {
+    expect(block).toContain(renderCheck(c))
+  }
+}
+
 describe('injectCheckConstraints', () => {
   it('scopes each constraint to its own table', () => {
     const out = injectCheckConstraints(DDL)
-    expect(tableBlock(out, 'Transaction')).toContain(`CHECK ("kind" IN ('INCOME', 'EXPENSE'))`)
-    expect(tableBlock(out, 'Recurrence')).toContain(`CHECK ("frequency" IN ('WEEKLY', 'MONTHLY', 'YEARLY'))`)
     // Recurrence also has `kind`; it must get its own, not Transaction's leftovers.
-    expect(tableBlock(out, 'Recurrence')).toContain(`CHECK ("kind" IN ('INCOME', 'EXPENSE'))`)
+    // Transaction_kind_check and Recurrence_kind_check render to the identical
+    // string, so only a per-block count — not string presence — can tell a
+    // correctly scoped constraint apart from one that leaked from the other table.
+    expectTableConstraints(out, 'Transaction')
+    expectTableConstraints(out, 'Recurrence')
   })
 
   it('does not put a constraint in a table that lacks the column', () => {
@@ -188,8 +213,26 @@ CREATE TABLE "RefreshToken" (
     expect(CHECK_CONSTRAINTS).toHaveLength(14)
 
     const out = injectCheckConstraints(fullDdl)
-    for (const c of CHECK_CONSTRAINTS) {
-      expect(out).toContain(renderCheck(c))
+
+    // Assert per table, not just presence across the whole output: several tables
+    // here share column names (`kind` on Transaction, Recurrence and
+    // SystemCategorizationRule) and render identical CHECK clauses, so a global
+    // `toContain` plus a total count cannot tell a correctly-routed constraint from
+    // one that landed in the wrong block. Includes InstallmentPlan and RefreshToken,
+    // which declare zero constraints — a leak into either would show up here too.
+    for (const table of [
+      'User',
+      'Source',
+      'Category',
+      'SystemCategorizationRule',
+      'CategorizationRule',
+      'ImportBatch',
+      'InstallmentPlan',
+      'Recurrence',
+      'Transaction',
+      'RefreshToken',
+    ]) {
+      expectTableConstraints(out, table)
     }
 
     const checkCount = (out.match(/CHECK \(/g) ?? []).length
