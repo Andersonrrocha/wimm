@@ -165,8 +165,31 @@ The refresh-token interceptor becomes a no-op in local mode — there are no tok
 
 ---
 
-## 7. Open questions for review
+## 7. Resolved questions
 
-1. **Dependency approval** (D4): `@prisma/adapter-better-sqlite3` and `better-sqlite3`. Required for any of this to run.
-2. **Profile file location.** `userData/profiles/<id>.db` is proposed. An alternative is a user-visible folder (Documents/WIMM) so the file is easy to find and back up manually — better for a non-technical user who wants to copy their data, worse for accidental deletion. Which?
-3. **Does the first release need the profile picker at all?** Phase 0 chose multiple profiles, but if the first build ships with a single implicit profile the picker can come later. Shipping it now is more work; shipping it later means a migration for existing single-profile installs.
+1. **Dependencies approved and installed** (`035fff9`): `@prisma/adapter-better-sqlite3` and `better-sqlite3`. The native module compiled on this machine.
+2. **Profiles stay in `userData/profiles/`**, *and* the app gains an **export-profile action** so a non-technical user never has to find that path. This is the better answer than moving storage to a visible folder: it keeps the file out of accidental-deletion range while removing the technical step that made a visible folder tempting. See D8.
+3. **The profile picker ships in phase 3**, not later — "better than leaving pendencies". Deferring it would mean a migration for single-profile installs that already exist.
+
+## 8. D8 — Export profile, and restore from backup
+
+**Chosen:** two Settings actions, both going through the Electron main process:
+
+- **Export profile** — `dialog.showSaveDialog`, then copy the active profile's `.db` to wherever the user chooses. This is what makes `userData/profiles/` an acceptable location.
+- **Restore from backup** — list the snapshots in `userData/backups/` with their timestamps and let the user pick one.
+
+**Why restore is in scope even though only export was asked for:** phase 2 writes automatic snapshots before every migration. A backup a non-technical user cannot restore is theatre — it converts "your data is gone" into "your data is technically on disk somewhere". Restore is what makes the phase-2 requirement real, so it belongs with it.
+
+Import-from-arbitrary-file (the inverse of export, for moving between machines) is **not** in scope here. It needs validation of an untrusted SQLite file, which is a bigger question than restoring a snapshot the app itself wrote.
+
+## 9. Verified before writing this spec
+
+I built a throwaway end-to-end prototype rather than trusting the design. All artifacts were removed afterwards.
+
+**Proven working:** generated the SQLite schema by provider swap, generated a second Prisma client, created a real `.db` from the 236-line baseline DDL with `CHECK` constraints injected, drove it through Prisma with the adapter, created a `User` (default `chartDateMode: BILLING_CYCLE` applied) and a `Transaction` (`amountCents: 15045`), and **confirmed the injected `CHECK` rejected `kind: 'GARBAGE'`**. The whole thesis holds on real SQLite.
+
+**Three facts the prototype corrected, which the implementation must respect:**
+
+1. The adapter's export is **`PrismaBetterSqlite3`**, not `PrismaBetterSQLite3`. An easy silent-looking `is not a constructor` failure.
+2. **`CHECK` injection must be scoped per `CREATE TABLE` block.** The string `"kind" TEXT NOT NULL,` appears **three times** in the generated DDL — `Transaction`, `Recurrence`, and `SystemCategorizationRule`. A global regex would inject the wrong constraint into the wrong table, and two of the three would be silently wrong rather than failing.
+3. A generator's `output` is resolved **relative to the schema file**, and the generated client must live **inside the workspace** — it imports `@prisma/client/runtime/client`, which only resolves from within the repo's `node_modules` tree. The SQLite schema therefore lives in `apps/api/prisma/` and its client in `apps/api/src/generated/`.
