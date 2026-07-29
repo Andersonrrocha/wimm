@@ -46,6 +46,58 @@ export function renderCheck(c: CheckConstraint): string {
   return c.nullable ? `CHECK ("${c.column}" IS NULL OR ${test})` : `CHECK (${test})`
 }
 
+/**
+ * Matches a `PRAGMA foreign_keys=ON` or `PRAGMA foreign_keys=OFF` line (any
+ * case/spacing), including its trailing newline, so it can be dropped
+ * entirely rather than left as a blank line. Deliberately anchored to
+ * `foreign_keys` right after `PRAGMA` -- `PRAGMA defer_foreign_keys=...` does
+ * not match, because `defer_foreign_keys` is not `foreign_keys` (see
+ * `stripForeignKeysPragma`'s doc comment for why that pragma is left alone).
+ */
+const FOREIGN_KEYS_PRAGMA_LINE = /^[ \t]*PRAGMA\s+foreign_keys\s*=\s*(ON|OFF)\s*;?[ \t]*\r?\n?/gim
+
+/**
+ * Strips `PRAGMA foreign_keys=ON/OFF` statements from generated SQLite DDL.
+ *
+ * `prisma migrate diff --script` wraps every table rebuild it cannot express
+ * as `ADD COLUMN` (any change SQLite has no `ALTER TABLE` for -- changing a
+ * column's type, default, or nullability) in exactly this shape:
+ *
+ *   PRAGMA defer_foreign_keys=ON;
+ *   PRAGMA foreign_keys=OFF;
+ *   CREATE TABLE "new_X" (...); INSERT INTO "new_X" SELECT ...;
+ *   DROP TABLE "X"; ALTER TABLE "new_X" RENAME TO "X";
+ *   PRAGMA foreign_keys=ON;
+ *   PRAGMA defer_foreign_keys=OFF;
+ *
+ * `applyPendingMigrations` (`../src/prisma/local/migration-runner.ts`) runs
+ * every pending migration for a call inside one shared batch transaction,
+ * and SQLite documents `PRAGMA foreign_keys` as a no-op inside a transaction
+ * -- so that runner rejects outright any migration containing one (see
+ * `assertNoForeignKeysPragma` there). Left unstripped, that makes *every*
+ * generated table-rebuild migration dead on arrival until someone notices
+ * the runtime error and hand-edits the file. Stripping here, as part of the
+ * same generation step that already post-processes every migration this repo
+ * ships (`inject-check-constraints.ts`, wired into `gen:sqlite-baseline`),
+ * means a generated migration is usable the moment it's generated -- no
+ * separate script or wiring needed, since this step already runs on every
+ * migration that needs it.
+ *
+ * The runner's rejection stays in place regardless: generation strips what
+ * it produces, the runner catches anything hand-authored that still contains
+ * one. Belt and braces on purpose -- do not remove either check assuming the
+ * other alone suffices.
+ *
+ * `PRAGMA defer_foreign_keys` is left untouched. It only affects deferred
+ * constraint checking within the transaction that sets it and resets itself
+ * automatically when that transaction ends, so it is harmless with
+ * enforcement already off for the whole batch -- there is nothing for the
+ * runner to reject or for this step to strip it for.
+ */
+export function stripForeignKeysPragma(ddl: string): string {
+  return ddl.replace(FOREIGN_KEYS_PRAGMA_LINE, '')
+}
+
 export function injectCheckConstraints(ddl: string): string {
   return ddl.replace(CREATE_TABLE_BLOCK, (block: string, table: string) => {
     const constraints = CHECK_CONSTRAINTS.filter((c) => c.table === table)
@@ -135,7 +187,12 @@ function main(): void {
 
   let injected: string
   try {
-    injected = injectCheckConstraints(readFileSync(file, 'utf8'))
+    // Strip first: `PRAGMA foreign_keys` lines live outside any `CREATE
+    // TABLE` block, so order relative to `injectCheckConstraints` doesn't
+    // change the result, but stripping first means the DDL handed to the
+    // rest of the pipeline (and to the parity/constraint checks below) is
+    // already in the shape the migration runner will accept.
+    injected = injectCheckConstraints(stripForeignKeysPragma(readFileSync(file, 'utf8')))
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error(`Refusing to write ${file}: a CHECK constraint could not be injected:`)

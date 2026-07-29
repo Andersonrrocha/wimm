@@ -2,9 +2,10 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { CHECK_CONSTRAINTS, type CheckConstraint } from './check-constraints'
 
-// better-sqlite3 ships no type declarations (and none are installed for it) —
-// `require` keeps this an untyped, ordinary CommonJS import rather than
-// pulling module-resolution type-checking into a source it has no types for.
+// `@types/better-sqlite3` uses `export =`, which a plain `import` would need
+// either `esModuleInterop` or an import-equals form to consume correctly (see
+// `open-local-database.ts`). `require` sidesteps that entirely and keeps this
+// an untyped, ordinary CommonJS import.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const Database = require('better-sqlite3')
 

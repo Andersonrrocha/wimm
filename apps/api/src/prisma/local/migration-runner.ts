@@ -72,6 +72,35 @@
  *   the pre-migration snapshot remains available, but as a second line of
  *   defence rather than the only recovery path.
  *
+ * - `PRAGMA foreign_key_check` scans the *whole database*, not just the
+ *   tables the batch touched. A database can already contain orphaned rows
+ *   before any migration in this call ever runs -- seeded outside any
+ *   migration, restored from an import, or left over from a partial
+ *   recovery -- and those are not this batch's fault. So the check runs
+ *   *twice*: once immediately after `BEGIN`, before the first migration
+ *   applies, to record a baseline of whatever violations already exist, and
+ *   once more as the batch's last step. Only violations in the second
+ *   reading that are *not* in the baseline are treated as introduced by this
+ *   batch and fail it. Violations present in both readings are pre-existing:
+ *   this batch didn't create them and rolling it back would not fix them, so
+ *   they are reported with `console.warn` instead -- naming the affected
+ *   tables so the user learns their database was already inconsistent --
+ *   without blaming (or rolling back) a migration that never touched them.
+ *   Rows are compared by a stable key (`table`/`rowid`/`parent`/`fkid`), not
+ *   by array equality, because `PRAGMA foreign_key_check` does not guarantee
+ *   row order between the two readings.
+ *
+ * - After each migration's `db.exec` runs, `db.inTransaction` is checked and
+ *   must still be true. `better-sqlite3` does not stop a migration from
+ *   containing a hand-written `COMMIT` -- and if one runs, the batch
+ *   transaction this runner depends on for atomic rollback no longer exists:
+ *   `db.transaction()`'s own rollback-on-throw logic only fires when
+ *   `db.inTransaction` is true (see its implementation), so a `COMMIT` inside
+ *   a migration silently makes everything applied so far in this batch
+ *   permanent, without error, before this check was added. `prisma migrate
+ *   diff --script` never emits a bare `COMMIT`, so this only guards against a
+ *   hand-edited migration.
+ *
  * - `now` is always taken as an argument, never read from `new Date()`
  *   internally, so callers (and tests) can produce deterministic timestamps.
  *   It is passed straight through to `snapshotDatabase` and used to stamp
@@ -144,6 +173,32 @@ function discoverMigrations(migrationsDir: string): DiscoveredMigration[] {
     const checksum = createHash('sha256').update(sql).digest('hex')
     return { name, sql, checksum }
   })
+}
+
+interface ForeignKeyViolation {
+  table: string
+  rowid: number | null
+  parent: string
+  fkid: number
+}
+
+/** Runs `PRAGMA foreign_key_check` and returns its rows, typed. */
+function readForeignKeyViolations(db: ReturnType<typeof openLocalDatabase>): ForeignKeyViolation[] {
+  return db.prepare('PRAGMA foreign_key_check').all() as ForeignKeyViolation[]
+}
+
+/**
+ * A stable per-row identity for a `foreign_key_check` violation, used to tell
+ * "the same violation, read twice" apart from "a different violation" --
+ * `PRAGMA foreign_key_check` makes no ordering guarantee between two calls,
+ * so comparing the two readings' arrays directly (or their lengths alone)
+ * would be wrong: same violations in a different order would look like a
+ * change, and a fixed violation plus a newly introduced one could cancel out
+ * in a plain count. Every field of the row is part of the key because any of
+ * them differing means a different offending row or a different constraint.
+ */
+function violationKey(v: ForeignKeyViolation): string {
+  return `${v.table} ${v.rowid ?? 'null'} ${v.parent} ${v.fkid}`
 }
 
 /** Matches a `PRAGMA foreign_keys` statement in any case or spacing, so it can be rejected. */
@@ -255,10 +310,15 @@ export function applyPendingMigrations(options: {
     // off for the whole transaction -- SQLite would silently ignore any
     // attempt to toggle them mid-transaction anyway.
     const applyAll = db.transaction(() => {
+      // Read right after BEGIN, before the first migration in this batch
+      // applies, so any violation already present cannot be blamed on this
+      // batch -- see the module doc comment for why this must run twice.
+      const baselineViolations = readForeignKeyViolations(db)
+      const baselineKeys = new Set(baselineViolations.map(violationKey))
+
       for (const migration of pending) {
         try {
           db.exec(migration.sql)
-          insertRecord.run(randomUUID(), migration.checksum, now.toISOString(), migration.name, now.toISOString())
         } catch (err) {
           throw new Error(
             `Migration "${migration.name}" failed and was rolled back, along with every other migration already ` +
@@ -266,6 +326,26 @@ export function applyPendingMigrations(options: {
               `as it was found before this call. A pre-migration snapshot is also available at ${snapshotPath}.`,
           )
         }
+
+        // A hand-written `COMMIT` inside a migration ends this batch
+        // transaction early -- `better-sqlite3` raises nothing when that
+        // happens. From this point on, `db.transaction()`'s own
+        // rollback-on-throw only fires while `db.inTransaction` is true (see
+        // its implementation), so if the migration above ended it, nothing
+        // this runner does from here can undo what already committed. See
+        // the module doc comment.
+        if (!db.inTransaction) {
+          throw new Error(
+            `Migration "${migration.name}" ended the batch transaction -- most likely via an explicit "COMMIT" ` +
+              'statement in its SQL. Every pending migration in a call is meant to share one transaction so a ' +
+              'failure partway through rolls every migration in the same batch back together; once a migration ' +
+              'ends that transaction itself, this runner can no longer guarantee that rollback for anything ' +
+              `applied in this batch, including "${migration.name}" itself. Remove the statement that ends the ` +
+              `transaction from "${migration.name}".`,
+          )
+        }
+
+        insertRecord.run(randomUUID(), migration.checksum, now.toISOString(), migration.name, now.toISOString())
       }
 
       // Foreign keys were off for the whole batch (see the module doc
@@ -273,30 +353,35 @@ export function applyPendingMigrations(options: {
       // enforced referential integrity while the migrations above ran. This
       // check is the safety net that replaces that enforcement, run as the
       // batch's last step, still inside this transaction and before it
-      // commits: a non-empty result means a migration left dangling
-      // references behind -- a bug in the migration itself, since this
-      // runner's own use of `foreignKeys: 'off'` cannot itself orphan
-      // anything (no CASCADE/SET NULL ever fires while enforcement is off).
-      // Throwing here, like any other failure inside `db.transaction()`,
-      // rolls the whole batch back before anything is committed, so the
-      // database is left exactly as it was found -- the pre-migration
-      // snapshot is a second line of defence, not the only recovery path.
-      const violations = db.prepare('PRAGMA foreign_key_check').all() as Array<{
-        table: string
-        rowid: number | null
-        parent: string
-        fkid: number
-      }>
-      if (violations.length > 0) {
-        const offendingTables = [...new Set(violations.map((v) => v.table))].sort()
+      // commits. `PRAGMA foreign_key_check` scans the whole database, so its
+      // result here is split against the baseline read above: a violation
+      // present in both readings pre-dates this batch and is only reported,
+      // not failed on (see the module doc comment); a violation that is new
+      // means one of the migrations in this batch has a bug.
+      const violations = readForeignKeyViolations(db)
+      const introduced = violations.filter((v) => !baselineKeys.has(violationKey(v)))
+      const preExisting = violations.filter((v) => baselineKeys.has(violationKey(v)))
+
+      if (preExisting.length > 0) {
+        const preExistingTables = [...new Set(preExisting.map((v) => v.table))].sort()
+        console.warn(
+          `Pre-existing referential integrity violation(s) found in: ${preExistingTables.join(', ')}. These were ` +
+            `already present before migration(s) ${pending.map((m) => m.name).join(', ')} ran in this batch, so ` +
+            'they were not introduced by it and this batch was not rolled back on their account -- but they mean ' +
+            'the database was already inconsistent before this call, which should be surfaced to the user.',
+        )
+      }
+
+      if (introduced.length > 0) {
+        const offendingTables = [...new Set(introduced.map((v) => v.table))].sort()
         throw new Error(
           `Migration(s) ${pending.map((m) => m.name).join(', ')} left referential integrity violations behind ` +
             `in: ${offendingTables.join(', ')}, and were rolled back along with every other migration in this ` +
             'same batch. Foreign key enforcement was disabled while this batch ran (see the module doc comment), ' +
             'and PRAGMA foreign_key_check as the batch\'s last step before commit is the safety net that replaces ' +
-            'it; it found dangling references, which means one of these migrations has a bug. The database has ' +
-            `been left exactly as it was found before this call. A pre-migration snapshot is also available at ` +
-            `${snapshotPath}.`,
+            'it; it found dangling references that were not present before this batch ran, which means one of ' +
+            'these migrations has a bug. The database has been left exactly as it was found before this call. ' +
+            `A pre-migration snapshot is also available at ${snapshotPath}.`,
         )
       }
     })

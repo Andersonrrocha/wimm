@@ -1,4 +1,4 @@
-import { injectCheckConstraints, renderCheck } from '../../scripts/inject-check-constraints'
+import { injectCheckConstraints, renderCheck, stripForeignKeysPragma } from '../../scripts/inject-check-constraints'
 import { CHECK_CONSTRAINTS } from './check-constraints'
 
 /** Two tables sharing a `kind` column — the exact shape that breaks a global regex. */
@@ -237,5 +237,64 @@ CREATE TABLE "RefreshToken" (
 
     const checkCount = (out.match(/CHECK \(/g) ?? []).length
     expect(checkCount).toBe(14)
+  })
+})
+
+describe('stripForeignKeysPragma', () => {
+  // The exact shape `prisma migrate diff --script` emits (captured verbatim from a
+  // real run against this repo's schema.sqlite.prisma, forcing a table rebuild by
+  // changing an existing column's default) around any table rebuild it cannot
+  // express as `ADD COLUMN`. This is what `applyPendingMigrations` rejects outright
+  // today (`assertNoForeignKeysPragma`) -- stripping it here is what stops every
+  // generated rebuild migration from being dead on arrival.
+  const REBUILD_DDL = `-- RedefineTables
+PRAGMA defer_foreign_keys=ON;
+PRAGMA foreign_keys=OFF;
+CREATE TABLE "new_Transaction" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "isProjected" BOOLEAN NOT NULL DEFAULT true,
+    CONSTRAINT "Transaction_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+INSERT INTO "new_Transaction" ("id", "userId", "isProjected") SELECT "id", "userId", "isProjected" FROM "Transaction";
+DROP TABLE "Transaction";
+ALTER TABLE "new_Transaction" RENAME TO "Transaction";
+PRAGMA foreign_keys=ON;
+PRAGMA defer_foreign_keys=OFF;
+`
+
+  it('strips every PRAGMA foreign_keys=ON/OFF line', () => {
+    const out = stripForeignKeysPragma(REBUILD_DDL)
+    expect(out).not.toMatch(/PRAGMA\s+foreign_keys/i)
+  })
+
+  it('leaves PRAGMA defer_foreign_keys alone', () => {
+    const out = stripForeignKeysPragma(REBUILD_DDL)
+    expect(out).toContain('PRAGMA defer_foreign_keys=ON;')
+    expect(out).toContain('PRAGMA defer_foreign_keys=OFF;')
+  })
+
+  it('leaves the rest of the DDL (CREATE/INSERT/DROP/ALTER) intact and in order', () => {
+    const out = stripForeignKeysPragma(REBUILD_DDL)
+    expect(out).toContain('CREATE TABLE "new_Transaction"')
+    expect(out).toContain('INSERT INTO "new_Transaction"')
+    expect(out).toContain('DROP TABLE "Transaction";')
+    expect(out).toContain('ALTER TABLE "new_Transaction" RENAME TO "Transaction";')
+
+    const dropIndex = out.indexOf('DROP TABLE "Transaction";')
+    const renameIndex = out.indexOf('ALTER TABLE "new_Transaction" RENAME TO "Transaction";')
+    expect(dropIndex).toBeGreaterThan(-1)
+    expect(renameIndex).toBeGreaterThan(dropIndex)
+  })
+
+  it('is a no-op on DDL that never had a PRAGMA foreign_keys line', () => {
+    const plain = 'CREATE TABLE "widgets" ("id" TEXT NOT NULL PRIMARY KEY);\n'
+    expect(stripForeignKeysPragma(plain)).toBe(plain)
+  })
+
+  it('composes with injectCheckConstraints so the generation pipeline strips then injects', () => {
+    const out = injectCheckConstraints(stripForeignKeysPragma(REBUILD_DDL))
+    expect(out).not.toMatch(/PRAGMA\s+foreign_keys/i)
+    expect(out).toContain('PRAGMA defer_foreign_keys=ON;')
   })
 })

@@ -363,6 +363,117 @@ describe('applyPendingMigrations', () => {
     expect(appliedMigrationRows(DB_FILE)).toEqual([])
   })
 
+  it('does not blame an unrelated migration for a pre-existing orphan, but warns about it', () => {
+    const migrationsDir = join(ROOT, 'migrations-preexisting-orphan')
+    writeMigration(
+      migrationsDir,
+      '0000_setup',
+      `
+        CREATE TABLE "parent" ("id" TEXT NOT NULL PRIMARY KEY);
+        CREATE TABLE "child" (
+          "id" TEXT NOT NULL PRIMARY KEY,
+          "parentId" TEXT NOT NULL,
+          CONSTRAINT "fk_child_parent" FOREIGN KEY ("parentId") REFERENCES "parent" ("id")
+        );
+      `,
+    )
+
+    const first = applyPendingMigrations({
+      file: DB_FILE,
+      migrationsDir,
+      backupDir: BACKUP_DIR,
+      databaseId: DATABASE_ID,
+      now: new Date('2026-01-01T00:00:00.000Z'),
+    })
+    expect(first.applied).toEqual(['0000_setup'])
+
+    // An orphan row, created outside any migration -- standing in for legacy data, a
+    // restored import, or a partially recovered database. `foreignKeys: 'off'` here
+    // stands in for however such a row really got there; the point of this test is
+    // that it exists *before* the next call to `applyPendingMigrations` runs at all.
+    const seed = openLocalDatabase(DB_FILE, { foreignKeys: 'off' })
+    seed.exec(`INSERT INTO "child" VALUES ('orphan', 'does-not-exist');`)
+    seed.close()
+
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+
+    // Touches neither "parent" nor "child" -- entirely unrelated to the orphan.
+    writeMigration(migrationsDir, '0001_unrelated', `CREATE TABLE "Settings" ("id" TEXT NOT NULL PRIMARY KEY);`)
+
+    const second = applyPendingMigrations({
+      file: DB_FILE,
+      migrationsDir,
+      backupDir: BACKUP_DIR,
+      databaseId: DATABASE_ID,
+      now: new Date('2026-01-01T01:00:00.000Z'),
+    })
+
+    // The migration succeeded -- a pre-existing, unrelated violation must never fail
+    // (or roll back) a batch that did not introduce it.
+    expect(second.applied).toEqual(['0001_unrelated'])
+    expect(tableNames(DB_FILE)).toContain('Settings')
+    expect(appliedMigrationRows(DB_FILE).map((r) => r.migration_name)).toContain('0001_unrelated')
+
+    // It was surfaced, though: a console.warn naming the affected table, not an
+    // error blaming "0001_unrelated" for violations it never touched.
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    const warning = warnSpy.mock.calls[0]?.[0] as string
+    expect(warning).toMatch(/child/)
+    expect(warning).not.toMatch(/0001_unrelated left referential integrity violations behind/)
+
+    // The orphan itself is untouched, not silently cleaned up.
+    const db = openLocalDatabase(DB_FILE, { readonly: true })
+    const orphanRows = db.prepare('SELECT "id", "parentId" FROM "child" WHERE "id" = \'orphan\'').all()
+    db.close()
+    expect(orphanRows).toEqual([{ id: 'orphan', parentId: 'does-not-exist' }])
+
+    warnSpy.mockRestore()
+  })
+
+  it('rejects a migration containing an explicit COMMIT, naming it, because it ends the batch transaction', () => {
+    const migrationsDir = join(ROOT, 'migrations-commit-escape')
+    writeMigration(migrationsDir, '0000_good', 'CREATE TABLE "widgets" ("id" TEXT NOT NULL PRIMARY KEY);')
+    // A hand-authored migration is the only realistic way this happens -- `prisma
+    // migrate diff --script` never emits a bare COMMIT -- but the runner must still
+    // catch it: once this runs, better-sqlite3 raises nothing, `db.inTransaction`
+    // goes false, and the batch transaction this runner depends on for atomic
+    // rollback no longer exists.
+    writeMigration(migrationsDir, '0001_commits', 'CREATE TABLE "gadgets" ("id" TEXT NOT NULL PRIMARY KEY);\nCOMMIT;')
+    writeMigration(migrationsDir, '0002_after', 'CREATE TABLE "widgets_after" ("id" TEXT NOT NULL PRIMARY KEY);')
+
+    let thrown: Error | undefined
+    try {
+      applyPendingMigrations({
+        file: DB_FILE,
+        migrationsDir,
+        backupDir: BACKUP_DIR,
+        databaseId: DATABASE_ID,
+        now: new Date('2026-01-01T00:00:00.000Z'),
+      })
+    } catch (err) {
+      thrown = err as Error
+    }
+
+    expect(thrown).toBeDefined()
+    expect(thrown!.message).toMatch(/0001_commits/)
+    expect(thrown!.message).toMatch(/COMMIT/)
+
+    // The migration after the COMMIT never ran.
+    expect(tableNames(DB_FILE)).not.toContain('widgets_after')
+    expect(appliedMigrationRows(DB_FILE).some((r) => r.migration_name === '0001_commits')).toBe(false)
+
+    // This is the exact danger the fix documents, not a gap in it: the explicit
+    // COMMIT inside "0001_commits" really did commit everything applied so far in
+    // this batch -- "0000_good"'s table and bookkeeping row, and "0001_commits"'s
+    // own CREATE TABLE, which ran before the COMMIT statement in its SQL -- before
+    // this runner could detect it and refuse to continue. There is no way to
+    // undo a transaction that has already committed; the runner's job is to name
+    // the migration responsible, which it does above.
+    expect(tableNames(DB_FILE)).toContain('widgets')
+    expect(tableNames(DB_FILE)).toContain('gadgets')
+    expect(appliedMigrationRows(DB_FILE).some((r) => r.migration_name === '0000_good')).toBe(true)
+  })
+
   it('rejects a migration that leaves referential violations behind, rolling the whole batch back before it commits', () => {
     const migrationsDir = join(ROOT, 'migrations-dangling')
     // Applied first, in its own call, so there is real pre-existing state (a committed migration
