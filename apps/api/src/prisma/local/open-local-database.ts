@@ -26,13 +26,17 @@
  * per-connection state, not part of the file on disk, so it is always set
  * and always verified, on both read-only and writable connections.
  */
-// better-sqlite3 ships no type declarations (and none are installed for it) —
-// `require` keeps this an untyped, ordinary CommonJS import rather than
-// pulling module-resolution type-checking into a source it has no types for.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const Database = require('better-sqlite3')
+// `@types/better-sqlite3` uses `export =`, and this package compiles with
+// `allowSyntheticDefaultImports` (typecheck-only) rather than `esModuleInterop`
+// (which also emits the interop helper). A default import therefore typechecks
+// but emits `.default`, which is undefined at runtime for a CommonJS module.
+// Import-equals is the form that matches `export =` under both settings.
+import Database = require('better-sqlite3')
 
-export function openLocalDatabase(file: string, options: { readonly?: boolean } = {}) {
+export function openLocalDatabase(
+  file: string,
+  options: { readonly?: boolean } = {},
+): Database.Database {
   const readonly = options.readonly ?? false
   const db = new Database(file, { readonly })
 
