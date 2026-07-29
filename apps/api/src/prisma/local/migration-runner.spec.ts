@@ -222,6 +222,9 @@ describe('applyPendingMigrations', () => {
     expect(thrown).toBeDefined()
     expect(thrown!.message).toMatch(/0001_bad/)
     expect(thrown!.message).toMatch(/\.snapshot\.db/)
+    // The message must say earlier migrations from this same batch were also rolled back --
+    // with the batch decided as one shared transaction, that semantics is only ever visible here.
+    expect(thrown!.message).toMatch(/earlier/i)
 
     // The pre-existing row is untouched.
     const db = openLocalDatabase(DB_FILE, { readonly: true })
@@ -242,5 +245,154 @@ describe('applyPendingMigrations', () => {
     const snapshotRows = snapshotDb.prepare('SELECT "value" FROM "existing_data"').all() as Array<{ value: string }>
     snapshotDb.close()
     expect(snapshotRows).toEqual([{ value: 'known-row' }])
+  })
+
+  // Regression test for the data-loss defect this module exists to prevent: applying every
+  // pending migration inside one shared transaction means `PRAGMA foreign_keys=OFF` -- which
+  // `prisma migrate diff --script` emits around any table rebuild it cannot express as
+  // `ADD COLUMN` -- is a documented no-op inside a transaction. With enforcement left on, the
+  // `DROP TABLE` in that rebuild fires every `ON DELETE CASCADE` against the table being rebuilt,
+  // silently destroying unrelated rows with no exception and a clean `integrity_check`.
+  it('preserves child rows across a Prisma-shaped table rebuild of the referenced parent table', () => {
+    const migrationsDir = join(ROOT, 'migrations-rebuild')
+    writeMigration(
+      migrationsDir,
+      '0000_initial',
+      `
+        CREATE TABLE "parent" ("id" TEXT NOT NULL PRIMARY KEY, "name" TEXT NOT NULL);
+        CREATE TABLE "child" (
+          "id" TEXT NOT NULL PRIMARY KEY,
+          "parentId" TEXT NOT NULL,
+          CONSTRAINT "fk_child_parent" FOREIGN KEY ("parentId") REFERENCES "parent" ("id") ON DELETE CASCADE
+        );
+      `,
+    )
+
+    const first = applyPendingMigrations({
+      file: DB_FILE,
+      migrationsDir,
+      backupDir: BACKUP_DIR,
+      databaseId: DATABASE_ID,
+      now: new Date('2026-01-01T00:00:00.000Z'),
+    })
+    expect(first.applied).toEqual(['0000_initial'])
+
+    // Real user data, seeded between migrations -- standing in for years of transactions and
+    // categorization rules that must survive a later schema change untouched.
+    const seed = openLocalDatabase(DB_FILE)
+    seed.exec(`
+      INSERT INTO "parent" VALUES ('p1', 'Groceries');
+      INSERT INTO "child" VALUES ('c1', 'p1'), ('c2', 'p1'), ('c3', 'p1');
+    `)
+    seed.close()
+
+    // The exact shape `prisma migrate diff --script` emits for a change it cannot express as
+    // `ADD COLUMN` (here: adding a column requires a rebuild only because this test wants a
+    // realistic `new_X` / `INSERT ... SELECT` / `DROP TABLE` / `RENAME` sequence). The
+    // `PRAGMA foreign_keys=OFF/ON` lines Prisma also emits around this are deliberately omitted:
+    // this runner rejects any migration containing them (see `assertNoForeignKeysPragma`), since
+    // they would silently no-op inside the batch transaction anyway.
+    writeMigration(
+      migrationsDir,
+      '0001_rebuild_parent',
+      `
+        CREATE TABLE "new_parent" ("id" TEXT NOT NULL PRIMARY KEY, "name" TEXT NOT NULL, "note" TEXT);
+        INSERT INTO "new_parent" ("id", "name") SELECT "id", "name" FROM "parent";
+        DROP TABLE "parent";
+        ALTER TABLE "new_parent" RENAME TO "parent";
+      `,
+    )
+
+    const second = applyPendingMigrations({
+      file: DB_FILE,
+      migrationsDir,
+      backupDir: BACKUP_DIR,
+      databaseId: DATABASE_ID,
+      now: new Date('2026-01-01T01:00:00.000Z'),
+    })
+    expect(second.applied).toEqual(['0001_rebuild_parent'])
+
+    const db = openLocalDatabase(DB_FILE, { readonly: true })
+    const childRows = db.prepare('SELECT "id", "parentId" FROM "child" ORDER BY "id"').all()
+    const parentRows = db.prepare('SELECT "id", "name" FROM "parent"').all()
+    const integrity = db.pragma('integrity_check') as Array<{ integrity_check: string }>
+    db.close()
+
+    // The regression: without disabling foreign keys before the batch transaction begins,
+    // `DROP TABLE "parent"` above fires the CASCADE and wipes every child row.
+    expect(childRows).toEqual([
+      { id: 'c1', parentId: 'p1' },
+      { id: 'c2', parentId: 'p1' },
+      { id: 'c3', parentId: 'p1' },
+    ])
+    expect(parentRows).toEqual([{ id: 'p1', name: 'Groceries' }])
+    expect(integrity).toEqual([{ integrity_check: 'ok' }])
+  })
+
+  it('rejects a pending migration containing a PRAGMA foreign_keys statement, before taking a snapshot or applying anything', () => {
+    const migrationsDir = join(ROOT, 'migrations-pragma-fk')
+    writeMigration(
+      migrationsDir,
+      '0000_bad_pragma',
+      `
+        PRAGMA foreign_keys=OFF;
+        CREATE TABLE "widgets" ("id" TEXT NOT NULL PRIMARY KEY);
+        PRAGMA foreign_keys=ON;
+      `,
+    )
+
+    expect(() =>
+      applyPendingMigrations({
+        file: DB_FILE,
+        migrationsDir,
+        backupDir: BACKUP_DIR,
+        databaseId: DATABASE_ID,
+        now: new Date('2026-01-01T00:00:00.000Z'),
+      }),
+    ).toThrow(/0000_bad_pragma/)
+
+    expect(listSnapshots(BACKUP_DIR, DATABASE_ID)).toEqual([])
+    expect(tableNames(DB_FILE)).not.toContain('widgets')
+    expect(appliedMigrationRows(DB_FILE)).toEqual([])
+  })
+
+  it('throws naming the offending table when the batch leaves referential violations, since foreign keys were off for the whole batch', () => {
+    const migrationsDir = join(ROOT, 'migrations-dangling')
+    writeMigration(
+      migrationsDir,
+      '0000_dangling',
+      `
+        CREATE TABLE "parent" ("id" TEXT NOT NULL PRIMARY KEY);
+        CREATE TABLE "child" (
+          "id" TEXT NOT NULL PRIMARY KEY,
+          "parentId" TEXT NOT NULL,
+          CONSTRAINT "fk_child_parent" FOREIGN KEY ("parentId") REFERENCES "parent" ("id")
+        );
+        INSERT INTO "child" VALUES ('c1', 'does-not-exist');
+      `,
+    )
+
+    let thrown: Error | undefined
+    try {
+      applyPendingMigrations({
+        file: DB_FILE,
+        migrationsDir,
+        backupDir: BACKUP_DIR,
+        databaseId: DATABASE_ID,
+        now: new Date('2026-01-01T00:00:00.000Z'),
+      })
+    } catch (err) {
+      thrown = err as Error
+    }
+
+    expect(thrown).toBeDefined()
+    expect(thrown!.message).toMatch(/0000_dangling/)
+    expect(thrown!.message).toMatch(/child/)
+    expect(thrown!.message).toMatch(/\.snapshot\.db/)
+
+    // Unlike the mid-batch failure case above, this migration DID commit: the safety net runs
+    // after commit, on the same connection, since foreign keys were off for the whole batch.
+    const sql = readFileSync(join(migrationsDir, '0000_dangling', 'migration.sql'), 'utf8')
+    expect(appliedMigrationRows(DB_FILE)).toEqual([{ migration_name: '0000_dangling', checksum: sha256(sql) }])
   })
 })

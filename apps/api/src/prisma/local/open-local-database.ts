@@ -25,6 +25,17 @@
  * over from a crash). `foreign_keys` has no such restriction: it is
  * per-connection state, not part of the file on disk, so it is always set
  * and always verified, on both read-only and writable connections.
+ *
+ * `foreignKeys` defaults to `'on'` and callers should almost never override
+ * it -- it exists only for the migration runner, which must disable
+ * enforcement for the lifetime of its batch transaction (SQLite documents
+ * `PRAGMA foreign_keys` as a no-op inside a transaction, so it cannot be
+ * toggled mid-batch; it has to be off *before* `BEGIN`). The option is a
+ * named `'on' | 'off'` rather than a boolean specifically so a call site
+ * reads as a deliberate, self-explaining choice (`foreignKeys: 'off'`)
+ * instead of a bare `true`/`false` that says nothing about what it means.
+ * The same set-then-verify-or-refuse contract applies in both directions:
+ * `'off'` is verified to have actually taken just as strictly as `'on'` is.
  */
 // `@types/better-sqlite3` uses `export =`, and this package compiles with
 // `allowSyntheticDefaultImports` (typecheck-only) rather than `esModuleInterop`
@@ -35,9 +46,10 @@ import Database = require('better-sqlite3')
 
 export function openLocalDatabase(
   file: string,
-  options: { readonly?: boolean } = {},
+  options: { readonly?: boolean; foreignKeys?: 'on' | 'off' } = {},
 ): Database.Database {
   const readonly = options.readonly ?? false
+  const foreignKeys = options.foreignKeys ?? 'on'
   const db = new Database(file, { readonly })
 
   if (!readonly) {
@@ -50,12 +62,17 @@ export function openLocalDatabase(
     }
   }
 
-  db.pragma('foreign_keys = ON')
+  db.pragma(`foreign_keys = ${foreignKeys.toUpperCase()}`)
 
   const fk = (db.pragma('foreign_keys') as Array<{ foreign_keys: number }>)[0].foreign_keys
-  if (fk !== 1) {
+  const expectedFk = foreignKeys === 'on' ? 1 : 0
+  if (fk !== expectedFk) {
     db.close()
-    throw new Error(`Refusing to use ${file}: foreign key enforcement could not be enabled`)
+    throw new Error(
+      `Refusing to use ${file}: foreign key enforcement could not be ${
+        foreignKeys === 'on' ? 'enabled' : 'disabled'
+      } (got ${fk})`,
+    )
   }
 
   return db

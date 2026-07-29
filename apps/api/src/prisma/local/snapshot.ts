@@ -180,7 +180,12 @@ function assertValidDatabaseFile(file: string, context: string): void {
   }
 
   try {
-    const rows = db.pragma('integrity_check') as Array<{ integrity_check: string }>
+    let rows: Array<{ integrity_check: string }>
+    try {
+      rows = db.pragma('integrity_check') as Array<{ integrity_check: string }>
+    } catch (err) {
+      throw new Error(`${context}: integrity_check threw for ${file} (${(err as Error).message})`)
+    }
     const ok = rows.length === 1 && rows[0].integrity_check === 'ok'
     if (!ok) {
       throw new Error(

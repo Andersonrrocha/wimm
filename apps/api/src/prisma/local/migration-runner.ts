@@ -43,6 +43,31 @@
  *   recovery path for anything a transaction can't undo (e.g. the process
  *   being killed mid-write).
  *
+ * - The batch transaction is opened with `foreign_keys = OFF`, set *before*
+ *   `BEGIN`. SQLite documents `PRAGMA foreign_keys` as a no-op inside a
+ *   transaction, and `prisma migrate diff --script` -- the command this repo
+ *   uses to author SQLite migrations -- rebuilds any table it cannot alter
+ *   in place as `CREATE TABLE new_X` / `INSERT INTO new_X SELECT ...` /
+ *   `DROP TABLE X` / `ALTER TABLE new_X RENAME TO X`, wrapped in its own
+ *   `PRAGMA foreign_keys=OFF/ON` (which, per the above, would be swallowed
+ *   by the batch transaction). Left enforced, that `DROP TABLE` fires every
+ *   `ON DELETE CASCADE` and `ON DELETE SET NULL` in the schema against the
+ *   table being rebuilt -- an implicit, silent delete of unrelated rows, with
+ *   no exception and a clean `integrity_check`. Disabling enforcement for the
+ *   connection before the transaction even starts is what actually prevents
+ *   that; see `openLocalDatabase`'s `foreignKeys` option. Because migrations
+ *   can no longer rely on their own `PRAGMA foreign_keys` to do anything --
+ *   it would silently no-op either way -- any migration containing one is
+ *   rejected outright, see `assertNoForeignKeysPragma`.
+ *
+ * - With enforcement off for the whole batch, nothing checks referential
+ *   integrity while the migrations run. `PRAGMA foreign_key_check` after the
+ *   batch commits is the safety net that replaces it: if a migration left
+ *   dangling references (a bug in the migration itself, not something this
+ *   runner's own foreign-keys-off handling can cause), this is the only
+ *   place left to catch it, so a violation is a hard failure that names the
+ *   offending tables.
+ *
  * - `now` is always taken as an argument, never read from `new Date()`
  *   internally, so callers (and tests) can produce deterministic timestamps.
  *   It is passed straight through to `snapshotDatabase` and used to stamp
@@ -117,6 +142,34 @@ function discoverMigrations(migrationsDir: string): DiscoveredMigration[] {
   })
 }
 
+/** Matches a `PRAGMA foreign_keys` statement in any case or spacing, so it can be rejected. */
+const FOREIGN_KEYS_PRAGMA_PATTERN = /PRAGMA\s+foreign_keys/i
+
+/**
+ * Rejects any migration in `migrations` whose SQL contains a `PRAGMA
+ * foreign_keys` statement. Every pending migration for a call runs inside
+ * one shared batch transaction, and SQLite documents `PRAGMA foreign_keys`
+ * as a no-op inside a transaction -- so a migration that sets it is lying
+ * about what it does: the statement will silently have no effect, and
+ * enforcement will stay exactly as this runner already set it (see the
+ * module doc comment). Enforcement for the batch is this runner's own
+ * responsibility, not any individual migration's.
+ */
+function assertNoForeignKeysPragma(migrations: DiscoveredMigration[]): void {
+  for (const migration of migrations) {
+    if (FOREIGN_KEYS_PRAGMA_PATTERN.test(migration.sql)) {
+      throw new Error(
+        `Migration "${migration.name}" contains a "PRAGMA foreign_keys" statement. This runner applies every ` +
+          'pending migration inside one shared batch transaction, and SQLite documents `PRAGMA foreign_keys` as ' +
+          'a no-op inside a transaction -- so this statement can only ever silently fail to take effect, while ' +
+          'claiming otherwise. Foreign key enforcement for the whole batch is handled by the runner itself ' +
+          '(disabled before the transaction begins, re-checked with `PRAGMA foreign_key_check` after it commits). ' +
+          `Remove the "PRAGMA foreign_keys" statement(s) from "${migration.name}".`,
+      )
+    }
+  }
+}
+
 /**
  * Brings `file` up to date with every migration in `migrationsDir`.
  *
@@ -140,7 +193,12 @@ export function applyPendingMigrations(options: {
 
   const discovered = discoverMigrations(migrationsDir)
 
-  const db = openLocalDatabase(file)
+  // Foreign keys are disabled for this connection's whole lifetime, not just
+  // for the batch transaction -- see the module doc comment for why they
+  // must be off *before* `BEGIN`. This connection is never used for
+  // anything but migration bookkeeping, so there is no other code path that
+  // depends on enforcement being on here.
+  const db = openLocalDatabase(file, { foreignKeys: 'off' })
   try {
     db.exec(MIGRATIONS_TABLE_DDL)
 
@@ -167,6 +225,12 @@ export function applyPendingMigrations(options: {
     const alreadyApplied = discovered.filter((m) => appliedChecksums.has(m.name)).map((m) => m.name)
     const pending = discovered.filter((m) => !appliedChecksums.has(m.name))
 
+    // Reject anything relying on `PRAGMA foreign_keys` before doing anything
+    // destructive -- it can only ever silently no-op inside the batch
+    // transaction below, so a migration depending on it is lying about what
+    // it does. See `assertNoForeignKeysPragma`.
+    assertNoForeignKeysPragma(pending)
+
     if (pending.length === 0) {
       return { applied: [], alreadyApplied, snapshot: null }
     }
@@ -182,6 +246,9 @@ export function applyPendingMigrations(options: {
     // Everything pending for this call lives in one transaction: if any
     // migration fails, earlier ones from this same call are undone too, so a
     // failed boot-time upgrade always leaves the database exactly as found.
+    // Foreign keys are already off on this connection (see above), and stay
+    // off for the whole transaction -- SQLite would silently ignore any
+    // attempt to toggle them mid-transaction anyway.
     const applyAll = db.transaction(() => {
       for (const migration of pending) {
         try {
@@ -189,14 +256,45 @@ export function applyPendingMigrations(options: {
           insertRecord.run(randomUUID(), migration.checksum, now.toISOString(), migration.name, now.toISOString())
         } catch (err) {
           throw new Error(
-            `Migration "${migration.name}" failed and was rolled back (${(err as Error).message}). ` +
-              `A pre-migration snapshot is available at ${snapshotPath}.`,
+            `Migration "${migration.name}" failed and was rolled back, along with every other migration already ` +
+              `applied earlier in this same batch (${(err as Error).message}). The database has been left exactly ` +
+              `as it was found before this call. A pre-migration snapshot is also available at ${snapshotPath}.`,
           )
         }
       }
     })
 
     applyAll()
+
+    // Foreign keys were off for the whole batch (see the module doc comment
+    // and `openLocalDatabase`'s `foreignKeys` option), so nothing enforced
+    // referential integrity while the migrations above ran. This check is
+    // the safety net that replaces that enforcement: it runs on the same
+    // connection, after the batch has already committed, and a non-empty
+    // result means a migration left dangling references behind -- a bug in
+    // the migration itself, since this runner's own use of `foreignKeys:
+    // 'off'` cannot itself orphan anything (no CASCADE/SET NULL ever fires
+    // while enforcement is off). The batch is already committed at this
+    // point and cannot be rolled back automatically, so this is reported as
+    // loudly as possible rather than silently, with the pre-migration
+    // snapshot as the recovery path.
+    const violations = db.prepare('PRAGMA foreign_key_check').all() as Array<{
+      table: string
+      rowid: number | null
+      parent: string
+      fkid: number
+    }>
+    if (violations.length > 0) {
+      const offendingTables = [...new Set(violations.map((v) => v.table))].sort()
+      throw new Error(
+        `Migration(s) ${pending.map((m) => m.name).join(', ')} committed, but left referential integrity ` +
+          `violations behind in: ${offendingTables.join(', ')}. Foreign key enforcement was disabled while this ` +
+          'batch ran (see the module doc comment) and PRAGMA foreign_key_check afterwards is the safety net that ' +
+          'replaces it; it found dangling references, which means one of these migrations has a bug. The batch ' +
+          `already committed and cannot be rolled back automatically -- a pre-migration snapshot is available at ` +
+          `${snapshotPath} for manual recovery.`,
+      )
+    }
 
     return { applied: pending.map((m) => m.name), alreadyApplied, snapshot: snapshotPath }
   } finally {
