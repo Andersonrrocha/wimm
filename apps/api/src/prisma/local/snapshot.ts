@@ -21,25 +21,44 @@
  *   after being written; a snapshot that fails is deleted rather than left
  *   behind to be mistaken for a good one.
  *
- * - `restoreSnapshot` snapshots the current target before overwriting it
+ * - `restoreSnapshot`'s final write -- replacing the live target -- copies
+ *   into a temporary file in the target's own directory, validates that
+ *   copy, and only then `renameSync`s it over the target. A rename on the
+ *   same filesystem is atomic: the target is either the old file or the
+ *   new one, never a truncated mix of both, even if the copy is interrupted
+ *   by a full disk, an I/O error, or a killed process. The temp file lives
+ *   next to the target (not next to the snapshot) specifically so that
+ *   rename stays on one volume.
+ *
+ * - `restoreSnapshot` preserves the current target before overwriting it
  *   (unless there is no current target to protect), so a restore is itself
  *   undoable: a user who restores the wrong backup does not lose the state
- *   they were in.
+ *   they were in. That preservation is best-effort: if the current target
+ *   cannot be validated (wrong journal mode, or it fails
+ *   `integrity_check`), its bytes are still copied aside -- marked
+ *   unvalidated so `listSnapshots` never offers it as a restore candidate
+ *   -- but the restore itself always proceeds regardless. A broken target
+ *   is exactly the situation a restore is for; preserving it must never be
+ *   allowed to block recovering from it.
  *
  * - Pruning parses the timestamp out of the filename rather than trusting
  *   filesystem mtime, because `copyFileSync` preserves mtime inconsistently
  *   across platforms and the pruning decision is which of the user's
  *   backups to destroy.
  *
- * - Pruning is scoped per database name, not per directory. Every profile
- *   will eventually get its own database file in one shared backup
- *   directory, so pruning must never touch another profile's snapshots.
+ * - Every snapshot is keyed by a `databaseId` that callers must supply
+ *   explicitly -- never derived from the database file's basename. Every
+ *   profile will eventually get its own database file in one shared backup
+ *   directory, and two different databases can share a basename (every
+ *   profile's file is named `wimm.db`); requiring callers to state the
+ *   identity keeps that collision from ever being accidental.
  *
  * - `now` is always taken as an argument rather than read from `new Date()`
  *   internally, so callers (and tests) can produce deterministic, ordered
  *   timestamps without sleeping.
  */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'fs'
+import { randomBytes } from 'crypto'
 import { basename, dirname, join } from 'path'
 // Same import form as open-local-database.ts: this package has
 // `allowSyntheticDefaultImports` but not `esModuleInterop`, so a default
@@ -58,6 +77,16 @@ const MAX_SNAPSHOTS_PER_DATABASE = 5
 
 /** Suffix appended to every snapshot filename, after the embedded timestamp. */
 const SNAPSHOT_SUFFIX = '.snapshot.db'
+
+/**
+ * Marker inserted into the filename of a pre-restore preservation copy that
+ * could not be validated (see `preserveTargetBeforeRestore`). Its presence
+ * keeps the segment between `databaseId` and `SNAPSHOT_SUFFIX` from
+ * matching `TIMESTAMP_PATTERN`, so `listSnapshots` never recognizes -- and
+ * therefore never offers as a restore candidate -- a copy that may itself
+ * be corrupt.
+ */
+const UNVALIDATED_MARKER = 'unvalidated'
 
 /** Matches the compact, sortable timestamp embedded in a snapshot filename. */
 const TIMESTAMP_PATTERN = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(\d{3})Z$/
@@ -84,21 +113,32 @@ function parseTimestamp(compact: string): Date | null {
   return Number.isNaN(date.getTime()) ? null : date
 }
 
-function snapshotFileName(databaseName: string, now: Date): string {
-  return `${databaseName}.${formatTimestamp(now)}${SNAPSHOT_SUFFIX}`
+function snapshotFileName(databaseId: string, now: Date): string {
+  return `${databaseId}.${formatTimestamp(now)}${SNAPSHOT_SUFFIX}`
+}
+
+/**
+ * Filename for a pre-restore preservation copy of a target that failed
+ * validation. See `preserveTargetBeforeRestore`.
+ */
+function unvalidatedCopyFileName(databaseId: string, now: Date): string {
+  return `${databaseId}.${formatTimestamp(now)}.${UNVALIDATED_MARKER}${SNAPSHOT_SUFFIX}`
 }
 
 /**
  * Returns the timestamp encoded in `fileName` if it is a snapshot of
- * `databaseName`, or `null` otherwise.
+ * `databaseId`, or `null` otherwise.
  *
  * The middle segment is validated against the strict timestamp pattern (not
- * just "starts with the name and ends with the suffix"), so a database
- * named `wimm.db` can never accidentally match snapshots that actually
- * belong to a differently-named database such as `wimm.db.bak`.
+ * just "starts with the id and ends with the suffix"), so a database with
+ * id `wimm.db` can never accidentally match snapshots that actually belong
+ * to a differently-identified database such as `wimm.db.bak`, nor an
+ * unvalidated preservation copy of its own target (whose middle segment has
+ * the extra `.unvalidated` marker appended and so never parses as a plain
+ * timestamp).
  */
-function parseSnapshotTimestamp(fileName: string, databaseName: string): Date | null {
-  const prefix = `${databaseName}.`
+function parseSnapshotTimestamp(fileName: string, databaseId: string): Date | null {
+  const prefix = `${databaseId}.`
   if (!fileName.startsWith(prefix) || !fileName.endsWith(SNAPSHOT_SUFFIX)) return null
   const timestampPart = fileName.slice(prefix.length, fileName.length - SNAPSHOT_SUFFIX.length)
   return parseTimestamp(timestampPart)
@@ -153,15 +193,22 @@ function assertValidDatabaseFile(file: string, context: string): void {
 }
 
 /**
- * Lists snapshots of `databaseName` found in `backupDir`, newest first.
+ * Lists snapshots of `databaseId` found in `backupDir`, newest first.
  * Returns an empty array if `backupDir` does not exist yet.
+ *
+ * `databaseId` is the same caller-supplied identifier passed to
+ * `snapshotDatabase` -- not the database file's basename. This is what lets
+ * multiple databases that share a basename live in one backup directory
+ * without ever listing or pruning each other's snapshots. Pre-restore
+ * copies of a target that failed validation are deliberately excluded (see
+ * `preserveTargetBeforeRestore`).
  */
-export function listSnapshots(backupDir: string, databaseName: string): SnapshotInfo[] {
+export function listSnapshots(backupDir: string, databaseId: string): SnapshotInfo[] {
   if (!existsSync(backupDir)) return []
 
   const snapshots: SnapshotInfo[] = []
   for (const entry of readdirSync(backupDir)) {
-    const takenAt = parseSnapshotTimestamp(entry, databaseName)
+    const takenAt = parseSnapshotTimestamp(entry, databaseId)
     if (!takenAt) continue
     const path = join(backupDir, entry)
     snapshots.push({ path, takenAt, sizeBytes: statSync(path).size })
@@ -170,30 +217,36 @@ export function listSnapshots(backupDir: string, databaseName: string): Snapshot
   return snapshots.sort((a, b) => b.takenAt.getTime() - a.takenAt.getTime())
 }
 
-/** Deletes all but the newest `keep` snapshots of `databaseName` in `backupDir`. */
-function pruneSnapshots(backupDir: string, databaseName: string, keep: number): void {
-  const snapshots = listSnapshots(backupDir, databaseName)
+/** Deletes all but the newest `keep` snapshots of `databaseId` in `backupDir`. */
+function pruneSnapshots(backupDir: string, databaseId: string, keep: number): void {
+  const snapshots = listSnapshots(backupDir, databaseId)
   for (const stale of snapshots.slice(keep)) {
     rmSync(stale.path, { force: true })
   }
 }
 
 /**
- * Copies `file` into `backupDir` as a new, validated snapshot, then prunes
- * old snapshots of that same database down to the newest
- * `MAX_SNAPSHOTS_PER_DATABASE`. Returns the path of the new snapshot.
+ * Copies `file` into `backupDir` as a new, validated snapshot identified by
+ * `databaseId`, then prunes old snapshots of that same id down to the
+ * newest `MAX_SNAPSHOTS_PER_DATABASE`. Returns the path of the new
+ * snapshot.
+ *
+ * `databaseId` is caller-supplied and is never derived from `file`'s
+ * basename: two databases that happen to share a basename (e.g. every
+ * profile's file named `wimm.db`) must be given different ids by the
+ * caller, or their snapshots would collide -- and prune each other -- in a
+ * shared `backupDir`.
  *
  * Throws, without writing anything, if `file` is not currently in DELETE
  * journal mode. Throws, after deleting the bad copy, if the written
  * snapshot fails `PRAGMA integrity_check`.
  */
-export function snapshotDatabase(file: string, backupDir: string, now: Date): string {
+export function snapshotDatabase(file: string, backupDir: string, databaseId: string, now: Date): string {
   assertDeleteJournalMode(file)
 
   mkdirSync(backupDir, { recursive: true })
 
-  const databaseName = basename(file)
-  const snapshotPath = join(backupDir, snapshotFileName(databaseName, now))
+  const snapshotPath = join(backupDir, snapshotFileName(databaseId, now))
 
   copyFileSync(file, snapshotPath)
 
@@ -204,9 +257,42 @@ export function snapshotDatabase(file: string, backupDir: string, now: Date): st
     throw err
   }
 
-  pruneSnapshots(backupDir, databaseName, MAX_SNAPSHOTS_PER_DATABASE)
+  pruneSnapshots(backupDir, databaseId, MAX_SNAPSHOTS_PER_DATABASE)
 
   return snapshotPath
+}
+
+/**
+ * Best-effort preserves the current contents of `targetFile` before a
+ * restore overwrites it, so nothing is silently discarded -- even when the
+ * target itself is broken, which is exactly the situation a restore is
+ * most often needed for.
+ *
+ * Tries a full, validated snapshot first, identical to `snapshotDatabase`
+ * (including pruning). If that fails for any reason -- wrong journal mode,
+ * or the target fails `integrity_check` -- falls back to a raw copy of
+ * whatever bytes exist, named with `UNVALIDATED_MARKER` so `listSnapshots`
+ * never recognizes it as a restore candidate. If even that raw copy fails
+ * (e.g. the disk is full), the failure is swallowed: preserving the old
+ * state must never be allowed to block the restore that follows.
+ */
+function preserveTargetBeforeRestore(targetFile: string, backupDir: string, databaseId: string, now: Date): void {
+  try {
+    snapshotDatabase(targetFile, backupDir, databaseId, now)
+    return
+  } catch {
+    // The target could not be validated as a healthy snapshot -- fall
+    // through to a best-effort raw copy below instead of propagating.
+  }
+
+  try {
+    mkdirSync(backupDir, { recursive: true })
+    const unvalidatedPath = join(backupDir, unvalidatedCopyFileName(databaseId, now))
+    copyFileSync(targetFile, unvalidatedPath)
+  } catch {
+    // Preservation is best-effort only. Even a failure here (e.g. a full
+    // disk) must not prevent the restore that follows.
+  }
 }
 
 /**
@@ -217,17 +303,36 @@ export function snapshotDatabase(file: string, backupDir: string, now: Date): st
  * restoring from a file that is not a valid SQLite database throws and
  * leaves `targetFile` untouched.
  *
- * If `targetFile` currently exists, it is snapshotted first (into the same
- * directory as `snapshotPath`) so the restore is itself undoable. If
- * `targetFile` does not exist yet, there is no prior state to protect, so
- * this step is skipped rather than fabricating an empty database to back up.
+ * If `targetFile` currently exists, it is preserved first (see
+ * `preserveTargetBeforeRestore`) into the same directory as `snapshotPath`,
+ * under `databaseId`, so the restore is itself undoable. If `targetFile`
+ * does not exist yet, there is no prior state to protect, so this step is
+ * skipped rather than fabricating an empty database to back up.
+ *
+ * The replacement itself is atomic: `snapshotPath` is copied into a
+ * temporary file in `targetFile`'s own directory (so the rename below stays
+ * on one filesystem), that copy is validated, and only then is it
+ * `renameSync`d over `targetFile`. If the copy or its validation fails, the
+ * temporary file is removed and `targetFile` is left exactly as it was --
+ * a same-filesystem rename cannot leave `targetFile` half-old, half-new.
  */
-export function restoreSnapshot(snapshotPath: string, targetFile: string, now: Date): void {
+export function restoreSnapshot(snapshotPath: string, targetFile: string, databaseId: string, now: Date): void {
   assertValidDatabaseFile(snapshotPath, 'Cannot restore snapshot')
 
   if (existsSync(targetFile)) {
-    snapshotDatabase(targetFile, dirname(snapshotPath), now)
+    preserveTargetBeforeRestore(targetFile, dirname(snapshotPath), databaseId, now)
   }
 
-  copyFileSync(snapshotPath, targetFile)
+  const tempPath = join(dirname(targetFile), `.${basename(targetFile)}.restoring-${randomBytes(8).toString('hex')}.tmp`)
+
+  copyFileSync(snapshotPath, tempPath)
+
+  try {
+    assertValidDatabaseFile(tempPath, 'Restored copy failed validation before replacing the target')
+  } catch (err) {
+    rmSync(tempPath, { force: true })
+    throw err
+  }
+
+  renameSync(tempPath, targetFile)
 }

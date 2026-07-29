@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import * as fs from 'fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { basename, join } from 'path'
 // Same import form as open-local-database.ts: this package has
 // `allowSyntheticDefaultImports` but not `esModuleInterop`, so a default
@@ -33,6 +34,12 @@ function readRows(file: string): string[] {
   return rows.map((row) => row.value)
 }
 
+/** Truncates `file` down to just its 100-byte SQLite header, corrupting it. */
+function truncateToHeaderOnly(file: string): void {
+  const header = readFileSync(file).subarray(0, 100)
+  writeFileSync(file, header)
+}
+
 describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
   beforeEach(() => {
     mkdirSync(ROOT, { recursive: true })
@@ -52,15 +59,15 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
   it('produces a snapshot whose known row can be opened and read back', () => {
     createDatabase(DB_FILE, ['alpha'])
 
-    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, new Date('2026-01-01T00:00:00.000Z'))
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
 
     expect(readRows(snapshotPath)).toEqual(['alpha'])
   })
 
-  it('encodes the database name and a sortable timestamp in the filename', () => {
+  it('encodes the databaseId and a sortable timestamp in the filename', () => {
     createDatabase(DB_FILE, ['alpha'])
 
-    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, new Date('2026-01-02T03:04:05.006Z'))
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-02T03:04:05.006Z'))
 
     expect(basename(snapshotPath)).toBe('wimm.db.20260102T030405006Z.snapshot.db')
   })
@@ -69,7 +76,9 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     createDatabase(DB_FILE, ['alpha'])
     const base = new Date('2026-01-01T00:00:00.000Z').getTime()
 
-    const paths = Array.from({ length: 6 }, (_, i) => snapshotDatabase(DB_FILE, BACKUP_DIR, new Date(base + i * 1000)))
+    const paths = Array.from({ length: 6 }, (_, i) =>
+      snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date(base + i * 1000)),
+    )
 
     const remaining = listSnapshots(BACKUP_DIR, 'wimm.db')
     expect(remaining).toHaveLength(5)
@@ -79,20 +88,58 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     }
   })
 
-  it('prunes only the snapshots of the database being snapshotted, leaving other databases untouched', () => {
+  it('prunes only the snapshots of the databaseId being snapshotted, leaving other databases untouched', () => {
     createDatabase(DB_FILE, ['alpha'])
     createDatabase(OTHER_DB_FILE, ['beta'])
     const base = new Date('2026-01-01T00:00:00.000Z').getTime()
 
     for (let i = 0; i < 6; i++) {
-      snapshotDatabase(OTHER_DB_FILE, BACKUP_DIR, new Date(base + i * 1000))
+      snapshotDatabase(OTHER_DB_FILE, BACKUP_DIR, 'other.db', new Date(base + i * 1000))
     }
-    const dbSnapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, new Date(base + 6000))
+    const dbSnapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date(base + 6000))
 
     expect(listSnapshots(BACKUP_DIR, 'other.db')).toHaveLength(5)
     const wimmSnapshots = listSnapshots(BACKUP_DIR, 'wimm.db')
     expect(wimmSnapshots).toHaveLength(1)
     expect(wimmSnapshots[0].path).toBe(dbSnapshotPath)
+  })
+
+  it('scopes snapshots by the caller-supplied databaseId, not by file basename, so two databases with the same basename never prune or list each other', () => {
+    // Phase 3 scenario: every profile's database is named `wimm.db`, and all
+    // profiles share one backup directory. Only the caller-supplied id (not
+    // the shared basename) may determine which snapshots belong to whom.
+    const aliceDir = join(ROOT, 'alice')
+    const bobDir = join(ROOT, 'bob')
+    const aliceFile = join(aliceDir, 'wimm.db')
+    const bobFile = join(bobDir, 'wimm.db')
+    mkdirSync(aliceDir, { recursive: true })
+    mkdirSync(bobDir, { recursive: true })
+    createDatabase(aliceFile, ['alice-1'])
+    createDatabase(bobFile, ['bob-1'])
+    expect(basename(aliceFile)).toBe(basename(bobFile))
+
+    const base = new Date('2026-01-01T00:00:00.000Z').getTime()
+    // Alice snapshots first (and only once), so under the old basename-keyed
+    // pruning her single snapshot would be the oldest of the combined set
+    // and would be the first one evicted once Bob's snapshots push the
+    // combined count past the retention limit.
+    const aliceSnapshotPath = snapshotDatabase(aliceFile, BACKUP_DIR, 'alice', new Date(base))
+    for (let i = 1; i <= 6; i++) {
+      snapshotDatabase(bobFile, BACKUP_DIR, 'bob', new Date(base + i * 1000))
+    }
+
+    const aliceSnapshots = listSnapshots(BACKUP_DIR, 'alice')
+    const bobSnapshots = listSnapshots(BACKUP_DIR, 'bob')
+
+    expect(aliceSnapshots).toHaveLength(1)
+    expect(aliceSnapshots[0].path).toBe(aliceSnapshotPath)
+    expect(existsSync(aliceSnapshotPath)).toBe(true)
+    expect(readRows(aliceSnapshotPath)).toEqual(['alice-1'])
+
+    expect(bobSnapshots).toHaveLength(5)
+    for (const snapshot of bobSnapshots) {
+      expect(readRows(snapshot.path)).toEqual(['bob-1'])
+    }
   })
 
   it('lists snapshots newest first', () => {
@@ -101,9 +148,9 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     const t2 = new Date('2026-01-01T00:00:01.000Z')
     const t3 = new Date('2026-01-01T00:00:02.000Z')
 
-    snapshotDatabase(DB_FILE, BACKUP_DIR, t1)
-    snapshotDatabase(DB_FILE, BACKUP_DIR, t2)
-    snapshotDatabase(DB_FILE, BACKUP_DIR, t3)
+    snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', t1)
+    snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', t2)
+    snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', t3)
 
     const snapshots = listSnapshots(BACKUP_DIR, 'wimm.db')
     expect(snapshots.map((s) => s.takenAt.toISOString())).toEqual([t3.toISOString(), t2.toISOString(), t1.toISOString()])
@@ -111,7 +158,7 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
 
   it('reports snapshot size in bytes', () => {
     createDatabase(DB_FILE, ['alpha'])
-    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, new Date('2026-01-01T00:00:00.000Z'))
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
 
     const [info] = listSnapshots(BACKUP_DIR, 'wimm.db')
     expect(info.path).toBe(snapshotPath)
@@ -127,7 +174,7 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     raw.pragma('journal_mode = WAL')
     raw.close()
 
-    expect(() => snapshotDatabase(DB_FILE, BACKUP_DIR, new Date('2026-01-01T00:00:00.000Z'))).toThrow(/WAL/)
+    expect(() => snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))).toThrow(/WAL/)
     expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toHaveLength(0)
 
     // Restore the fixture to DELETE mode so afterEach cleanup of a plain
@@ -146,21 +193,20 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     // PRAGMA integrity_check walk cannot succeed. This proves the
     // integrity check genuinely runs against the file that was written,
     // rather than trusting the copy blindly.
-    const header = readFileSync(DB_FILE).subarray(0, 100)
-    writeFileSync(DB_FILE, header)
+    truncateToHeaderOnly(DB_FILE)
 
-    expect(() => snapshotDatabase(DB_FILE, BACKUP_DIR, new Date('2026-01-01T00:00:00.000Z'))).toThrow()
+    expect(() => snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))).toThrow()
     expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toHaveLength(0)
   })
 
   it('restores the target and leaves the pre-restore state recoverable as its own snapshot', () => {
     createDatabase(DB_FILE, ['alpha'])
-    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, new Date('2026-01-01T00:00:00.000Z'))
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
 
     insertRow(DB_FILE, 'beta')
     expect(readRows(DB_FILE)).toEqual(['alpha', 'beta'])
 
-    restoreSnapshot(snapshotPath, DB_FILE, new Date('2026-01-01T00:00:10.000Z'))
+    restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:10.000Z'))
 
     expect(readRows(DB_FILE)).toEqual(['alpha'])
 
@@ -172,14 +218,14 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
 
   it('does not attempt to snapshot a target that does not exist yet before restoring into it', () => {
     createDatabase(DB_FILE, ['alpha'])
-    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, new Date('2026-01-01T00:00:00.000Z'))
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
     const freshTarget = join(ROOT, 'fresh.db')
 
     expect(existsSync(freshTarget)).toBe(false)
-    restoreSnapshot(snapshotPath, freshTarget, new Date('2026-01-01T00:00:10.000Z'))
+    restoreSnapshot(snapshotPath, freshTarget, 'fresh', new Date('2026-01-01T00:00:10.000Z'))
 
     expect(readRows(freshTarget)).toEqual(['alpha'])
-    expect(listSnapshots(BACKUP_DIR, 'fresh.db')).toHaveLength(0)
+    expect(listSnapshots(BACKUP_DIR, 'fresh')).toHaveLength(0)
   })
 
   it('throws when restoring from a file that is not a valid SQLite database, leaving the target untouched', () => {
@@ -187,8 +233,63 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     const bogusPath = join(ROOT, 'not-a-database.db')
     writeFileSync(bogusPath, 'this is definitely not a sqlite file')
 
-    expect(() => restoreSnapshot(bogusPath, DB_FILE, new Date('2026-01-01T00:00:00.000Z'))).toThrow()
+    expect(() => restoreSnapshot(bogusPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))).toThrow()
     expect(readRows(DB_FILE)).toEqual(['alpha'])
     expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toHaveLength(0)
+  })
+
+  it('leaves the target byte-identical to before when the copy into the temp file is interrupted', () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+    insertRow(DB_FILE, 'beta')
+    const before = readFileSync(DB_FILE)
+
+    // Simulate an interrupted restore write: let the real copyFileSync run
+    // (so the target is untouched either way), but truncate the copy that
+    // lands in the *temp* file specifically -- the one restoreSnapshot must
+    // validate before it is ever allowed to replace the target.
+    const realCopyFileSync = fs.copyFileSync
+    const spy = jest
+      .spyOn(fs, 'copyFileSync')
+      .mockImplementation((src: fs.PathLike, dest: fs.PathLike, mode?: number) => {
+        realCopyFileSync(src, dest, mode)
+        const destPath = String(dest)
+        if (destPath.includes('.restoring-')) {
+          truncateToHeaderOnly(destPath)
+        }
+      })
+
+    try {
+      expect(() => restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:20.000Z'))).toThrow()
+    } finally {
+      spy.mockRestore()
+    }
+
+    const after = readFileSync(DB_FILE)
+    expect(after.equals(before)).toBe(true)
+    expect(readRows(DB_FILE)).toEqual(['alpha', 'beta'])
+
+    // No leftover temp file from the interrupted write.
+    const leftovers = readdirSync(ROOT).filter((name) => name.includes('.restoring-'))
+    expect(leftovers).toEqual([])
+  })
+
+  it('restores over a corrupt target, preserving it as an unvalidated copy that listSnapshots never returns', () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const goodSnapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+
+    // Corrupt the live target the same way the "fails integrity_check" test
+    // above does: this is the exact scenario a restore exists for.
+    truncateToHeaderOnly(DB_FILE)
+
+    restoreSnapshot(goodSnapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:20.000Z'))
+
+    expect(readRows(DB_FILE)).toEqual(['alpha'])
+
+    const listed = listSnapshots(BACKUP_DIR, 'wimm.db')
+    expect(listed.map((s) => s.path)).toEqual([goodSnapshotPath])
+
+    const preserved = readdirSync(BACKUP_DIR).filter((name) => name.includes('unvalidated'))
+    expect(preserved).toHaveLength(1)
   })
 })
