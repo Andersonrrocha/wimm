@@ -34,7 +34,7 @@ import {
   dateFnsLocaleForLang,
   formatMediumDate,
   parseFlexibleDate,
-  toIsoDate,
+  toIsoDateAtNoonUtc,
 } from '../../lib/dates'
 import { colors, fontSize, radius, spacing, tracking } from '../../theme/tokens'
 
@@ -143,13 +143,13 @@ export function RecurrenceFormModal({
         amount: amt,
         description: description.trim(),
         frequency,
-        startDate: toIsoDate(startDate),
+        startDate: toIsoDateAtNoonUtc(startDate),
         endMode,
         sourceId: sourceId || null,
         categoryId: categoryId || null,
       }
       if (endMode === 'UNTIL_DATE') {
-        payload.endDate = toIsoDate(endDate)
+        payload.endDate = toIsoDateAtNoonUtc(endDate)
       }
       if (isEdit && initial) {
         await apiClient.patch(`/recurrences/${initial.id}`, payload)

@@ -22,6 +22,21 @@ export function toIsoDate(date: Date): string {
   return format(date, ISO_DATE)
 }
 
+/**
+ * Serialize a calendar date for the API as **noon UTC**, not midnight.
+ *
+ * A bare `yyyy-MM-dd` is parsed by the API as midnight UTC. Every date in this
+ * app is rendered back with `format()`, which is local time — so at any negative
+ * UTC offset (Brazil is UTC-3) midnight UTC lands on the previous local day and
+ * the user sees the date they picked shifted one day earlier.
+ *
+ * Noon UTC keeps the calendar day stable for every offset from UTC-11 to UTC+12.
+ * The desktop client already sends dates this way; this keeps the two in step.
+ */
+export function toIsoDateAtNoonUtc(date: Date): string {
+  return `${format(date, ISO_DATE)}T12:00:00.000Z`
+}
+
 export function fromIsoDate(value: string): Date | null {
   if (!value) return null
   const parsed = parse(value, ISO_DATE, new Date())
