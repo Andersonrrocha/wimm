@@ -23,7 +23,10 @@ export function deriveSqliteSchema(source: string): string {
   let out = source
   const before = out
 
-  out = out.replace(/provider = "postgresql"/, 'provider = "sqlite"')
+  out = out.replace(
+    /(datasource\s+\w+\s*\{[^}]*?provider = )"postgresql"/,
+    '$1"sqlite"',
+  )
   if (out === before) throw new Error('datasource provider "postgresql" not found')
 
   const afterProvider = out
@@ -41,4 +44,6 @@ function main(): void {
   console.log(`Wrote ${TARGET}`)
 }
 
-main()
+if (require.main === module) {
+  main()
+}
