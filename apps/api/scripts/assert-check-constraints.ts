@@ -12,27 +12,12 @@
 import 'dotenv/config'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { PrismaClient } from '../src/generated/prisma/client'
-
-const EXPECTED = [
-  'CategorizationRule_matchType_check',
-  'Category_type_check',
-  'ImportBatch_format_check',
-  'ImportBatch_status_check',
-  'Recurrence_endMode_check',
-  'Recurrence_frequency_check',
-  'Recurrence_kind_check',
-  'Source_type_check',
-  'SystemCategorizationRule_kind_check',
-  'Transaction_kind_check',
-  'User_aiCategorizationMode_check',
-  'User_chartDateMode_check',
-  'User_subscriptionPlan_check',
-  'User_subscriptionStatus_check',
-] as const
+import { checkConstraintNames } from '../src/prisma/check-constraints'
 
 type ConstraintRow = { conname: string; convalidated: boolean }
 
 async function main(): Promise<number> {
+  const EXPECTED = checkConstraintNames()
   const connectionString = process.env.DATABASE_URL
   if (!connectionString) {
     console.error('DATABASE_URL is not set')
