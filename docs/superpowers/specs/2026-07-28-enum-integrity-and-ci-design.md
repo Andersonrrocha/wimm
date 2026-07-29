@@ -47,9 +47,27 @@ Separately, an audit for this spec found that the repository has **no test CI**.
 | Site | Corrupt input becomes | Consequence |
 |---|---|---|
 | `future-commitments.util.ts:107` | the `else` branch | expense counted as **income** — money in the wrong column |
-| `recurrence-dates.ts:49` | `default:` → `addMonthsUtc(d, 1)` | unknown frequency silently treated as **MONTHLY** — wrong forecast dates |
+| `recurrence-dates.ts:49` | `default:` → `addMonthsUtc(d, 1)` | unknown frequency silently treated as **MONTHLY** |
 
-Both sit behind one function, reached from one caller, fed by one query. A single parse point closes both.
+**Correction made while writing the implementation plan.** An earlier draft of this
+section claimed both sites "sit behind one function, reached from one caller, fed by
+one query." That is wrong, and the error understated the risk.
+
+`nextOccurrence` has **two** callers:
+
+- `future-commitments.util.ts:114` — the forecast. Read-only; a corrupt frequency
+  produces wrong numbers on screen.
+- `recurrences.service.ts:284` — **materialization**. `nextOccurrence` advances the
+  `cursor` that becomes `occurredAt` on rows written by
+  `prisma.transaction.create`. A corrupt frequency therefore **persists real
+  transactions on the wrong dates**.
+
+The write path is the more dangerous of the two, and it is fed by two load sites —
+`findRowForUser` (single recurrence) and the `findMany` over active recurrences
+(`recurrences.service.ts:181-184`), both funnelling into `materializeOne`.
+
+So D1 covers **two** boundaries, not one: the forecast load in `reports.service.ts`,
+and the materialization load in `materializeForUser`.
 
 This partially reverses Phase 0's widening, deliberately. There, widening was the minimal change that unblocked the schema migration, and `parseEnum` did not yet exist when the constraint was written. It exists now, and parse-at-the-edge with a narrow interior is the shape that survives losing the database guarantee.
 
