@@ -212,6 +212,30 @@ describe('ReportsService', () => {
         cardBySource: [],
       })
     })
+
+    it('rejects a recurrence row with a corrupt frequency instead of silently miscounting it', async () => {
+      // Everything but `frequency` is valid; this isolates the parse boundary
+      // in futureCommitmentsForUser from any other field.
+      prismaMock.recurrence.findMany.mockResolvedValue([
+        {
+          id: 'r1',
+          kind: TransactionKind.EXPENSE,
+          amountCents: 5000,
+          frequency: 'FORTNIGHTLY',
+          startDate: new Date(Date.UTC(2026, 0, 15, 12, 0, 0)),
+          endMode: 'INDEFINITE',
+          endDate: null,
+          sourceId: null,
+        },
+      ])
+
+      await expect(
+        service.futureCommitmentsForUser('user-1', { year: 2026, month: 5 }),
+      ).rejects.toThrow(RangeError)
+      await expect(
+        service.futureCommitmentsForUser('user-1', { year: 2026, month: 5 }),
+      ).rejects.toThrow(/frequency/)
+    })
   })
 
   describe('monthlyForUser', () => {

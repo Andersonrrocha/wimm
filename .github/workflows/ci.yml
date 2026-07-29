@@ -44,21 +44,25 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # The API typechecks against @wimm/shared's built dist, not its source.
-      - name: Build shared package
-        run: pnpm --filter @wimm/shared run build
+      # The API typechecks against the generated Prisma client and against
+      # @wimm/shared's built dist, not its source. `pnpm build` (turbo run
+      # build) produces both: apps/api's own build script starts with
+      # `prisma generate`, and turbo's `^build` dependency builds
+      # @wimm/shared first. Lint must run after Build, not before it.
+      - name: Build
+        run: pnpm build
 
       - name: Lint
         run: pnpm lint
-
-      - name: Build
-        run: pnpm build
 
       - name: Test
         run: pnpm test
 
       - name: Apply migrations
         run: pnpm --filter @wimm/api exec prisma migrate deploy
+
+      - name: Check schema matches migrations
+        run: pnpm --filter @wimm/api exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code
 
       - name: Assert CHECK constraints
         run: pnpm --filter @wimm/api run assert:constraints

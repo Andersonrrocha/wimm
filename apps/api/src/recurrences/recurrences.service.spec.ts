@@ -115,5 +115,23 @@ describe('RecurrencesService', () => {
         }),
       })
     })
+
+    it('rejects a corrupt kind on the active-recurrence load before writing anything', async () => {
+      // No recurrenceId, so this exercises the findMany({ active: true })
+      // branch that batch materialization (e.g. a cron) runs through.
+      prismaMock.recurrence.findMany.mockResolvedValue([
+        { ...baseRow, kind: 'GARBAGE' },
+      ])
+      prismaMock.transaction.findFirst.mockResolvedValue(null)
+      prismaMock.transaction.create.mockResolvedValue({})
+
+      await expect(
+        service.materializeForUser('user-1', { until: '2024-01-10' }),
+      ).rejects.toThrow(RangeError)
+
+      // The valuable assertion: parsing happens before the per-recurrence
+      // loop, so a corrupt row must not leave a partial write behind.
+      expect(prismaMock.transaction.create).not.toHaveBeenCalled()
+    })
   })
 })
