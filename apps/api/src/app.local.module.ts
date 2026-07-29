@@ -30,7 +30,8 @@
  * constructor without `DATABASE_URL` -- something the local build never has.
  * So this module re-creates the *same global registration*, pointed at
  * `LocalPrismaService` instead: it declares `PrismaService` as one of its own
- * providers (aliased, see the cast below) and marks the returned
+ * providers (aliased -- see the provider comment below, which explains why
+ * that alias is invisible to the type checker) and marks the returned
  * `DynamicModule` `global: true`. That flag is not cosmetic -- Nest does not
  * let a module's own providers reach modules it imports by default (only the
  * reverse: an importer can see what an imported module exports). Every
@@ -131,6 +132,14 @@ export class AppLocalModule {
           // phase 1 verified the SQLite client drives the same operations. Prisma also
           // refuses to pair a sqlite adapter with a postgres-generated client, so a
           // second client is mandatory and this is the single seam where they meet.
+          //
+          // Note what this line does NOT do: `useExisting` is typed `any` in Nest,
+          // so the compiler checks nothing here. Substituting a class that does not
+          // implement what the services call would produce no error -- not even a
+          // warning -- and would fail only at runtime, deep inside a feature service.
+          // Nothing but `app.local.module.spec.ts` stands behind this substitution;
+          // it exercises a real read and a real write through `SourcesService` for
+          // exactly that reason. Treat those tests as load-bearing, not incidental.
           useExisting: LocalPrismaService,
         },
       ],
