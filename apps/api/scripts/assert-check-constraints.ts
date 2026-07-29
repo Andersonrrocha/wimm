@@ -32,7 +32,7 @@ const EXPECTED = [
 
 type ConstraintRow = { conname: string; convalidated: boolean }
 
-async function main(): Promise<void> {
+async function main(): Promise<number> {
   const connectionString = process.env.DATABASE_URL
   if (!connectionString) {
     console.error('DATABASE_URL is not set')
@@ -70,16 +70,19 @@ async function main(): Promise<void> {
         console.error(`Present but NOT VALIDATED (${unvalidated.length}):`)
         for (const name of unvalidated) console.error(`  - ${name}`)
       }
-      process.exit(1)
+      return 1
     }
 
     console.log(`All ${EXPECTED.length} CHECK constraints present and validated.`)
+    return 0
   } finally {
     await prisma.$disconnect()
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(error)
-  process.exit(1)
-})
+main()
+  .then((code) => process.exit(code))
+  .catch((error: unknown) => {
+    console.error(error)
+    process.exit(1)
+  })
