@@ -15,7 +15,8 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "seed:personal": "tsx scripts/seed-personal-rules.ts",
     "assert:constraints": "tsx scripts/assert-check-constraints.ts",
-    "gen:sqlite-schema": "tsx scripts/generate-sqlite-schema.ts"
+    "gen:sqlite-schema": "tsx scripts/generate-sqlite-schema.ts",
+    "gen:sqlite-baseline": "mkdir -p prisma/migrations-sqlite/0000_baseline && prisma migrate diff --from-empty --to-schema prisma/schema.sqlite.prisma --script > prisma/migrations-sqlite/0000_baseline/migration.sql && tsx scripts/inject-check-constraints.ts prisma/migrations-sqlite/0000_baseline/migration.sql"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
