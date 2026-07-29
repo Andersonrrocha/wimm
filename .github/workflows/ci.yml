@@ -44,6 +44,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # assert:parity is pure file/text comparison plus one `prisma migrate
+      # diff --from-empty` call: it reads the committed schema and baseline
+      # files, never a generated client, and opens no database connection.
+      # Its only real prerequisite is `pnpm install` having put the prisma
+      # CLI on PATH — not Build — so it runs here, where a drifted schema
+      # fails in seconds instead of after a full build+lint+test cycle.
+      - name: Check schema parity
+        run: pnpm --filter @wimm/api run assert:parity
+
       # The API typechecks against the generated Prisma client and against
       # @wimm/shared's built dist, not its source. `pnpm build` (turbo run
       # build) produces both: apps/api's own build script starts with
