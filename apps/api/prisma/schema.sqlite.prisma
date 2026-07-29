@@ -1,0 +1,235 @@
+// GENERATED FILE — do not edit.
+// Produced by scripts/generate-sqlite-schema.ts from schema.prisma.
+// Run: pnpm --filter @wimm/api run gen:sqlite-schema
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma-sqlite"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id                   String                @id @default(uuid())
+  email                String                @unique
+  username             String                @unique
+  passwordHash         String
+  /** UI language: `en` | `pt` */
+  preferredLocale      String                @default("pt")
+  /** Drives which date a credit card expense bucks into in reports. */
+  chartDateMode        String                @default("BILLING_CYCLE")
+  /** Set when the user finishes the onboarding flow. NULL = show onboarding. */
+  onboardedAt          DateTime?
+  /** Paywall scaffolding (no enforcement yet — defaults make every user pass). */
+  subscriptionStatus   String                @default("ACTIVE")
+  subscriptionPlan     String?
+  trialEndsAt          DateTime?
+  /** 1..200 for lifetime Founder slot; NULL otherwise. Granted via CLI script. */
+  founderNumber        Int?                  @unique
+  /** AI categorization preference; default OFF — opt-in, never automatic. */
+  aiCategorizationMode String                @default("OFF")
+  /**
+   * Encrypted Anthropic API key for BYOK mode (AES-256-GCM, base64).
+   * NULL when SERVER or OFF; never returned by the API.
+   */
+  aiApiKeyEncrypted    String?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  refreshTokens        RefreshToken[]
+  sources              Source[]
+  categories           Category[]
+  transactions         Transaction[]
+  importBatches        ImportBatch[]
+  recurrences          Recurrence[]
+  categorizationRules  CategorizationRule[]
+  installmentPlans     InstallmentPlan[]
+}
+
+model Source {
+  id             String          @id @default(uuid())
+  userId         String
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  type           String
+  /** Statement closing day (1–31). Required when type is CREDIT_CARD; must be null otherwise. */
+  closingDay     Int?
+  /** Payment due day (1–31). Required when type is CREDIT_CARD; must be null otherwise. */
+  dueDay         Int?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  transactions   Transaction[]
+  importBatches      ImportBatch[]
+  recurrences        Recurrence[]
+  installmentPlans   InstallmentPlan[]
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model Category {
+  id                   String               @id @default(uuid())
+  userId               String
+  user                 User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                 String
+  type                 String
+  categoryKey          String?
+  parentId             String?
+  parent               Category?            @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children             Category[]           @relation("CategoryHierarchy")
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  transactions         Transaction[]
+  recurrences          Recurrence[]
+  categorizationRules  CategorizationRule[]
+
+  @@unique([userId, name])
+  @@unique([userId, categoryKey])
+  @@index([userId])
+  @@index([userId, parentId])
+}
+
+model SystemCategorizationRule {
+  id          String            @id @default(uuid())
+  pattern     String
+  categoryKey String
+  kind        String
+  priority    Int
+  ruleGroup   String
+  active      Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@unique([pattern])
+  @@index([active, priority, pattern])
+}
+
+model CategorizationRule {
+  id          String                   @id @default(uuid())
+  userId      String
+  user        User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  priority    Int
+  matchType   String
+  pattern     String
+  categoryId  String
+  category    Category                 @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  active      Boolean                  @default(true)
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+
+  @@index([userId, priority])
+}
+
+model ImportBatch {
+  id           String             @id @default(uuid())
+  userId       String
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceId     String
+  source       Source             @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  fileName     String
+  format       String
+  status       String             @default("COMPLETED")
+  createdAt    DateTime           @default(now())
+  transactions Transaction[]
+  installmentPlans InstallmentPlan[]
+
+  @@index([userId])
+  @@index([sourceId])
+}
+
+/** Groups credit card installment legs for reconciliation (not the recurrence engine). */
+model InstallmentPlan {
+  id                 String        @id @default(uuid())
+  userId             String
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceId           String
+  source             Source        @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  originatingBatchId String?
+  originatingBatch   ImportBatch?  @relation(fields: [originatingBatchId], references: [id], onDelete: SetNull)
+  installmentTotal   Int
+  amountEachCents    Int
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  transactions       Transaction[]
+
+  @@index([userId])
+  @@index([sourceId])
+}
+
+model Recurrence {
+  id           String               @id @default(uuid())
+  userId       String
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind         String
+  amountCents  Int
+  description  String
+  sourceId     String?
+  source       Source?              @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  categoryId   String?
+  category     Category?            @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  frequency    String
+  startDate    DateTime
+  endMode      String
+  endDate      DateTime?
+  active       Boolean              @default(true)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  transactions Transaction[]
+
+  @@index([userId])
+}
+
+model Transaction {
+  id             String            @id @default(uuid())
+  userId         String
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceId       String?
+  source         Source?           @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  categoryId     String?
+  category       Category?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  importBatchId  String?
+  importBatch    ImportBatch?      @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  installmentPlanId String?
+  installmentPlan   InstallmentPlan? @relation(fields: [installmentPlanId], references: [id], onDelete: SetNull)
+  /** True when this row is a future obligation generated from an installment purchase (not yet confirmed from a statement). */
+  isProjected    Boolean           @default(false)
+  /** True when the row was created or reconciled from a statement import (false for projected-only rows). */
+  isConfirmedFromImport Boolean     @default(false)
+  recurrenceId   String?
+  recurrence     Recurrence?       @relation(fields: [recurrenceId], references: [id], onDelete: SetNull)
+  kind           String
+  amountCents    Int
+  description    String
+  occurredAt     DateTime
+  fingerprint    String?
+  /** UTC calendar month (1–12) of the card billing cycle close; set only for credit card sources. */
+  billingCycleMonth Int?
+  /** UTC calendar year of the card billing cycle close; set only for credit card sources. */
+  billingCycleYear  Int?
+  /** Payment due date (UTC); set only for credit card sources. */
+  expectedDueDate   DateTime?
+  /** Installment index from statement (e.g. 2 of 12); credit card imports only. */
+  installmentCurrent Int?
+  /** Total installments from statement; credit card imports only. */
+  installmentTotal   Int?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@index([userId, occurredAt])
+  @@index([userId])
+  @@index([userId, fingerprint])
+  @@index([installmentPlanId])
+  @@index([recurrenceId, occurredAt])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}

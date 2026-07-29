@@ -14,7 +14,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "seed:personal": "tsx scripts/seed-personal-rules.ts",
-    "assert:constraints": "tsx scripts/assert-check-constraints.ts"
+    "assert:constraints": "tsx scripts/assert-check-constraints.ts",
+    "gen:sqlite-schema": "tsx scripts/generate-sqlite-schema.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
