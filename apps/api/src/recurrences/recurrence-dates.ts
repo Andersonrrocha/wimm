@@ -1,3 +1,5 @@
+import type { RecurrenceFrequency } from '@wimm/shared'
+
 /** Stable day key for idempotent recurrence transaction fingerprints */
 export function dateKeyUtc(d: Date): string {
   const y = d.getUTCFullYear()
@@ -33,12 +35,14 @@ export function addYearsUtc(d: Date, years: number): Date {
 }
 
 /**
- * `frequency` is `string`, not the narrower `RecurrenceFrequency`, because
- * callers now pass values read straight off a TEXT+CHECK `Recurrence.frequency`
- * column. The `switch` below has a `default` fallback, so there is no
- * exhaustiveness check to lose by widening.
+ * Advance a date by one recurrence step.
+ *
+ * The parameter is the narrow `RecurrenceFrequency` union, and the switch is
+ * exhaustive with no `default:`. Adding a frequency to the union without
+ * handling it here is a compile error. The runtime throw covers values that
+ * reach us from a database with no CHECK constraint to reject them.
  */
-export function nextOccurrence(d: Date, frequency: string): Date {
+export function nextOccurrence(d: Date, frequency: RecurrenceFrequency): Date {
   switch (frequency) {
     case 'WEEKLY':
       return addWeeksUtc(d, 1)
@@ -46,9 +50,9 @@ export function nextOccurrence(d: Date, frequency: string): Date {
       return addMonthsUtc(d, 1)
     case 'YEARLY':
       return addYearsUtc(d, 1)
-    default:
-      return addMonthsUtc(d, 1)
   }
+  const unreachable: never = frequency
+  throw new Error(`Unhandled recurrence frequency: ${String(unreachable)}`)
 }
 
 /** Inclusive upper bound for materialization horizon (end of UTC day). */
