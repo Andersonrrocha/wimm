@@ -68,6 +68,13 @@
  *   what it does and does not catch. Callers closing their own connection to
  *   `targetFile` before calling `restoreSnapshot` remains a hard
  *   requirement this check narrows the risk of, not one it removes.
+ *
+ * - `assertValidDatabaseFile`'s logic is also reachable from outside this
+ *   module through `checkDatabaseHealth`, which is the exported, non-
+ *   throwing counterpart a UI needs: Phase 4c's recovery flow has to
+ *   *display* a problem, not crash on it. `checkDatabaseHealth` calls the
+ *   same private assert and turns a throw into a result, rather than
+ *   duplicating the open-and-integrity-check logic a second time.
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'fs'
 import { randomBytes } from 'crypto'
@@ -206,6 +213,33 @@ function assertValidDatabaseFile(file: string, context: string): void {
     }
   } finally {
     db.close()
+  }
+}
+
+export interface DatabaseHealthCheck {
+  /** Whether `file` opened as a SQLite database and passed `PRAGMA integrity_check`. */
+  healthy: boolean
+  /** `null` when `healthy` is true; otherwise a message describing what is wrong, safe to show to the user. */
+  problem: string | null
+}
+
+/**
+ * Reports whether `file` is a healthy, readable SQLite database -- the entry
+ * point for the recovery flow (Phase 4c will build a UI on top of this):
+ * "is my database OK?".
+ *
+ * This is the exported, non-throwing counterpart of `assertValidDatabaseFile`.
+ * A UI needs to *display* a problem, not crash on it, so this never throws;
+ * it calls the same private assert used everywhere else in this module for
+ * that exact check and converts a throw into a result, rather than
+ * duplicating the open-and-integrity-check logic a second time.
+ */
+export function checkDatabaseHealth(file: string): DatabaseHealthCheck {
+  try {
+    assertValidDatabaseFile(file, 'Database health check')
+    return { healthy: true, problem: null }
+  } catch (err) {
+    return { healthy: false, problem: (err as Error).message }
   }
 }
 

@@ -6,7 +6,7 @@ import { basename, join } from 'path'
 // import typechecks but is `undefined` at runtime for this CommonJS module.
 import Database = require('better-sqlite3')
 import { openLocalDatabase } from './open-local-database'
-import { listSnapshots, restoreSnapshot, snapshotDatabase } from './snapshot'
+import { checkDatabaseHealth, listSnapshots, restoreSnapshot, snapshotDatabase } from './snapshot'
 
 const ROOT = '/tmp/wimm-snapshot-spec'
 const DB_FILE = join(ROOT, 'wimm.db')
@@ -343,5 +343,33 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     }
 
     expect(readRows(DB_FILE)).toEqual(['alpha'])
+  })
+
+  // Item 3: assertValidDatabaseFile's logic must be reachable from outside
+  // this module, in a shape a UI can display instead of crashing on.
+  it('checkDatabaseHealth reports a healthy database without throwing', () => {
+    createDatabase(DB_FILE, ['alpha'])
+
+    expect(checkDatabaseHealth(DB_FILE)).toEqual({ healthy: true, problem: null })
+  })
+
+  it('checkDatabaseHealth reports a corrupt database as unhealthy, describing the problem, without throwing', () => {
+    createDatabase(DB_FILE, ['alpha'])
+    truncateToHeaderOnly(DB_FILE)
+
+    const result = checkDatabaseHealth(DB_FILE)
+
+    expect(result.healthy).toBe(false)
+    expect(result.problem).toMatch(/integrity_check/)
+  })
+
+  it('checkDatabaseHealth reports a non-database file as unhealthy, describing the problem, without throwing', () => {
+    const bogusPath = join(ROOT, 'not-a-database-health-check.db')
+    writeFileSync(bogusPath, 'this is definitely not a sqlite file')
+
+    const result = checkDatabaseHealth(bogusPath)
+
+    expect(result.healthy).toBe(false)
+    expect(result.problem).toMatch(/is not a database/)
   })
 })
