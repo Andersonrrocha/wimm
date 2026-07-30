@@ -157,7 +157,9 @@
  * overlays only those, iterating until the packaged tree's own dependency
  * graph is self-consistent (correcting one wrong nested package can reveal
  * that *its* own dependency is also wrong or missing -- see that function's
- * doc comment for a concrete example).
+ * doc comment for a concrete example). `verifyDependencyGraph`, run as the
+ * very last step of this hook, is what proves the result is actually
+ * correct rather than merely "didn't throw during the copy."
  */
 const fs = require('fs')
 const os = require('os')
@@ -175,6 +177,7 @@ const {
   resolveDependencyDir,
   rangeIsSatisfied,
   findDependencyGraphProblems,
+  verifyDependencyGraph,
 } = require('./verify-dependency-graph.cjs')
 
 function archName(arch) {
@@ -610,6 +613,26 @@ module.exports = async function afterPack(context) {
   // structural check below would otherwise catch).
   restorePlainDependencyOverrides(extractTo)
 
+  // Mutation-testing hook -- never set this outside proving
+  // verifyDependencyGraph (and this restoration mechanism) are trustworthy.
+  // Applied here, directly against the real extracted tree, immediately
+  // before the real repack below -- see the Task report's "Fix round 4" for
+  // captured runs with each of these set.
+  const mutationTest = process.env['WIMM_AFTER_PACK_MUTATION_TEST']
+  if (mutationTest === 'delete-package') {
+    const target = path.join(extractTo, 'node_modules', 'yocto-queue')
+    console.log(`[after-pack] MUTATION TEST (delete-package): removing ${target}`)
+    fs.rmSync(target, { recursive: true, force: true })
+  } else if (mutationTest === 'bad-version') {
+    const target = path.join(extractTo, 'node_modules', 'p-locate', 'node_modules', 'p-limit', 'package.json')
+    console.log(`[after-pack] MUTATION TEST (bad-version): corrupting the version in ${target}`)
+    const pkg = JSON.parse(fs.readFileSync(target, 'utf8'))
+    pkg.version = '9.9.9'
+    fs.writeFileSync(target, `${JSON.stringify(pkg, null, 2)}\n`)
+  } else if (mutationTest) {
+    throw new Error(`[after-pack] unknown WIMM_AFTER_PACK_MUTATION_TEST value: ${JSON.stringify(mutationTest)}`)
+  }
+
   // Strip node-gyp build byproducts and other-platform prebuilds from every
   // better-sqlite3 copy this package ships -- see pruneBetterSqlite3BuildArtifacts's
   // and prunePrebuilds's doc comments. This covers both the nested copy just
@@ -702,6 +725,20 @@ module.exports = async function afterPack(context) {
         `${JSON.stringify(EXPECTED_EXPRESS_PATH_TO_REGEXP_VERSION)}.`,
     )
   }
+
+  // Final, general structural check -- see verify-dependency-graph.cjs's own
+  // doc comment for exactly what this validates and what it deliberately
+  // does not. Runs last, against the real repacked archive, after every
+  // targeted and general overlay above: this is what catches anything none
+  // of those specifically knew to fix, and -- unlike the two checks above --
+  // it must throw and fail this whole `package` script on any real problem,
+  // not just log one. A packaging step that notices a broken dependency
+  // graph and ships it anyway is worse than not checking at all.
+  const graphSummary = verifyDependencyGraph(asarPath)
+  console.log(
+    `[after-pack] verifyDependencyGraph: OK -- ${graphSummary.packagesChecked} package(s), ` +
+      `${graphSummary.edgesChecked} declared dependency edge(s), all resolved and in range.`,
+  )
 
   console.log('[after-pack] done')
 }
