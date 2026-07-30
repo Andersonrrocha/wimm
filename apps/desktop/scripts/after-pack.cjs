@@ -11,48 +11,66 @@
  * app ends up with `node_modules/@prisma/adapter-better-sqlite3/node_modules/better-sqlite3`
  * containing `13.0.1`'s N-API prebuilds (`prebuilds/darwin-arm64.node`, ...)
  * instead of the pinned `12.11.1` this repo's own `scripts/select-native-abi.ts`
- * rebuilds per runtime. Confirmed empirically while proving this task: the
- * packaged app's `package.json` at that nested path reports `"version":
- * "13.0.1"`, while `pnpm list`'s own JSON output (which `electron-builder`
- * consumes) correctly reports `12.11.1` for the same tree position -- the
- * substitution happens in `electron-builder`'s hoisting step, not in pnpm's
- * own dependency resolution.
+ * rebuilds per runtime. Confirmed empirically: the packaged app's
+ * `package.json` at that nested path reported `"version": "13.0.1"`, while
+ * `pnpm list`'s own JSON output (which `electron-builder` consumes) correctly
+ * reports `12.11.1` for the same tree position -- the substitution happens in
+ * `electron-builder`'s hoisting step, not in pnpm's own dependency resolution.
  *
- * That substitution is not merely "the wrong version number": driving the
- * real `LocalPrismaService` -> `PrismaBetterSqlite3` -> `better-sqlite3`
- * path through the substituted `13.0.1` copy inside the packaged app hung
- * indefinitely (observed directly with `sample` -- the main thread sat
- * inside V8/Node's module-execution machinery, never returning, never
- * crashing) rather than working or failing loudly. A raw, standalone
- * `require()` + round-trip of that same substituted binary succeeds in
- * isolation (it is a legitimate, ABI-correct N-API build) -- the hang is
- * specific to how `@prisma/adapter-better-sqlite3`'s own code drives it,
- * not to the binary being unloadable. Silently shipping a dependency
- * version electron-builder never actually rebuilt or intended to select is
- * exactly the "may simply be absent from the bundle" class of landmine this
- * task exists to catch, just manifesting as a hang instead of a missing
- * file.
+ * **Why patching `app.asar.unpacked` alone is not enough.** A first version
+ * of this hook only overwrote the real files under `app.asar.unpacked` (the
+ * companion directory `asarUnpack` redirects native-module reads to) and left
+ * `app.asar` itself untouched. That is insufficient: `app.asar`'s own header
+ * -- a JSON index baked into the front of the archive at pack time -- still
+ * described the *original* (wrong, 13.0.1) file layout for that nested path,
+ * including which specific files are marked `unpacked: true`. Electron's
+ * asar-aware `fs` integration decides whether a given virtual path
+ * (`.../app.asar/node_modules/.../better-sqlite3/...`) redirects to the real
+ * unpacked companion by consulting *that header*, not by checking the real
+ * filesystem -- so a file that genuinely exists on disk in the corrected
+ * `app.asar.unpacked` tree, but was never listed as a header entry at all
+ * (13.0.1 doesn't have `build/Release/better_sqlite3.node`; it uses
+ * `prebuilds/<platform>.node`), is invisible to any code resolving it through
+ * the virtual `app.asar` path. This is exactly what broke at runtime: the
+ * `bindings` package (which 12.11.1 depends on to locate its own native
+ * binary -- 13.x's true-N-API build needs no such lookup, so the original,
+ * wrong collection never pulled `bindings` in as a dependency at all) probed
+ * `.../build/Release/better_sqlite3.node` among its candidates and got a
+ * clean "not found" for a file that was, in reality, sitting right there on
+ * disk -- because the header had no entry for that path. That failure is
+ * caught by `apps/desktop/src/main/index.ts`'s own `bootLocalApi` try/catch
+ * (it is not silently swallowed), but the catch block's only recourse today
+ * is `dialog.showErrorBox`, a blocking native modal -- which is what actually
+ * produced the appearance of an indefinite hang with no window and no
+ * further output in a non-interactive launch. See `## Fix round 1` in this
+ * task's report for the full instrumentation trail that pinned this down.
  *
- * **The fix.** After `electron-builder` finishes collecting and unpacking
- * node_modules (this hook runs after packing, before signing -- see
- * `afterSign` in this same directory, which must run *after* this so the
- * code signature seals the corrected files, not the substituted ones),
- * overwrite the packaged app's copy of that one nested directory with this
- * checkout's own, known-good copy: the exact one `scripts/select-native-abi.ts
- * electron` already selected and `apps/desktop/scripts/verify-native-runtime.ts`
- * already proved works end-to-end through `LocalPrismaService`. This is a
- * whole-directory copy (JS wrapper + native binary together), not just the
- * `.node` file, because the wrapper code in `lib/*.js` is itself
- * version-specific and must match the binary it loads.
+ * **The fix.** Don't patch the unpacked companion in isolation -- extract the
+ * *whole* `app.asar` (at this point, immediately after `electron-builder`'s
+ * own packing, its header and its unpacked companion are still mutually
+ * consistent, just wrong for this one nested path), overlay the corrected
+ * `better-sqlite3` copy plus its `bindings`/`file-uri-to-path` runtime
+ * dependencies into the extracted tree, and **repack `app.asar` from
+ * scratch** so a fresh, correct header is generated for every path -- not
+ * just the ones this hook touches. The repack preserves every directory
+ * `electron-builder` had already chosen to unpack (discovered by reading the
+ * *original* `app.asar.unpacked` before this hook mutates anything, so this
+ * does not depend on a hardcoded list that could drift as other native
+ * dependencies come and go) and adds this hook's three corrected directories
+ * to that set explicitly, so they end up unpacked too even on a build where
+ * they started out fully packed (as `bindings`/`file-uri-to-path` did before
+ * this fix).
  *
- * Refuses loudly (throws, failing the whole `package` script) if this
- * checkout's own copy is not `12.11.1` or has no `.node` binary at all --
- * silently shipping *something* here would defeat the entire point of this
- * hook. This is the same "verify, then refuse" contract
+ * Refuses loudly (throws, failing the whole `package` script) if the source
+ * copy isn't `12.11.1`, has no `.node` binary, or the repack's own result
+ * doesn't verify -- silently shipping *something* here would defeat the
+ * entire point of this hook. Same verify-then-refuse contract
  * `native-abi-guard.ts` and `select-native-abi.ts` already use.
  */
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
+const asar = require('@electron/asar')
 
 const NESTED_RELATIVE_PATH = path.join(
   'node_modules',
@@ -70,16 +88,10 @@ const EXPECTED_VERSION = '12.11.1'
  * which in turn depends on `file-uri-to-path`. Neither is a dependency of
  * `better-sqlite3` 13.x (true N-API needs no such lookup), so
  * `electron-builder`'s collector -- having resolved the *wrong* (13.x)
- * instance for this nested path in the first place, see the module doc
- * comment -- never had a reason to include them, and the packaged app ships
- * with no `bindings` anywhere. Confirmed empirically: `require('bindings')`
- * from inside the corrected 12.11.1 copy failed with "Cannot find module
- * 'bindings'" the first time this hook shipped only `better-sqlite3` itself.
- * Both packages are pure JS (no native code, nothing ABI-specific), so a
- * plain top-level copy into the packaged app's own `node_modules` -- where
- * Node's normal upward module-resolution walk from
- * `.../adapter-better-sqlite3/node_modules/better-sqlite3/lib/database.js`
- * will find them -- is sufficient.
+ * instance for this nested path in the first place -- never had a reason to
+ * include them at all. Both are pure JS (no native code), so a plain
+ * top-level copy into the repacked app's own `node_modules`, unpacked
+ * alongside the corrected `better-sqlite3`, is sufficient.
  */
 const PURE_JS_DEPENDENCIES = ['bindings', 'file-uri-to-path']
 
@@ -104,9 +116,8 @@ function readVersion(packageJsonDir) {
  * layout), which does not resolve to anything inside the packaged app.
  * `codesign --verify --deep --strict` rejects a bundle containing a symlink
  * with an invalid destination outright ("invalid destination for symbolic
- * link in bundle") -- confirmed empirically after this hook's first version
- * shipped that symlink verbatim. Excluding `.bin` avoids the whole class of
- * problem rather than trying to rewrite the link target.
+ * link in bundle") -- confirmed empirically. Excluding `.bin` avoids the
+ * whole class of problem rather than trying to rewrite the link target.
  */
 function copyRecursive(src, dest) {
   fs.rmSync(dest, { recursive: true, force: true })
@@ -114,6 +125,52 @@ function copyRecursive(src, dest) {
     recursive: true,
     filter: (source) => !source.split(path.sep).includes('.bin'),
   })
+}
+
+/**
+ * Reads which top-level `node_modules/*` (and one level of `@scope/*`)
+ * entries `electron-builder` already chose to unpack, by inspecting the
+ * *original* `app.asar.unpacked/node_modules` directory before this hook
+ * changes anything. Returned as directory-relative paths
+ * (`node_modules/bcrypt`, `node_modules/@prisma/adapter-better-sqlite3`),
+ * suitable for building an `unpackDir` glob that preserves them across the
+ * repack -- so this hook never has to hardcode which *other* native
+ * dependencies (bcrypt, @napi-rs, ...) happen to need unpacking today.
+ */
+function discoverAlreadyUnpackedDirs(unpackedNodeModulesDir) {
+  if (!fs.existsSync(unpackedNodeModulesDir)) return []
+
+  const result = []
+  for (const entry of fs.readdirSync(unpackedNodeModulesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    if (entry.name.startsWith('@')) {
+      const scopeDir = path.join(unpackedNodeModulesDir, entry.name)
+      for (const scoped of fs.readdirSync(scopeDir, { withFileTypes: true })) {
+        if (scoped.isDirectory()) {
+          result.push(path.join('node_modules', entry.name, scoped.name))
+        }
+      }
+    } else {
+      result.push(path.join('node_modules', entry.name))
+    }
+  }
+  return result
+}
+
+/**
+ * Builds the `unpackDir` glob electron-builder's own asar packer produces
+ * (unpack the *whole* directory, not just the matched file) for every
+ * directory in `relativeDirs`. Each alternative is suffixed with `{/**,}` so
+ * it matches both the bare directory itself and anything nested under it --
+ * plain `dir/**` alone does not match `dir` with zero trailing segments,
+ * which is what `@electron/asar`'s own per-file check needs (it tests a
+ * file's *parent directory* against this pattern, not the file itself).
+ * Verified empirically against `@electron/asar`'s actual matching code
+ * (`isUnpackedDir` in `lib/asar.js`) before relying on it here.
+ */
+function buildUnpackDirPattern(relativeDirs) {
+  const posixDirs = relativeDirs.map((d) => d.split(path.sep).join('/'))
+  return `{${posixDirs.map((d) => `${d}{/**,}`).join(',')}}`
 }
 
 module.exports = async function afterPack(context) {
@@ -141,12 +198,25 @@ module.exports = async function afterPack(context) {
         `"npx tsx scripts/select-native-abi.ts electron" from the repo root before packaging.`,
     )
   }
+  for (const depName of PURE_JS_DEPENDENCIES) {
+    if (!fs.existsSync(path.join(REPO_ROOT, 'node_modules', depName))) {
+      throw new Error(
+        `[after-pack] refusing to continue -- this checkout has no node_modules/${depName}, but the ` +
+          `${EXPECTED_VERSION} better-sqlite3 copy requires it at runtime (require('bindings') from ` +
+          'lib/database.js). Run "pnpm install" from the repo root.',
+      )
+    }
+  }
 
   const appName = context.packager.appInfo.productFilename
   const appOutDir = context.appOutDir
-  const unpackedDir = path.join(appOutDir, `${appName}.app`, 'Contents', 'Resources', 'app.asar.unpacked')
-  const destDir = path.join(unpackedDir, NESTED_RELATIVE_PATH)
+  const resourcesDir = path.join(appOutDir, `${appName}.app`, 'Contents', 'Resources')
+  const asarPath = path.join(resourcesDir, 'app.asar')
+  const unpackedDir = path.join(resourcesDir, 'app.asar.unpacked')
 
+  if (!fs.existsSync(asarPath)) {
+    throw new Error(`[after-pack] refusing to continue -- expected an asar archive at ${asarPath}.`)
+  }
   if (!fs.existsSync(unpackedDir)) {
     throw new Error(
       `[after-pack] refusing to continue -- expected an unpacked asar directory at ${unpackedDir} ` +
@@ -154,34 +224,73 @@ module.exports = async function afterPack(context) {
     )
   }
 
-  console.log(`[after-pack] replacing ${destDir}`)
+  // Discover what electron-builder already decided to unpack BEFORE this
+  // hook changes anything on disk, so the repack below preserves it exactly
+  // -- see discoverAlreadyUnpackedDirs's doc comment.
+  const alreadyUnpacked = discoverAlreadyUnpackedDirs(path.join(unpackedDir, 'node_modules'))
+  console.log(`[after-pack] directories electron-builder already unpacked: ${alreadyUnpacked.join(', ')}`)
+
+  const extractTo = path.join(os.tmpdir(), `wimm-asar-repack-${Date.now()}-${process.pid}`)
+
+  console.log(`[after-pack] extracting ${asarPath} -> ${extractTo}`)
+  fs.rmSync(extractTo, { recursive: true, force: true })
+  asar.extractAll(asarPath, extractTo)
+
+  // Overlay the corrected native module and its runtime dependencies onto
+  // the extracted tree, at the same relative paths.
+  const destNestedDir = path.join(extractTo, NESTED_RELATIVE_PATH)
+  console.log(`[after-pack] replacing ${destNestedDir}`)
   console.log(`[after-pack]   with the electron-ABI-rebuilt ${sourceDir} (version ${sourceVersion})`)
-  copyRecursive(sourceDir, destDir)
+  copyRecursive(sourceDir, destNestedDir)
 
-  const destVersion = readVersion(destDir)
-  const destBinary = path.join(destDir, 'build', 'Release', 'better_sqlite3.node')
-  if (destVersion !== EXPECTED_VERSION || !fs.existsSync(destBinary)) {
-    throw new Error(
-      `[after-pack] copy verification failed -- ${destDir} now reports version ${JSON.stringify(destVersion)} ` +
-        `and binary-exists=${fs.existsSync(destBinary)}, expected version ${JSON.stringify(EXPECTED_VERSION)} ` +
-        'and the binary to exist.',
-    )
-  }
-
-  // See PURE_JS_DEPENDENCIES's doc comment -- 12.11.1's own runtime lookup
-  // needs these, and electron-builder's collector never included them.
   for (const depName of PURE_JS_DEPENDENCIES) {
     const depSource = path.join(REPO_ROOT, 'node_modules', depName)
-    if (!fs.existsSync(depSource)) {
-      throw new Error(
-        `[after-pack] refusing to continue -- this checkout has no node_modules/${depName}, but the ` +
-          `12.11.1 better-sqlite3 copy requires it at runtime (require('bindings') from lib/database.js). ` +
-          'Run "pnpm install" from the repo root.',
-      )
-    }
-    const depDest = path.join(unpackedDir, 'node_modules', depName)
+    const depDest = path.join(extractTo, 'node_modules', depName)
     console.log(`[after-pack] copying ${depSource} -> ${depDest}`)
     copyRecursive(depSource, depDest)
+  }
+
+  // Repack, preserving every directory electron-builder had already chosen
+  // to unpack, plus this hook's three corrected directories explicitly (they
+  // may not have been unpacked at all before -- bindings/file-uri-to-path
+  // never were, since the wrong 13.x collection never pulled them in).
+  const relativeNestedDir = NESTED_RELATIVE_PATH.split(path.sep).join('/')
+  const unpackDirSet = new Set([
+    ...alreadyUnpacked.map((d) => d.split(path.sep).join('/')),
+    relativeNestedDir,
+    ...PURE_JS_DEPENDENCIES.map((d) => `node_modules/${d}`),
+  ])
+  const unpackDirPattern = buildUnpackDirPattern([...unpackDirSet])
+  console.log(`[after-pack] repacking with unpackDir pattern: ${unpackDirPattern}`)
+
+  fs.rmSync(asarPath, { force: true })
+  fs.rmSync(unpackedDir, { recursive: true, force: true })
+  await asar.createPackageWithOptions(extractTo, asarPath, {
+    unpack: '*.node',
+    unpackDir: unpackDirPattern,
+  })
+
+  fs.rmSync(extractTo, { recursive: true, force: true })
+
+  // Verify the repack actually produced what this hook set out to fix --
+  // never assume a call that "didn't throw" did the right thing.
+  const destVersion = readVersion(path.join(unpackedDir, NESTED_RELATIVE_PATH))
+  const destBinary = path.join(unpackedDir, NESTED_RELATIVE_PATH, 'build', 'Release', 'better_sqlite3.node')
+  if (destVersion !== EXPECTED_VERSION || !fs.existsSync(destBinary)) {
+    throw new Error(
+      `[after-pack] repack verification failed -- ${path.join(unpackedDir, NESTED_RELATIVE_PATH)} now reports ` +
+        `version ${JSON.stringify(destVersion)} and binary-exists=${fs.existsSync(destBinary)}, expected version ` +
+        `${JSON.stringify(EXPECTED_VERSION)} and the binary to exist.`,
+    )
+  }
+  for (const depName of PURE_JS_DEPENDENCIES) {
+    const depUnpackedPath = path.join(unpackedDir, 'node_modules', depName)
+    if (!fs.existsSync(depUnpackedPath)) {
+      throw new Error(
+        `[after-pack] repack verification failed -- ${depUnpackedPath} does not exist after repacking. ` +
+          `${depName} must be unpacked alongside better-sqlite3 for its runtime require() to find it.`,
+      )
+    }
   }
 
   console.log('[after-pack] done')

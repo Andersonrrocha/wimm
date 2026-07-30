@@ -74,7 +74,19 @@
       "!node_modules/@wimm/api/src/**/*",
       "!node_modules/@wimm/api/test/**/*",
       "!node_modules/@wimm/api/prisma/migrations/**/*",
-      "!node_modules/@wimm/api/*.tsbuildinfo"
+      "!node_modules/@wimm/api/*.tsbuildinfo",
+      "!node_modules/react/**/*",
+      "!node_modules/react-dom/**/*",
+      "!node_modules/react-router-dom/**/*",
+      "!node_modules/react-i18next/**/*",
+      "!node_modules/react-day-picker/**/*",
+      "!node_modules/recharts/**/*",
+      "!node_modules/date-fns/**/*",
+      "!node_modules/i18next/**/*",
+      "!node_modules/lucide-react/**/*",
+      "!node_modules/@radix-ui/**/*",
+      "!node_modules/@tanstack/**/*",
+      "!node_modules/axios/**/*"
     ],
     "asar": true,
     "asarUnpack": [
