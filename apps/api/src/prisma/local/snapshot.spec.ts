@@ -292,4 +292,56 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     const preserved = readdirSync(BACKUP_DIR).filter((name) => name.includes('unvalidated'))
     expect(preserved).toHaveLength(1)
   })
+
+  // Item 1: restoreSnapshot must refuse to overwrite a target that another
+  // connection is actively using. The lock this test contends for is real --
+  // a genuine second `better-sqlite3` connection with an open transaction,
+  // not a stub of the lock-check mechanism itself.
+  it('refuses to restore over a target that another connection actively holds an open transaction against, naming the file', () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+
+    // A real second connection to the target, with a real, held SQLite lock.
+    const busyConnection = new Database(DB_FILE)
+    busyConnection.exec('BEGIN IMMEDIATE')
+    busyConnection.prepare('INSERT INTO items ("value") VALUES (?)').run('uncommitted')
+
+    let before: Buffer
+    try {
+      before = readFileSync(DB_FILE)
+
+      expect(() => restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:10.000Z'))).toThrow(
+        DB_FILE,
+      )
+    } finally {
+      busyConnection.exec('ROLLBACK')
+      busyConnection.close()
+    }
+
+    // Nothing was touched: no preservation copy, no rename, byte-identical.
+    const after = readFileSync(DB_FILE)
+    expect(after.equals(before!)).toBe(true)
+    expect(readRows(DB_FILE)).toEqual(['alpha'])
+    expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toHaveLength(1)
+  })
+
+  it('does not refuse a restore merely because another connection to the target is open but idle', () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+    insertRow(DB_FILE, 'beta')
+
+    // Documented limitation: a connection that is open but has no pending
+    // transaction or in-flight statement holds no SQLite lock in DELETE
+    // journal mode, so the exclusive-access check cannot see it.
+    const idleConnection = new Database(DB_FILE)
+    try {
+      expect(() =>
+        restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:10.000Z')),
+      ).not.toThrow()
+    } finally {
+      idleConnection.close()
+    }
+
+    expect(readRows(DB_FILE)).toEqual(['alpha'])
+  })
 })

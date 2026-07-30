@@ -56,6 +56,18 @@
  * - `now` is always taken as an argument rather than read from `new Date()`
  *   internally, so callers (and tests) can produce deterministic, ordered
  *   timestamps without sleeping.
+ *
+ * - `restoreSnapshot` refuses -- before touching anything -- unless it can
+ *   get exclusive access to `targetFile` via a real SQLite lock
+ *   (`assertExclusiveAccess`). Overwriting a SQLite file while another
+ *   connection is actively using it is undefined behaviour: corruption, or a
+ *   stale page-cache read, and either way silently. This check is a
+ *   point-in-time gate, not a held lock for the duration of the restore, and
+ *   it can only see a connection that is genuinely mid-transaction at the
+ *   moment it runs -- see `assertExclusiveAccess`'s doc comment for exactly
+ *   what it does and does not catch. Callers closing their own connection to
+ *   `targetFile` before calling `restoreSnapshot` remains a hard
+ *   requirement this check narrows the risk of, not one it removes.
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'fs'
 import { randomBytes } from 'crypto'
@@ -301,6 +313,108 @@ function preserveTargetBeforeRestore(targetFile: string, backupDir: string, data
 }
 
 /**
+ * Throws unless `file` can be locked for exclusive access right now.
+ * Overwriting a SQLite database file while another connection is actively
+ * using it is undefined behaviour -- corruption, or a stale page-cache read
+ * on that other connection's side, and either way silently. This is the
+ * guard `restoreSnapshot` runs before it touches `targetFile` at all.
+ *
+ * Mechanism: open a plain connection to `file` -- deliberately not through
+ * `openLocalDatabase`, which would itself try to force `journal_mode =
+ * DELETE`, an unwanted side effect for a connection whose only job here is
+ * to check, not to configure -- disable the busy-retry wait
+ * (`busy_timeout = 0`, so a conflict fails immediately instead of blocking
+ * this call for seconds), and attempt `BEGIN IMMEDIATE` followed by
+ * `COMMIT`. Under `DELETE` journal mode -- which every live database file in
+ * this app is required to be in -- `BEGIN IMMEDIATE` and `BEGIN EXCLUSIVE`
+ * are the same lock escalation (they only differ under WAL). A `SQLITE_BUSY`
+ * error from either statement, specifically, means some other connection
+ * currently holds a conflicting lock; it is turned into a refusal that names
+ * `file` and tells the caller to close it first.
+ *
+ * Only `SQLITE_BUSY` is treated as "in use." Any other failure while
+ * probing -- `file` not opening at all, or a write attempt failing because
+ * the file is corrupt -- is not a locking conflict and is deliberately left
+ * alone here: it is not this function's job to report, and the validation
+ * and preservation logic `restoreSnapshot` runs right after this check
+ * already handles a corrupt or unreadable target on its own, honestly. This
+ * check does one thing: tell an active conflicting connection apart from
+ * every other reason `file` might be unusable.
+ *
+ * What this provably catches: another connection that is genuinely
+ * mid-transaction against `file` at the moment this check runs, whether
+ * that transaction is reading or writing. An open write transaction on
+ * another connection already holds the RESERVED lock this probe needs, so
+ * `BEGIN IMMEDIATE` itself fails immediately; an open read transaction holds
+ * a SHARED lock that is compatible with another connection also holding
+ * RESERVED, so `BEGIN IMMEDIATE` succeeds but the follow-up `COMMIT` -- which
+ * must escalate to EXCLUSIVE to finish -- fails instead. Either way this
+ * function throws, and the half-open probe transaction is rolled back before
+ * the probe connection is closed.
+ *
+ * What this does NOT catch, and structurally cannot: a connection that is
+ * open but idle -- constructed and never used yet, or simply between
+ * statements in autocommit mode -- holds no SQLite lock at all in `DELETE`
+ * journal mode, so this check cannot see it and will let the restore
+ * proceed. It also only checks at one instant, immediately before the
+ * restore begins; it does not hold the lock for the restore's duration, so a
+ * connection that opens and starts a transaction in the brief window between
+ * this check and `restoreSnapshot`'s final `renameSync` is not caught
+ * either. Neither gap is closable from user-space with SQLite's own locking
+ * primitives -- they are exactly why the caller closing its own connection
+ * to `file` before calling `restoreSnapshot` remains a hard requirement this
+ * check narrows the risk of, not one it removes or makes optional.
+ */
+function assertExclusiveAccess(file: string): void {
+  let db: Database.Database
+  try {
+    db = new Database(file)
+  } catch {
+    // Could not even open a plain connection -- not a locking conflict, so
+    // not this function's concern. See the doc comment: a missing, unreadable
+    // or corrupt `file` gets its own honest report from the validation and
+    // preservation logic that runs right after this check.
+    return
+  }
+
+  try {
+    db.pragma('busy_timeout = 0')
+
+    const refuseIfBusy = (err: unknown): void => {
+      if ((err as { code?: string }).code !== 'SQLITE_BUSY') return
+      throw new Error(
+        `Refusing to restore over ${file}: another connection is actively using it right now ` +
+          `(${(err as Error).message}). Close every open connection to this database before restoring.`,
+      )
+    }
+
+    try {
+      db.exec('BEGIN IMMEDIATE')
+    } catch (err) {
+      refuseIfBusy(err)
+      // Some other failure (e.g. `file` is corrupt) -- not a locking
+      // conflict, so not this function's concern; see the doc comment.
+      return
+    }
+
+    try {
+      db.exec('COMMIT')
+    } catch (err) {
+      try {
+        db.exec('ROLLBACK')
+      } catch {
+        // Best-effort cleanup of the half-open probe transaction; `db` is
+        // closed in the outer `finally` below regardless.
+      }
+      refuseIfBusy(err)
+      return
+    }
+  } finally {
+    db.close()
+  }
+}
+
+/**
  * Replaces `targetFile` with the contents of `snapshotPath`.
  *
  * Before overwriting anything, `snapshotPath` is validated the same way a
@@ -308,11 +422,18 @@ function preserveTargetBeforeRestore(targetFile: string, backupDir: string, data
  * restoring from a file that is not a valid SQLite database throws and
  * leaves `targetFile` untouched.
  *
- * If `targetFile` currently exists, it is preserved first (see
- * `preserveTargetBeforeRestore`) into the same directory as `snapshotPath`,
- * under `databaseId`, so the restore is itself undoable. If `targetFile`
- * does not exist yet, there is no prior state to protect, so this step is
- * skipped rather than fabricating an empty database to back up.
+ * If `targetFile` currently exists, this first requires exclusive access to
+ * it (see `assertExclusiveAccess` for exactly what that does and does not
+ * catch) and then preserves it (see `preserveTargetBeforeRestore`) into the
+ * same directory as `snapshotPath`, under `databaseId`, so the restore is
+ * itself undoable. If `targetFile` does not exist yet, there is no prior
+ * state to protect or lock, so both steps are skipped rather than
+ * fabricating an empty database to back up or check.
+ *
+ * **Callers must close their own connection to `targetFile` before calling
+ * this.** The exclusive-access check above narrows the risk of overwriting a
+ * database that is in use; it does not eliminate it -- see
+ * `assertExclusiveAccess`'s doc comment for the gaps it cannot close.
  *
  * The replacement itself is atomic: `snapshotPath` is copied into a
  * temporary file in `targetFile`'s own directory (so the rename below stays
@@ -325,6 +446,7 @@ export function restoreSnapshot(snapshotPath: string, targetFile: string, databa
   assertValidDatabaseFile(snapshotPath, 'Cannot restore snapshot')
 
   if (existsSync(targetFile)) {
+    assertExclusiveAccess(targetFile)
     preserveTargetBeforeRestore(targetFile, dirname(snapshotPath), databaseId, now)
   }
 
