@@ -12,15 +12,23 @@
  * requires the native ABI marker to say "node" (see that spec's doc
  * comment and `package.json`'s `pretest` script).
  */
+import { createServer, type IncomingMessage, type Server } from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { AddressInfo } from 'node:net'
 
 import { SESSION_TOKEN_HEADER } from '@wimm/api/dist/profile/session-token'
 import { CategoryType, SourceType } from '@wimm/shared'
 
 import { startLocalApi, type LocalApiHandle } from './local-api'
-import { forwardLocalApiRequest } from './local-api-bridge'
+import {
+  assertAllowedMethod,
+  buildAllowedHeaders,
+  containsTraversalSegment,
+  forwardLocalApiRequest,
+  isSameOriginPath,
+} from './local-api-bridge'
 
 jest.setTimeout(30000)
 
@@ -181,5 +189,141 @@ describe('forwardLocalApiRequest -- FormData reconstruction', () => {
     expect(res.status).not.toBe(401)
     expect(typeof res.status).toBe('number')
     expect(res.status).toBeLessThan(500)
+  })
+})
+
+/**
+ * Pure-unit coverage of the three allowlists `forwardLocalApiRequest`
+ * enforces, isolated from the (slower, real-server) end-to-end proof below.
+ */
+describe('local-api-bridge -- allowlist helpers (Finding 1)', () => {
+  it('isSameOriginPath accepts a single leading slash and rejects everything else', () => {
+    expect(isSameOriginPath('/api/sources')).toBe(true)
+    expect(isSameOriginPath('http://attacker.example/exfil')).toBe(false)
+    expect(isSameOriginPath('//attacker.example/exfil2')).toBe(false)
+    expect(isSameOriginPath('attacker.example/exfil')).toBe(false)
+  })
+
+  it('containsTraversalSegment catches a literal and a percent-encoded ".." segment', () => {
+    expect(containsTraversalSegment('/api/sources')).toBe(false)
+    expect(containsTraversalSegment('/api/../../../etc/passwd')).toBe(true)
+    expect(containsTraversalSegment('/api/%2e%2e/secret')).toBe(true)
+  })
+
+  it('assertAllowedMethod accepts the standard verbs and rejects everything else', () => {
+    expect(assertAllowedMethod('get')).toBe('GET')
+    expect(assertAllowedMethod('POST')).toBe('POST')
+    expect(() => assertAllowedMethod('TRACE')).toThrow()
+    expect(() => assertAllowedMethod('CONNECT')).toThrow()
+  })
+
+  it('buildAllowedHeaders keeps only Content-Type/Accept and drops everything else', () => {
+    const headers = buildAllowedHeaders({
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Cookie: 'stolen=1',
+      Authorization: 'Bearer forged',
+      [SESSION_TOKEN_HEADER]: 'forged-token',
+    })
+    expect(headers.get('Content-Type')).toBe('application/json')
+    expect(headers.get('Accept')).toBe('application/json')
+    expect(headers.has('Cookie')).toBe(false)
+    expect(headers.has('Authorization')).toBe(false)
+    expect(headers.has(SESSION_TOKEN_HEADER)).toBe(false)
+  })
+})
+
+/**
+ * End-to-end proof for Finding 1 of the phase 4b security review: the IPC
+ * bridge was an open proxy that would dial any host `payload.path` named,
+ * with the real session token attached and every caller-supplied header
+ * forwarded. This suite drives `forwardLocalApiRequest` directly -- exactly
+ * as `index.ts`'s `local-api:request` handler does in production, with a
+ * real, running embedded API as `connection` -- with each of the attack
+ * payloads the security review reproduced, against a real sink HTTP server
+ * standing in for "attacker.example". Every attempt must be rejected
+ * *before* any network request reaches the sink; `sinkRequests` staying
+ * empty across every single test in this suite (not just each one
+ * individually) is the actual proof, not merely that
+ * `forwardLocalApiRequest` rejected with *some* error.
+ */
+describe('forwardLocalApiRequest -- rejects the open-proxy attack vectors (Finding 1)', () => {
+  let profileDir: string
+  let handle: LocalApiHandle
+  let sink: Server
+  let sinkPort: number
+  let sinkRequests: Array<{ method?: string; url?: string }>
+
+  beforeEach(async () => {
+    profileDir = tmpProfileDir()
+    handle = await startLocalApi({ profileDir })
+
+    sinkRequests = []
+    sink = createServer((req: IncomingMessage, res) => {
+      sinkRequests.push({ method: req.method, url: req.url })
+      res.writeHead(200, { 'Content-Type': 'text/plain' })
+      res.end('sink received a request -- this must never happen')
+    })
+    await new Promise<void>((resolve) => sink.listen(0, '127.0.0.1', resolve))
+    sinkPort = (sink.address() as AddressInfo).port
+  })
+
+  afterEach(async () => {
+    await handle.close()
+    rmSync(profileDir, { recursive: true, force: true })
+    await new Promise<void>((resolve, reject) =>
+      sink.close((err) => (err ? reject(err) : resolve())),
+    )
+  })
+
+  it('rejects an absolute http:// URL instead of dialing the sink server', async () => {
+    await expect(
+      forwardLocalApiRequest(handle, {
+        method: 'GET',
+        path: `http://127.0.0.1:${sinkPort}/exfil`,
+      }),
+    ).rejects.toThrow()
+    expect(sinkRequests).toEqual([])
+  })
+
+  it('rejects a protocol-relative //host URL instead of dialing the sink server', async () => {
+    await expect(
+      forwardLocalApiRequest(handle, {
+        method: 'GET',
+        path: `//127.0.0.1:${sinkPort}/exfil2`,
+      }),
+    ).rejects.toThrow()
+    expect(sinkRequests).toEqual([])
+  })
+
+  it('rejects a path-traversal attempt', async () => {
+    await expect(
+      forwardLocalApiRequest(handle, {
+        method: 'GET',
+        path: '/api/../../../../etc/passwd',
+      }),
+    ).rejects.toThrow()
+    expect(sinkRequests).toEqual([])
+  })
+
+  it('rejects a disallowed HTTP method', async () => {
+    await expect(
+      forwardLocalApiRequest(handle, {
+        method: 'TRACE',
+        path: '/api/sources',
+      }),
+    ).rejects.toThrow()
+    expect(sinkRequests).toEqual([])
+  })
+
+  it('rejects an absolute URL even when it carries an injected Cookie header', async () => {
+    await expect(
+      forwardLocalApiRequest(handle, {
+        method: 'GET',
+        path: `http://127.0.0.1:${sinkPort}/exfil3`,
+        headers: { Cookie: 'stolen=1', 'X-Injected': 'evil' },
+      }),
+    ).rejects.toThrow()
+    expect(sinkRequests).toEqual([])
   })
 })
