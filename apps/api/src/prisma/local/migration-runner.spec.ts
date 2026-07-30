@@ -536,4 +536,50 @@ describe('applyPendingMigrations', () => {
     expect(appliedMigrationRows(DB_FILE)).toEqual(appliedRowsBefore)
     expect(appliedMigrationRows(DB_FILE).some((r) => r.migration_name === '0001_dangling')).toBe(false)
   })
+
+  // Item 2: an older build must refuse to run against a database a newer
+  // build already migrated -- not report a clean boot with no signal at all.
+  it('refuses to run against a database already migrated by a newer build, naming the migration(s) it does not know and pointing at restoring a pre-upgrade snapshot', () => {
+    const newerMigrationsDir = join(ROOT, 'migrations-newer-build')
+    writeMigration(newerMigrationsDir, '0000_first', 'CREATE TABLE "widgets" ("id" TEXT NOT NULL PRIMARY KEY);')
+    writeMigration(newerMigrationsDir, '0001_second', 'CREATE TABLE "gadgets" ("id" TEXT NOT NULL PRIMARY KEY);')
+
+    // The "newer build" migrates the database all the way.
+    const first = applyPendingMigrations({
+      file: DB_FILE,
+      migrationsDir: newerMigrationsDir,
+      backupDir: BACKUP_DIR,
+      databaseId: DATABASE_ID,
+      now: new Date('2026-01-01T00:00:00.000Z'),
+    })
+    expect(first.applied).toEqual(['0000_first', '0001_second'])
+    const snapshotsAfterFirstRun = listSnapshots(BACKUP_DIR, DATABASE_ID)
+
+    // The "older build" only ever shipped the first migration -- it has never heard of "0001_second".
+    const olderMigrationsDir = join(ROOT, 'migrations-older-build-view')
+    writeMigration(olderMigrationsDir, '0000_first', 'CREATE TABLE "widgets" ("id" TEXT NOT NULL PRIMARY KEY);')
+
+    let thrown: Error | undefined
+    try {
+      applyPendingMigrations({
+        file: DB_FILE,
+        migrationsDir: olderMigrationsDir,
+        backupDir: BACKUP_DIR,
+        databaseId: DATABASE_ID,
+        now: new Date('2026-01-01T01:00:00.000Z'),
+      })
+    } catch (err) {
+      thrown = err as Error
+    }
+
+    expect(thrown).toBeDefined()
+    expect(thrown!.message).toMatch(/0001_second/)
+    expect(thrown!.message).toMatch(/newer/i)
+    expect(thrown!.message).toMatch(/restor/i)
+    expect(thrown!.message).toMatch(/snapshot/i)
+
+    // Detecting this must not itself take a snapshot or touch the database: nothing was going to run.
+    expect(listSnapshots(BACKUP_DIR, DATABASE_ID)).toEqual(snapshotsAfterFirstRun)
+    expect(tableNames(DB_FILE)).toEqual(expect.arrayContaining(['widgets', 'gadgets']))
+  })
 })

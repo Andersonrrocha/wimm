@@ -101,6 +101,21 @@
  *   diff --script` never emits a bare `COMMIT`, so this only guards against a
  *   hand-edited migration.
  *
+ * - A database that already has migrations recorded which this build does
+ *   not ship is a hard failure, checked alongside the checksum-drift check
+ *   above and before anything else for the same reason: it means an OLDER
+ *   build has been pointed at a database a NEWER build already migrated.
+ *   Without this check that boot looks clean -- `applyPendingMigrations`
+ *   only ever iterates migrations it discovers in `migrationsDir`, so it has
+ *   no way to notice history it doesn't know about -- and the app then runs
+ *   normal queries against a schema it was never written against. The way
+ *   back is not running the old build against the new database; it is
+ *   reinstalling the old build and restoring a snapshot taken *before* the
+ *   upgrade to the newer build (old app + old data), which is why the error
+ *   message points there instead of at anything this call could do itself.
+ *   Like the checksum-drift check, nothing has been mutated at this point,
+ *   so no snapshot is taken for this failure either.
+ *
  * - `now` is always taken as an argument, never read from `new Date()`
  *   internally, so callers (and tests) can produce deterministic timestamps.
  *   It is passed straight through to `snapshotDatabase` and used to stamp
@@ -235,9 +250,11 @@ function assertNoForeignKeysPragma(migrations: DiscoveredMigration[]): void {
  *
  * Reads (creating if absent) `_prisma_migrations` to determine what has
  * already been applied, hard-fails if any already-applied migration's
- * checksum no longer matches its file on disk, and otherwise snapshots (once)
- * and applies everything pending inside a single transaction. See the module
- * doc comment for the reasoning behind each of these choices.
+ * checksum no longer matches its file on disk, hard-fails if the database
+ * records migrations applied that this build does not ship (it was already
+ * migrated by a newer build), and otherwise snapshots (once) and applies
+ * everything pending inside a single transaction. See the module doc comment
+ * for the reasoning behind each of these choices.
  *
  * `databaseId` identifies `file` for snapshot storage -- see `snapshotDatabase`
  * for why this must be caller-supplied rather than derived from a basename.
@@ -280,6 +297,30 @@ export function applyPendingMigrations(options: {
             'history. Refusing to continue.',
         )
       }
+    }
+
+    // Hard-fail if the database is AHEAD of this build: it records migrations
+    // as applied that this build does not ship at all. That can only happen
+    // if a newer build already migrated this database and an older build
+    // (this one) was pointed at it afterwards -- see the module doc comment
+    // for why the fix is restoring a pre-upgrade snapshot, not anything this
+    // call can do. Checked before deciding what is pending, for the same
+    // reason as the checksum-drift check above: this must fail loudly even
+    // on an otherwise no-op boot, and nothing has been mutated yet.
+    const discoveredNames = new Set(discovered.map((m) => m.name))
+    const aheadOfThisBuild = appliedRows
+      .map((row) => row.migration_name)
+      .filter((name) => !discoveredNames.has(name))
+      .sort()
+    if (aheadOfThisBuild.length > 0) {
+      throw new Error(
+        `${file} was already migrated by a newer build of this app: it records migration(s) ` +
+          `${aheadOfThisBuild.join(', ')} as applied, but this build does not ship them. Running an older build ` +
+          "against a database a newer build already migrated is not supported -- this build doesn't know what " +
+          'that schema looks like. To go back to this build, reinstall it and restore a snapshot that was taken ' +
+          'BEFORE the upgrade to the newer build (old app with old data), not this database as it is now. ' +
+          'Refusing to continue.',
+      )
     }
 
     const alreadyApplied = discovered.filter((m) => appliedChecksums.has(m.name)).map((m) => m.name)
