@@ -6,6 +6,7 @@
   "author": "WIMM",
   "main": "./out/main/index.js",
   "scripts": {
+    "predev": "tsx ../../scripts/select-native-abi.ts electron",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",

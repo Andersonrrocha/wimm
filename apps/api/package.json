@@ -8,6 +8,7 @@
     "start": "node dist/main",
     "start:debug": "nest start --debug --watch --exec \"node -r ./scripts/register-prisma-paths.js\"",
     "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
+    "pretest": "tsx ../../scripts/select-native-abi.ts node",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest",
     "clean": "rm -rf dist src/generated",
     "prisma:generate": "prisma generate",

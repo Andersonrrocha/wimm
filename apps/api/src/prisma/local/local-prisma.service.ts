@@ -32,10 +32,22 @@
  * back through `$queryRawUnsafe` is what proves the pragma actually holds for
  * the connection Prisma itself will issue every later query on, not merely
  * for some separate handle that happens to share a file path.
+ *
+ * **The other carry-over this closes.** The `better-sqlite3` copy behind
+ * `@prisma/adapter-better-sqlite3` is pre-N-API and tied to the exact
+ * `NODE_MODULE_VERSION` it was compiled for, so it can only be built for one
+ * runtime (Node or Electron) at a time in this checkout -- see
+ * `native-abi-guard.ts` and `scripts/select-native-abi.ts`. `onModuleInit`
+ * calls `assertLocalNativeAbiSelected()` before `$connect()`, because that is
+ * the last point before the adapter's `.connect()` reaches into the native
+ * binary (the constructor below only stores config; it does not open the
+ * database). Skipping this check trades a one-sentence, actionable error for
+ * a raw `NODE_MODULE_VERSION` error or undefined behaviour.
  */
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common'
 import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3'
 import { PrismaClient } from '../../generated/prisma-sqlite/client'
+import { assertLocalNativeAbiSelected } from './native-abi-guard'
 
 interface ForeignKeysPragmaRow {
   // better-sqlite3's PRAGMA results come back as `bigint` through this
@@ -55,6 +67,11 @@ export class LocalPrismaService extends PrismaClient implements OnModuleInit, On
   }
 
   async onModuleInit(): Promise<void> {
+    // Must run before $connect() -- see the module doc comment and
+    // native-abi-guard.ts for why this is the last safe point to catch a
+    // wrong-runtime native binary.
+    assertLocalNativeAbiSelected()
+
     await this.$connect()
 
     // Set explicitly rather than trusting the driver default -- see the

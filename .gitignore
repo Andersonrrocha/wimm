@@ -47,6 +47,11 @@ apps/mobile/android/
 apps/api/dist/
 apps/api/src/generated/
 
+# Native ABI selection cache (scripts/select-native-abi.ts). Machine-specific
+# compiled binaries; not something to version. See that script's doc comment
+# for why this lives outside node_modules despite being build output too.
+.cache/native-abi/
+
 # Logs
 *.log
 npm-debug.log*

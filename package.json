@@ -11,6 +11,7 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "test": "turbo run test",
+    "test:scripts": "jest --config jest.config.js",
     "clean": "turbo run clean && rm -rf node_modules",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
