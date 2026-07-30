@@ -66,6 +66,48 @@
  * doesn't verify -- silently shipping *something* here would defeat the
  * entire point of this hook. Same verify-then-refuse contract
  * `native-abi-guard.ts` and `select-native-abi.ts` already use.
+ *
+ * **A second, independent instance of the same class of bug: `express`'s
+ * private `path-to-regexp`.** Found in this task's fix round 3, via a
+ * packaged-build regression the `better-sqlite3` fix above does not touch at
+ * all. `express`'s own `package.json` pins `path-to-regexp` at `~0.1.12` --
+ * deliberately the legacy 0.x line, which is the version whose bare `*`
+ * wildcard token matches an arbitrary number of path segments (`/api/*`
+ * matching `/api/users/me`). `@nestjs/core` separately depends on
+ * `path-to-regexp@3.3.0` for its own, unrelated route-matching internals.
+ * This checkout's real `node_modules` (see `REPO_ROOT`) correctly keeps both
+ * versions side by side -- `node_modules/path-to-regexp` at `3.3.0` for
+ * `@nestjs/core`, and a *nested* `node_modules/express/node_modules/path-to-regexp`
+ * at `0.1.13` that `express`'s own `require('path-to-regexp')` resolves to
+ * first (Node's module resolution always prefers the closest `node_modules`
+ * up from the requiring file). `electron-builder`'s collector, exactly as it
+ * did for the nested `better-sqlite3` above, resolves that nested slot to the
+ * *wrong* physical copy: the packaged app's
+ * `node_modules/express/node_modules/path-to-regexp` ends up holding a copy
+ * of `3.3.0`, not `0.1.13` -- confirmed empirically by comparing the two
+ * trees directly. `path-to-regexp@3.3.0` does not implement the legacy bare
+ * `*` semantics at all (confirmed empirically: it compiles `/api/*` to a
+ * regex that matches the *literal* string `/api/*`, never `/api/users/me`),
+ * so every request in the packaged app silently fails to match the
+ * `ActiveProfileMiddleware` Nest registers via `consumer.apply(...).forRoutes('*')`
+ * (`ProfileModule.configure`, `apps/api/src/profile/profile.module.ts`) --
+ * `req.user` is therefore never set, and every `@CurrentUser()`-decorated
+ * route throws a bare, generic `UnauthorizedException()`
+ * (`apps/api/src/common/decorators/current-user.decorator.ts`). That 401 has
+ * the exact same JSON shape as `SessionTokenGuard`'s own 401, which is what
+ * initially made this look like a session-token mismatch bug from the
+ * renderer's side -- it is not; `SessionTokenGuard` itself was proven correct
+ * by instrumentation (matching token, correct DI symbol identity, `canActivate`
+ * returning `true`) before this was found. See `## Fix round 3` in this
+ * task's report for the full isolation trail (a standalone repro booting
+ * `AppLocalModule` directly from the packaged, extracted layout, bypassing
+ * this app's own `local-api.ts` entirely) that pinned this down.
+ *
+ * The fix mirrors the `better-sqlite3` one exactly, and is simpler: no native
+ * binary is involved, so nothing needs `asarUnpack` -- the corrected
+ * `path-to-regexp` copy is overlaid into the same extracted tree the
+ * `better-sqlite3` fix already extracts, and ships fully packed inside the
+ * repacked `app.asar` like any other plain JS dependency.
  */
 const fs = require('fs')
 const os = require('os')
@@ -105,6 +147,21 @@ const EXPECTED_VERSION = '12.11.1'
  * alongside the corrected `better-sqlite3`, is sufficient.
  */
 const PURE_JS_DEPENDENCIES = ['bindings', 'file-uri-to-path']
+
+/**
+ * `express`'s own private `path-to-regexp` copy -- see this file's doc
+ * comment's "A second, independent instance of the same class of bug"
+ * section for the full explanation of why this nested path specifically
+ * (not the top-level `node_modules/path-to-regexp`, which `@nestjs/core`
+ * uses and which electron-builder collects correctly) needs correcting.
+ */
+const EXPRESS_PATH_TO_REGEXP_RELATIVE_PATH = path.join(
+  'node_modules',
+  'express',
+  'node_modules',
+  'path-to-regexp',
+)
+const EXPECTED_EXPRESS_PATH_TO_REGEXP_VERSION = '0.1.13'
 
 // This file lives at apps/desktop/scripts/after-pack.cjs -- three levels up is the repo root.
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
@@ -297,6 +354,17 @@ module.exports = async function afterPack(context) {
     }
   }
 
+  const expressPathToRegexpSourceDir = path.join(REPO_ROOT, EXPRESS_PATH_TO_REGEXP_RELATIVE_PATH)
+  const expressPathToRegexpSourceVersion = readVersion(expressPathToRegexpSourceDir)
+  if (expressPathToRegexpSourceVersion !== EXPECTED_EXPRESS_PATH_TO_REGEXP_VERSION) {
+    throw new Error(
+      `[after-pack] refusing to continue -- this checkout's own ${EXPRESS_PATH_TO_REGEXP_RELATIVE_PATH} reports ` +
+        `version ${JSON.stringify(expressPathToRegexpSourceVersion)}, expected ` +
+        `${JSON.stringify(EXPECTED_EXPRESS_PATH_TO_REGEXP_VERSION)}. Run "pnpm install" from the repo root -- ` +
+        "express's own package.json pins this at ~0.1.12.",
+    )
+  }
+
   const appName = context.packager.appInfo.productFilename
   const appOutDir = context.appOutDir
   const resourcesDir = path.join(appOutDir, `${appName}.app`, 'Contents', 'Resources')
@@ -339,6 +407,16 @@ module.exports = async function afterPack(context) {
     copyRecursive(depSource, depDest)
   }
 
+  // Correct express's own private path-to-regexp copy -- see this file's doc
+  // comment. Pure JS, no native binary, so nothing here needs asarUnpack;
+  // it simply overlays into the same extracted tree before the repack below.
+  const destExpressPathToRegexpDir = path.join(extractTo, EXPRESS_PATH_TO_REGEXP_RELATIVE_PATH)
+  console.log(`[after-pack] replacing ${destExpressPathToRegexpDir}`)
+  console.log(
+    `[after-pack]   with ${expressPathToRegexpSourceDir} (version ${expressPathToRegexpSourceVersion})`,
+  )
+  copyRecursive(expressPathToRegexpSourceDir, destExpressPathToRegexpDir)
+
   // Strip node-gyp build byproducts and other-platform prebuilds from every
   // better-sqlite3 copy this package ships -- see pruneBetterSqlite3BuildArtifacts's
   // and prunePrebuilds's doc comments. This covers both the nested copy just
@@ -371,6 +449,19 @@ module.exports = async function afterPack(context) {
     unpackDir: unpackDirPattern,
   })
 
+  // `asar.extractAll(asarPath, ...)` above already read and cached this
+  // archive's header once, keyed by `asarPath` (`@electron/asar`'s
+  // `disk.readFilesystemSync` caches by path to avoid re-reading a header on
+  // every call). `asarPath` now points at a brand new file with a different
+  // byte layout -- without invalidating that cache, a later read through the
+  // asar library at the same path (the express/path-to-regexp verification
+  // below) would resolve file offsets against the *old* header against the
+  // *new* file's bytes, silently returning garbage from an unrelated offset
+  // instead of throwing "not found". Confirmed empirically: omitting this
+  // produced exactly that -- a "not valid JSON" error reading what turned out
+  // to be a fragment of an unrelated bundled file, not a missing-file error.
+  asar.uncache(asarPath)
+
   fs.rmSync(extractTo, { recursive: true, force: true })
 
   // Verify the repack actually produced what this hook set out to fix --
@@ -392,6 +483,31 @@ module.exports = async function afterPack(context) {
           `${depName} must be unpacked alongside better-sqlite3 for its runtime require() to find it.`,
       )
     }
+  }
+
+  // express's own path-to-regexp stays packed (no native binary, nothing to
+  // unpack) -- verify by reading straight out of the repacked archive itself
+  // rather than app.asar.unpacked, which has no entry for it at all.
+  const expressPathToRegexpPackageJsonEntry = [
+    ...EXPRESS_PATH_TO_REGEXP_RELATIVE_PATH.split(path.sep),
+    'package.json',
+  ].join('/')
+  let expressPathToRegexpDestVersion
+  try {
+    const raw = asar.extractFile(asarPath, expressPathToRegexpPackageJsonEntry)
+    expressPathToRegexpDestVersion = JSON.parse(raw.toString('utf8')).version
+  } catch (err) {
+    throw new Error(
+      `[after-pack] repack verification failed -- could not read ${expressPathToRegexpPackageJsonEntry} back out ` +
+        `of the repacked ${asarPath}: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+  if (expressPathToRegexpDestVersion !== EXPECTED_EXPRESS_PATH_TO_REGEXP_VERSION) {
+    throw new Error(
+      `[after-pack] repack verification failed -- ${EXPRESS_PATH_TO_REGEXP_RELATIVE_PATH} inside the repacked ` +
+        `app.asar now reports version ${JSON.stringify(expressPathToRegexpDestVersion)}, expected ` +
+        `${JSON.stringify(EXPECTED_EXPRESS_PATH_TO_REGEXP_VERSION)}.`,
+    )
   }
 
   console.log('[after-pack] done')
