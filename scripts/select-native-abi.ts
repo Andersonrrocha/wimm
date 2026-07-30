@@ -43,7 +43,7 @@
  */
 import { execFileSync } from 'child_process'
 import { createHash } from 'crypto'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 
 export type NativeAbiTarget = 'node' | 'electron'
@@ -201,6 +201,19 @@ export function selectNativeAbiAt(paths: NativeAbiPaths, target: NativeAbiTarget
   }
 
   mkdirSync(dirname(paths.liveBinary), { recursive: true })
+  // Unlink before copying rather than overwriting in place. On macOS the
+  // kernel caches code-signing validation per file identity (inode), and
+  // rewriting the bytes of an existing `.node` can leave that cache stale:
+  // a later `dlopen()` is then killed with SIGKILL and no catchable error,
+  // even when the file's contents are byte-identical to a build that loads
+  // fine. Observed directly during phase 4a while switching ABIs
+  // repeatedly. Replacing the file gives the new binary a fresh inode, so
+  // validation runs against what is actually on disk.
+  //
+  // A silent SIGKILL is the exact failure class this whole mechanism exists
+  // to remove, so this is not a micro-optimisation -- overwriting in place
+  // reintroduces it one layer down.
+  if (existsSync(paths.liveBinary)) rmSync(paths.liveBinary)
   copyFileSync(cachedPath, paths.liveBinary)
   writeNativeAbiMarker(paths, target)
   console.log(`[select-native-abi] Selected '${target}' (${cachedPath} -> ${paths.liveBinary}).`)
