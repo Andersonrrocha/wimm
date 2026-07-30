@@ -264,7 +264,7 @@ function readForeignKeyViolations(db: ReturnType<typeof openLocalDatabase>): For
  * them differing means a different offending row or a different constraint.
  */
 function violationKey(v: ForeignKeyViolation): string {
-  return `${v.table} ${v.rowid ?? 'null'} ${v.parent} ${v.fkid}`
+  return `${v.table}\u0000${v.rowid ?? 'null'}\u0000${v.parent}\u0000${v.fkid}`
 }
 
 /** Matches a `PRAGMA foreign_keys` statement in any case or spacing, so it can be rejected. */
