@@ -468,5 +468,11 @@
     "downloading": "Baixando atualização… {{percent}}%",
     "readyToRestart": "Atualização {{version}} pronta",
     "restartNow": "Reiniciar"
+  },
+  "localBackendError": {
+    "title": "Backend local indisponível",
+    "body": "O Wimm não conseguiu acessar seu banco de dados local. Isso é um bug, não uma sessão expirada — por favor, reporte o problema.",
+    "detailLabel": "Detalhes",
+    "reload": "Recarregar"
   }
 }

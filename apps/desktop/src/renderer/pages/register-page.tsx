@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate } from 'react-router-dom'
 import type { AxiosError } from 'axios'
 import { useAuth } from '../context/auth-context'
 import { AuthBrand } from '../components/auth-brand'
@@ -23,10 +23,17 @@ function registerErrorMessage(err: unknown, fallback: string): string {
 
 export function RegisterPage(): JSX.Element {
   const { t } = useTranslation()
-  const { register } = useAuth()
+  const { register, mode } = useAuth()
   const navigate = useNavigate()
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+
+  // Same reasoning as login-page.tsx: local mode has no accounts and no
+  // `/auth/register` route, so this form can never succeed there. Redirect
+  // home instead of leaving it reachable as a dead end.
+  if (mode?.mode === 'local') {
+    return <Navigate to="/" replace />
+  }
 
   const handleSubmit = async (input: {
     username: string
