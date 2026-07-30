@@ -189,7 +189,13 @@ git commit -m "feat(workspace): select the native sqlite abi per runtime with a 
 
 ---
 
-## Task 4: Package native modules into the built app
+## Task 4: Package native modules into the built app — MOVED TO PHASE 4b
+
+**Not done in this phase.** Writing the plan, I put packaging before embedding; that is backwards. Packaging the native module presupposes something in `apps/desktop` that loads it, and nothing does until the API is embedded, which is Phase 4b's work. Doing it here would mean writing throwaway glue purely to satisfy the proof, and the proof would then describe scaffolding rather than the real application.
+
+The findings below are still correct and carry forward to 4b unchanged.
+
+
 
 **Files:**
 - Modify: `apps/desktop/package.json` (`build` section)
@@ -230,7 +236,7 @@ git commit -m "chore(desktop): package the native sqlite module outside asar"
 - [ ] Both drift guards (`assert-schema-parity.ts`, `assert-check-constraints.ts`).
 - [ ] `git diff --name-only` touches only `apps/desktop`, `scripts/`, root config, and `apps/api/package.json`. **No `apps/api/src` source file changes** beyond the guard added in Task 3.
 - [ ] The Task 2 verification script passes under the upgraded Electron.
-- [ ] A packaged build opens a SQLite profile.
+- [ ] The tree is left on the `node` ABI with the suite green.
 
 ## Exit criteria
 
@@ -238,13 +244,12 @@ git commit -m "chore(desktop): package the native sqlite module outside asar"
 - A real Prisma query against SQLite has run inside Electron's main process — proven by a checked-in script, not by inspection.
 - Selecting the wrong ABI produces a message telling a human what to run, never a segfault.
 - The API test suite still passes offline at its full count, with the ABI mechanism in place.
-- A packaged build — not just a dev build — opens a SQLite database.
 
 ## Deliberately out of scope
 
 Phase 4 as specified bundles far more than this. Split out, to keep each plan's deliverable independently working:
 
-- **Phase 4b — Embedded API:** Nest booting in Electron main on `listen(0, '127.0.0.1')`, the per-session token, the IPC port handshake, the renderer's axios base URL and default header, and making the refresh-token interceptor a no-op in local mode. **`/security-review` gates this phase** — it introduces the network listener and a new authentication surface.
+- **Phase 4b — Embedded API:** Nest booting in Electron main on `listen(0, '127.0.0.1')`, the per-session token, the IPC port handshake, the renderer's axios base URL and default header, and making the refresh-token interceptor a no-op in local mode. **Plus the packaging work moved out of Task 4 above** — getting `apps/api` and the native module into the built app, unpacked from asar, proven by running a packaged build. **`/security-review` gates this phase** — it introduces the network listener and a new authentication surface.
 - **Phase 4c — Profile lifecycle and data safety:** onboarding when there are no profiles, the picker when there are several, teardown-and-rebuild on switch, running Phase 2's migration runner on open, and the export-profile / restore-from-backup actions from D8.
 
 Two carry-overs from Phase 3 land in 4c and must not be lost: `ProfileModule` **fails to boot** when its database has zero `User` rows, so onboarding must guarantee that row before the module is composed; and `AI_KEY_ENCRYPTION_SECRET` is currently a compiled-in constant, which is acceptable only while the profile file never leaves the machine — the export action in 4c is exactly what changes that, so it needs a per-profile random secret.
