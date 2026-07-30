@@ -69,9 +69,19 @@
     },
     "files": [
       "out/**/*",
-      "package.json"
+      "package.json",
+      "node_modules/**/*",
+      "!node_modules/@wimm/api/src/**/*",
+      "!node_modules/@wimm/api/test/**/*",
+      "!node_modules/@wimm/api/prisma/migrations/**/*",
+      "!node_modules/@wimm/api/*.tsbuildinfo"
     ],
     "asar": true,
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "afterPack": "scripts/after-pack.cjs",
+    "afterSign": "scripts/after-sign.cjs",
     "mac": {
       "category": "public.app-category.finance",
       "icon": "build-resources/icon.icns",
