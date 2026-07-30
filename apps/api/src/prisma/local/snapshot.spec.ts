@@ -76,9 +76,14 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     createDatabase(DB_FILE, ['alpha'])
     const base = new Date('2026-01-01T00:00:00.000Z').getTime()
 
-    const paths = Array.from({ length: 6 }, (_, i) =>
-      snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date(base + i * 1000)),
-    )
+    // Each iteration changes the database first, so every call produces a
+    // genuinely new snapshot -- an unchanged database is deliberately
+    // deduplicated (see the "redundant snapshot" tests below) and would
+    // never reach 6 distinct snapshots to prune from.
+    const paths = Array.from({ length: 6 }, (_, i) => {
+      if (i > 0) insertRow(DB_FILE, `row-${i}`)
+      return snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date(base + i * 1000))
+    })
 
     const remaining = listSnapshots(BACKUP_DIR, 'wimm.db')
     expect(remaining).toHaveLength(5)
@@ -94,6 +99,10 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     const base = new Date('2026-01-01T00:00:00.000Z').getTime()
 
     for (let i = 0; i < 6; i++) {
+      // See the comment in the "prunes to the newest 5 snapshots" test above:
+      // each call must change the database first, or an unchanged database
+      // would be deduplicated instead of producing 6 distinct snapshots.
+      if (i > 0) insertRow(OTHER_DB_FILE, `other-row-${i}`)
       snapshotDatabase(OTHER_DB_FILE, BACKUP_DIR, 'other.db', new Date(base + i * 1000))
     }
     const dbSnapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date(base + 6000))
@@ -125,6 +134,10 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     // combined count past the retention limit.
     const aliceSnapshotPath = snapshotDatabase(aliceFile, BACKUP_DIR, 'alice', new Date(base))
     for (let i = 1; i <= 6; i++) {
+      // See the comment in the "prunes to the newest 5 snapshots" test above:
+      // each call must change the database first, or an unchanged database
+      // would be deduplicated instead of producing 6 distinct snapshots.
+      if (i > 1) insertRow(bobFile, `bob-row-${i}`)
       snapshotDatabase(bobFile, BACKUP_DIR, 'bob', new Date(base + i * 1000))
     }
 
@@ -138,7 +151,11 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
 
     expect(bobSnapshots).toHaveLength(5)
     for (const snapshot of bobSnapshots) {
-      expect(readRows(snapshot.path)).toEqual(['bob-1'])
+      // Each snapshot has different content (see above), but none of them
+      // is ever Alice's -- proving the two ids' snapshots never cross.
+      const rows = readRows(snapshot.path)
+      expect(rows[0]).toBe('bob-1')
+      expect(rows).not.toContain('alice-1')
     }
   })
 
@@ -148,8 +165,13 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     const t2 = new Date('2026-01-01T00:00:01.000Z')
     const t3 = new Date('2026-01-01T00:00:02.000Z')
 
+    // Each call changes the database first -- an unchanged database is
+    // deliberately deduplicated (see the "redundant snapshot" tests below)
+    // rather than producing a new, distinct snapshot to order.
     snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', t1)
+    insertRow(DB_FILE, 'beta')
     snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', t2)
+    insertRow(DB_FILE, 'gamma')
     snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', t3)
 
     const snapshots = listSnapshots(BACKUP_DIR, 'wimm.db')
@@ -371,5 +393,28 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
 
     expect(result.healthy).toBe(false)
     expect(result.problem).toMatch(/is not a database/)
+  })
+
+  // Item 4: an unchanged database must not consume a retention slot.
+  it('does not take a redundant snapshot when the database is unchanged since the newest existing snapshot, and does not consume a retention slot', () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const first = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+
+    // Nothing changed in the database between these two calls.
+    const second = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:10.000Z'))
+
+    expect(second).toBe(first)
+    expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toHaveLength(1)
+  })
+
+  it('still takes a new snapshot when the database has changed since the newest existing snapshot', () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const first = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+    insertRow(DB_FILE, 'beta')
+
+    const second = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:10.000Z'))
+
+    expect(second).not.toBe(first)
+    expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toHaveLength(2)
   })
 })

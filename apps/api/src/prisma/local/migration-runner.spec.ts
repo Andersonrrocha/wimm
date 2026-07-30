@@ -582,4 +582,36 @@ describe('applyPendingMigrations', () => {
     expect(listSnapshots(BACKUP_DIR, DATABASE_ID)).toEqual(snapshotsAfterFirstRun)
     expect(tableNames(DB_FILE)).toEqual(expect.arrayContaining(['widgets', 'gadgets']))
   })
+
+  // Item 4: a boot-time migration that fails the same way on every relaunch
+  // must not evict real snapshot history just because it keeps re-snapshotting
+  // the same, unchanged (fully rolled-back) database.
+  it('does not burn through the snapshot retention window across repeated relaunches of a build whose migration keeps failing', () => {
+    const migrationsDir = join(ROOT, 'migrations-crash-loop')
+    writeMigration(migrationsDir, '0000_good', 'CREATE TABLE "widgets" ("id" TEXT NOT NULL PRIMARY KEY);')
+    writeMigration(migrationsDir, '0001_bad', 'THIS IS NOT VALID SQL AT ALL;')
+
+    const base = new Date('2026-01-01T00:00:00.000Z').getTime()
+
+    // More relaunches than MAX_SNAPSHOTS_PER_DATABASE (5). Every attempt
+    // fails and rolls back completely, so the database going into each
+    // attempt is byte-for-byte the same as it was for the previous one.
+    for (let i = 0; i < 6; i++) {
+      expect(() =>
+        applyPendingMigrations({
+          file: DB_FILE,
+          migrationsDir,
+          backupDir: BACKUP_DIR,
+          databaseId: DATABASE_ID,
+          now: new Date(base + i * 1000),
+        }),
+      ).toThrow(/0001_bad/)
+    }
+
+    // Without the fix, 6 crash-loop relaunches would take 6 distinct
+    // (byte-identical) snapshots, pruning away everything older. With it,
+    // every attempt after the first reuses the existing snapshot instead of
+    // consuming a retention slot.
+    expect(listSnapshots(BACKUP_DIR, DATABASE_ID)).toHaveLength(1)
+  })
 })

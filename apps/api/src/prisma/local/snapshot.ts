@@ -57,6 +57,19 @@
  *   internally, so callers (and tests) can produce deterministic, ordered
  *   timestamps without sleeping.
  *
+ * - `snapshotDatabase` skips taking a new snapshot -- without consuming a
+ *   retention slot -- when `file` is byte-identical to the newest existing
+ *   snapshot of `databaseId`, compared by content hash rather than size or
+ *   mtime (`copyFileSync` does not preserve mtime consistently across
+ *   platforms, and two different states can coincidentally share a size).
+ *   This exists for the crash-loop case: a boot-time migration that fails
+ *   the same way on every relaunch rolls its database back to exactly the
+ *   state it was in before, so without this check every relaunch would take
+ *   another snapshot of that same unchanged state and prune away real
+ *   history to make room for it. See `applyPendingMigrations`, the only
+ *   caller for which this matters -- it snapshots once per call whenever
+ *   anything is pending, which is exactly what a crash loop repeats.
+ *
  * - `restoreSnapshot` refuses -- before touching anything -- unless it can
  *   get exclusive access to `targetFile` via a real SQLite lock
  *   (`assertExclusiveAccess`). Overwriting a SQLite file while another
@@ -76,8 +89,8 @@
  *   same private assert and turns a throw into a result, rather than
  *   duplicating the open-and-integrity-check logic a second time.
  */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'fs'
-import { randomBytes } from 'crypto'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'fs'
+import { createHash, randomBytes } from 'crypto'
 import { basename, dirname, join } from 'path'
 // Same import form as open-local-database.ts: this package has
 // `allowSyntheticDefaultImports` but not `esModuleInterop`, so a default
@@ -276,11 +289,18 @@ function pruneSnapshots(backupDir: string, databaseId: string, keep: number): vo
   }
 }
 
+/** True if `a` and `b` have identical contents, compared by hash rather than size or mtime. */
+function filesAreIdentical(a: string, b: string): boolean {
+  const hash = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex')
+  return hash(a) === hash(b)
+}
+
 /**
  * Copies `file` into `backupDir` as a new, validated snapshot identified by
  * `databaseId`, then prunes old snapshots of that same id down to the
- * newest `MAX_SNAPSHOTS_PER_DATABASE`. Returns the path of the new
- * snapshot.
+ * newest `MAX_SNAPSHOTS_PER_DATABASE`. Returns the path of the snapshot that
+ * now represents `file`'s current state -- see below, this is not always a
+ * newly written one.
  *
  * `databaseId` is caller-supplied and is never derived from `file`'s
  * basename: two databases that happen to share a basename (e.g. every
@@ -288,12 +308,27 @@ function pruneSnapshots(backupDir: string, databaseId: string, keep: number): vo
  * caller, or their snapshots would collide -- and prune each other -- in a
  * shared `backupDir`.
  *
+ * If `file` is byte-identical (by content hash, not size or mtime -- see
+ * `filesAreIdentical`) to the newest existing snapshot of `databaseId`, no
+ * new snapshot is written and that existing snapshot's path is returned
+ * instead: nothing changed since it was taken, so a new copy would be a
+ * redundant use of one of the `MAX_SNAPSHOTS_PER_DATABASE` retention slots.
+ * This is what keeps a boot-time failure that relaunches repeatedly against
+ * an unchanged, already-rolled-back database from evicting real history --
+ * see the module doc comment. When no snapshot of `databaseId` exists yet,
+ * this comparison is skipped and a snapshot is taken as normal.
+ *
  * Throws, without writing anything, if `file` is not currently in DELETE
- * journal mode. Throws, after deleting the bad copy, if the written
+ * journal mode. Throws, after deleting the bad copy, if a newly written
  * snapshot fails `PRAGMA integrity_check`.
  */
 export function snapshotDatabase(file: string, backupDir: string, databaseId: string, now: Date): string {
   assertDeleteJournalMode(file)
+
+  const newest = listSnapshots(backupDir, databaseId)[0]
+  if (newest && filesAreIdentical(file, newest.path)) {
+    return newest.path
+  }
 
   mkdirSync(backupDir, { recursive: true })
 
