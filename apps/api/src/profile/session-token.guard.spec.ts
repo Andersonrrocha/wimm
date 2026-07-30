@@ -32,17 +32,31 @@ class PublicHandlerController {
   handler() {}
 }
 
+/** The port every fixture below pretends this connection actually landed on -- see `isAllowedHost`. */
+const FIXTURE_PORT = 54321
+
+// `null` (not `undefined`) means "omit the Host header entirely" -- a
+// default *parameter* only kicks in for an omitted or literal `undefined`
+// argument, so `undefined` cannot double as "no host" without silently
+// falling back to the default instead. Every call site keeps meaning what
+// it looks like it means: passing `undefined` for `hostHeader` uses the
+// realistic default, passing `null` explicitly asks for no header at all.
 function contextFor(
   target: object,
   handler: () => void,
   headerValue: string | string[] | undefined,
+  hostHeader: string | null = `127.0.0.1:${FIXTURE_PORT}`,
 ): ExecutionContext {
   return {
     getHandler: () => handler,
     getClass: () => target.constructor,
     switchToHttp: () => ({
       getRequest: () => ({
-        headers: headerValue === undefined ? {} : { [SESSION_TOKEN_HEADER]: headerValue },
+        headers: {
+          ...(headerValue === undefined ? {} : { [SESSION_TOKEN_HEADER]: headerValue }),
+          ...(hostHeader === null ? {} : { host: hostHeader }),
+        },
+        socket: { localPort: FIXTURE_PORT },
       }),
       getResponse: () => ({}),
     }),
@@ -152,5 +166,65 @@ describe('SessionTokenGuard', () => {
     )
 
     expect(guard.canActivate(context)).toBe(true)
+  })
+
+  describe('Host header allowlist (Finding 5)', () => {
+    it('rejects with 401 when Host names a different hostname, even with a valid token', () => {
+      // The DNS-rebinding scenario this check exists for: the browser
+      // resolved "evil.com" to 127.0.0.1, connects there, but still sends
+      // "Host: evil.com" -- the hostname it believes it is talking to.
+      const context = contextFor(
+        ProtectedController.prototype,
+        ProtectedController.prototype.handler,
+        EXPECTED_TOKEN,
+        `evil.com:${FIXTURE_PORT}`,
+      )
+
+      expect(() => guard.canActivate(context)).toThrow(UnauthorizedException)
+    })
+
+    it('rejects with 401 when Host names the right hostname but the wrong port, even with a valid token', () => {
+      const context = contextFor(
+        ProtectedController.prototype,
+        ProtectedController.prototype.handler,
+        EXPECTED_TOKEN,
+        `127.0.0.1:${FIXTURE_PORT + 1}`,
+      )
+
+      expect(() => guard.canActivate(context)).toThrow(UnauthorizedException)
+    })
+
+    it('rejects with 401 when the Host header is absent, even with a valid token', () => {
+      const context = contextFor(
+        ProtectedController.prototype,
+        ProtectedController.prototype.handler,
+        EXPECTED_TOKEN,
+        null,
+      )
+
+      expect(() => guard.canActivate(context)).toThrow(UnauthorizedException)
+    })
+
+    it('rejects a @Public() handler too when Host is wrong -- the Host check runs before the @Public() bypass', () => {
+      const context = contextFor(
+        PublicHandlerController.prototype,
+        PublicHandlerController.prototype.handler,
+        undefined,
+        `evil.com:${FIXTURE_PORT}`,
+      )
+
+      expect(() => guard.canActivate(context)).toThrow(UnauthorizedException)
+    })
+
+    it('admits "localhost" as well as "127.0.0.1" when the port matches', () => {
+      const context = contextFor(
+        ProtectedController.prototype,
+        ProtectedController.prototype.handler,
+        EXPECTED_TOKEN,
+        `localhost:${FIXTURE_PORT}`,
+      )
+
+      expect(guard.canActivate(context)).toBe(true)
+    })
   })
 })

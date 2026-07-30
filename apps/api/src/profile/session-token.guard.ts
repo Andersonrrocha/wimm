@@ -45,6 +45,20 @@ import { SESSION_TOKEN, SESSION_TOKEN_HEADER } from './session-token'
  * subsequently loads, and into crash reports; a header the caller sets
  * explicitly is not.
  *
+ * **The `Host` header check (Finding 5, phase 4b security review).** The
+ * token check above is already sufficient on its own -- a caller without it
+ * is rejected regardless of `Host` -- but a `Host` allowlist is the standard
+ * second lock on any listener a DNS-rebinding attack can reach: a browser
+ * that resolves an attacker-controlled hostname to `127.0.0.1` still sends
+ * that hostname (not `127.0.0.1`) as `Host`, because that is the origin the
+ * page believes it is talking to. Checking `Host` catches that mismatch
+ * independently of whether the token check would also have caught it (e.g.
+ * if a future change ever made a route `@Public()`), which is the entire
+ * point of a *second* lock. Runs before the `@Public()` check below, for
+ * the same reason: a rebinding attack targets whatever is reachable, and a
+ * future public route should not be exempt from this any more than from the
+ * token.
+ *
  * **Never logs the token, in either direction.** This class does not call
  * any logging function, and the exception it throws is the bare, stock
  * `UnauthorizedException` -- it carries no detail about whether the header
@@ -61,6 +75,12 @@ export class SessionTokenGuard implements CanActivate {
   ) {}
 
   canActivate(context: ExecutionContext): boolean {
+    const request = context.switchToHttp().getRequest<Request>()
+
+    if (!isAllowedHost(request)) {
+      throw new UnauthorizedException()
+    }
+
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
@@ -69,7 +89,6 @@ export class SessionTokenGuard implements CanActivate {
       return true
     }
 
-    const request = context.switchToHttp().getRequest<Request>()
     const provided = request.headers[SESSION_TOKEN_HEADER]
 
     // Only a single string value is ever accepted. `undefined` (header
@@ -115,4 +134,41 @@ function constantTimeEqual(provided: string, expected: string): boolean {
   const providedDigest = createHash('sha256').update(provided, 'utf8').digest()
   const expectedDigest = createHash('sha256').update(expected, 'utf8').digest()
   return timingSafeEqual(providedDigest, expectedDigest)
+}
+
+/** Hostnames this composition root's own client ever legitimately connects through -- see `isAllowedHost`. */
+const ALLOWED_HOSTNAMES = new Set(['127.0.0.1', 'localhost'])
+
+/**
+ * True only when `request`'s `Host` header names this same connection's own
+ * hostname (`127.0.0.1` or `localhost`) and port.
+ *
+ * The port is read back from `request.socket.localPort` -- the port this
+ * connection actually landed on -- rather than threaded in through DI from
+ * whatever `app.listen(0, '127.0.0.1')` happened to be assigned (see
+ * `local-api.ts`'s `startLocalApi`, which never learns that port until
+ * *after* this guard's providers are already composed). Reading it back
+ * from the live socket instead mirrors this project's own "verify against
+ * what actually happened" convention (see `assertBoundToLoopback` in
+ * `local-api.ts`): it is correct for this connection regardless of which
+ * ephemeral port the OS assigned, and needs no plumbing through
+ * `AppLocalModuleOptions` at all.
+ *
+ * A missing, empty, or malformed `Host` header fails closed, the same as
+ * every other check in this guard.
+ */
+function isAllowedHost(request: Request): boolean {
+  const hostHeader = request.headers.host
+  if (typeof hostHeader !== 'string' || hostHeader.length === 0) {
+    return false
+  }
+
+  const separatorIndex = hostHeader.lastIndexOf(':')
+  if (separatorIndex === -1) {
+    return false
+  }
+  const hostname = hostHeader.slice(0, separatorIndex).toLowerCase()
+  const port = hostHeader.slice(separatorIndex + 1)
+
+  return ALLOWED_HOSTNAMES.has(hostname) && port === String(request.socket.localPort)
 }
