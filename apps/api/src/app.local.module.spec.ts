@@ -38,11 +38,20 @@ import Database = require('better-sqlite3')
 import { AppLocalModule } from './app.local.module'
 import { LocalPrismaService } from './prisma/local/local-prisma.service'
 import { PrismaService } from './prisma/prisma.service'
+import { SESSION_TOKEN_HEADER } from './profile/session-token'
 import type { CreateSourceDto } from './sources/dto/create-source.dto'
 import { SourcesService } from './sources/sources.service'
 
 const ROOT = '/tmp/wimm-app-local-module-spec'
 const BASELINE = join(__dirname, '../prisma/migrations-sqlite/0000_baseline/migration.sql')
+
+// A fixed stand-in for `generateSessionToken()`'s output. This suite is not
+// testing the guard itself (see `session-token.guard.spec.ts` for that, and
+// `local-route-posture.spec.ts` for the behavioral proof against a booted
+// server) -- it only needs *some* value `AppLocalModule.forRoot` accepts and
+// that the same suite's requests can present back, now that every route
+// requires one.
+const TEST_SESSION_TOKEN = 'app-local-module-spec-fixed-session-token'
 
 /** Builds a fresh SQLite file with the real, committed Phase 1 baseline applied. */
 function freshDatabaseFile(subdir: string): string {
@@ -87,7 +96,7 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
       const userId = await seedUser(file, 'alice@example.com', 'alice')
 
       const moduleRef = await Test.createTestingModule({
-        imports: [AppLocalModule.forRoot({ databaseFile: file })],
+        imports: [AppLocalModule.forRoot({ databaseFile: file, sessionToken: TEST_SESSION_TOKEN })],
       }).compile()
 
       app = moduleRef.createNestApplication({ logger: false })
@@ -99,8 +108,13 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
       const address = server.address() as AddressInfo
       const baseUrl = `http://127.0.0.1:${address.port}`
 
-      // READ: a freshly onboarded profile has no sources yet.
-      const before = await fetch(`${baseUrl}/sources`)
+      // READ: a freshly onboarded profile has no sources yet. Every route
+      // now requires `SessionTokenGuard`'s header (see app.local.module.ts),
+      // so this and the requests below present the same fixed test token
+      // `AppLocalModule.forRoot` was given above.
+      const before = await fetch(`${baseUrl}/sources`, {
+        headers: { [SESSION_TOKEN_HEADER]: TEST_SESSION_TOKEN },
+      })
       expect(before.status).toBe(200)
       expect(await before.json()).toEqual([])
 
@@ -108,7 +122,10 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
       // PrismaService (aliased to LocalPrismaService) -> SQLite.
       const created = await fetch(`${baseUrl}/sources`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          [SESSION_TOKEN_HEADER]: TEST_SESSION_TOKEN,
+        },
         body: JSON.stringify({ name: 'Checking account', type: SourceType.BANK_ACCOUNT }),
       })
       expect(created.status).toBe(201)
@@ -122,7 +139,9 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
 
       // READ again: the write is visible through the same seam, proving
       // this is a real round trip and not two independent connections.
-      const after = await fetch(`${baseUrl}/sources`)
+      const after = await fetch(`${baseUrl}/sources`, {
+        headers: { [SESSION_TOKEN_HEADER]: TEST_SESSION_TOKEN },
+      })
       expect(after.status).toBe(200)
       const afterBody = await after.json()
       expect(afterBody).toHaveLength(1)
@@ -143,7 +162,7 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
 
       try {
         const moduleBuilder = Test.createTestingModule({
-          imports: [AppLocalModule.forRoot({ databaseFile: file })],
+          imports: [AppLocalModule.forRoot({ databaseFile: file, sessionToken: TEST_SESSION_TOKEN })],
         })
           .overrideProvider(PrismaService)
           .useClass(PrismaService)
@@ -165,7 +184,7 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
       const userId = await seedUser(file, 'carol@example.com', 'carol')
 
       const moduleRef = await Test.createTestingModule({
-        imports: [AppLocalModule.forRoot({ databaseFile: file })],
+        imports: [AppLocalModule.forRoot({ databaseFile: file, sessionToken: TEST_SESSION_TOKEN })],
       }).compile()
 
       try {

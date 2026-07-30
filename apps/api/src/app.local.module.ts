@@ -42,6 +42,7 @@
  */
 import { DynamicModule, Module } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
+import { APP_GUARD } from '@nestjs/core'
 import { AiModule } from './ai/ai.module'
 import { CategoriesModule } from './categories/categories.module'
 import { CategorizationRulesModule } from './categorization-rules/categorization-rules.module'
@@ -49,6 +50,8 @@ import { ImportsModule } from './imports/imports.module'
 import { LocalPrismaService } from './prisma/local/local-prisma.service'
 import { PrismaService } from './prisma/prisma.service'
 import { ProfileModule } from './profile/profile.module'
+import { SESSION_TOKEN } from './profile/session-token'
+import { SessionTokenGuard } from './profile/session-token.guard'
 import { RecurrencesModule } from './recurrences/recurrences.module'
 import { ReportsModule } from './reports/reports.module'
 import { SourcesModule } from './sources/sources.module'
@@ -92,6 +95,15 @@ export interface AppLocalModuleOptions {
    * (see `ProfileModule`'s doc comment for the same rule).
    */
   databaseFile: string
+
+  /**
+   * The per-launch secret `SessionTokenGuard` checks every request against.
+   * Generated once per process by `generateSessionToken()`
+   * (`profile/session-token.ts`) and supplied here -- this module never
+   * generates its own, so a test (or a future `main.local.ts`) controls
+   * the value and can present it back on outgoing requests.
+   */
+  sessionToken: string
 }
 
 @Module({})
@@ -142,6 +154,19 @@ export class AppLocalModule {
           // exactly that reason. Treat those tests as load-bearing, not incidental.
           useExisting: LocalPrismaService,
         },
+        // Makes the launch's session token resolvable by DI token so
+        // `SessionTokenGuard` (constructed below via `useClass`, which Nest
+        // itself instantiates and injects) can receive it through its
+        // constructor rather than a compile-time constant.
+        { provide: SESSION_TOKEN, useValue: options.sessionToken },
+        // Global guard for THIS composition root only -- see
+        // `SessionTokenGuard`'s doc comment for why it exists and what it
+        // protects. Registering `APP_GUARD` here, inside `forRoot`'s
+        // returned `DynamicModule`, scopes it to whichever application
+        // graph includes `AppLocalModule`; it has no effect on the hosted
+        // `AppModule`, which never imports this module and keeps its own
+        // `JwtAuthGuard` registration entirely untouched.
+        { provide: APP_GUARD, useClass: SessionTokenGuard },
       ],
       exports: [PrismaService],
     }
