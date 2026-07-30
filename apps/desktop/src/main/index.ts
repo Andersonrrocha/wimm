@@ -8,7 +8,9 @@ import {
   setTokens,
 } from './store'
 import { NewerDatabaseError, startLocalApi, type LocalApiHandle } from './local-api'
+import { forwardLocalApiRequest } from './local-api-bridge'
 import { quitAndInstallUpdate, setupAutoUpdater } from './updater'
+import type { ApiMode, LocalApiRequestPayload } from '../shared/local-api-protocol'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -58,6 +60,41 @@ function registerIpcHandlers(): void {
   )
   ipcMain.handle('tokens:clear', () => clearTokens())
   ipcMain.handle('updater:quitAndInstall', () => quitAndInstallUpdate())
+
+  // --- Embedded local API handshake ---------------------------------------
+  //
+  // Registered unconditionally, before `bootLocalApi` has necessarily run --
+  // `localApiHandle` is read at *call* time (a closure over the module-level
+  // variable), not captured here, so these two handlers always report
+  // whatever is actually true at the moment the renderer asks, not whatever
+  // was true when the app started listening.
+  //
+  // `local-api:get-mode` is the renderer's only way to learn which transport
+  // to use (see `api-client.ts`'s `resolveApiMode`) -- never an env var it
+  // reads itself. `local-api:request` is the renderer's only way to reach
+  // the embedded API at all: it forwards to `forwardLocalApiRequest`
+  // (`local-api-bridge.ts`), which attaches the real session token here, in
+  // main, so the renderer never receives it. See that module's doc comment
+  // for the full reasoning.
+  ipcMain.handle('local-api:get-mode', (): ApiMode => {
+    return localApiHandle ? { mode: 'local' } : { mode: 'hosted' }
+  })
+
+  ipcMain.handle('local-api:request', (_event, payload: LocalApiRequestPayload) => {
+    if (!localApiHandle) {
+      // The renderer only calls this after `local-api:get-mode` reported
+      // `'local'`, which only happens once `localApiHandle` is set -- this
+      // can only be reached by a caller ignoring that contract, not by any
+      // path this app's own renderer code takes. Refusing loudly here
+      // beats returning a confusing network-level error from a `fetch` to
+      // a port that no longer means anything.
+      throw new Error(
+        'local-api:request invoked with no embedded local API running -- the renderer must check ' +
+          "local-api:get-mode's result before calling this.",
+      )
+    }
+    return forwardLocalApiRequest(localApiHandle, payload)
+  })
 }
 
 function createWindow(): void {

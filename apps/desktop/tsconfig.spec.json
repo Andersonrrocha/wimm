@@ -7,6 +7,14 @@
     "noEmit": true,
     "types": ["node", "jest"]
   },
-  "include": ["src/main/**/*.ts", "src/preload/**/*.ts"],
+  "include": [
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/renderer/lib/api-mode.ts",
+    "src/renderer/lib/api-mode.spec.ts",
+    "src/renderer/lib/local-api-adapter.ts",
+    "src/renderer/lib/local-api-adapter.spec.ts"
+  ],
   "exclude": ["node_modules"]
 }

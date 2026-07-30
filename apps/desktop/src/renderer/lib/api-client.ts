@@ -4,8 +4,22 @@ import axios, {
   type InternalAxiosRequestConfig,
 } from 'axios'
 import type { AuthResponse, RefreshTokenRequest } from '@wimm/shared'
+import { resolveApiMode } from './api-mode'
+import { createLocalApiAdapter } from './local-api-adapter'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000/api'
+
+/**
+ * The local-mode adapter, built once against `window.localApi` (the preload
+ * bridge -- see `preload/index.ts`). Only ever *installed* on a request
+ * (`config.adapter = localAdapter` below) once `resolveApiMode` has actually
+ * reported `'local'` -- constructing it eagerly here is harmless (it holds
+ * no state of its own until called) and keeps the interceptor below a plain
+ * `if`, not a lazy-init dance.
+ */
+const localAdapter = createLocalApiAdapter({
+  request: (config) => window.localApi.request(config),
+})
 
 let isRefreshing = false
 let pendingQueue: Array<{
@@ -39,11 +53,26 @@ export function createApiClient(): AxiosInstance {
     headers: { 'Content-Type': 'application/json' },
   })
 
-  // Attach stored access token to every request
+  // Attach stored access token to every request -- hosted mode only.
   client.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
     if (config.data instanceof FormData) {
       config.headers.delete('Content-Type')
     }
+
+    const mode = await resolveApiMode(window.localApi)
+
+    if (mode.mode === 'local') {
+      // Route this request through the embedded API's IPC adapter instead
+      // of the normal HTTP transport (see `local-api-adapter.ts`'s doc
+      // comment for why: no CORS-safe way exists to call the embedded API
+      // directly from the renderer without also handing it the session
+      // token). There is no token store to consult here -- local mode has
+      // no login flow and no token of its own -- so, unlike the hosted
+      // branch below, nothing else in this interceptor applies.
+      config.adapter = localAdapter
+      return config
+    }
+
     const token = await window.tokenStore.getAccessToken()
     if (token) {
       config.headers.set('Authorization', `Bearer ${token}`)
@@ -51,10 +80,26 @@ export function createApiClient(): AxiosInstance {
     return config
   })
 
-  // On 401: try refresh once, then queue concurrent requests
+  // On 401: try refresh once, then queue concurrent requests -- hosted mode only.
   client.interceptors.response.use(
     (response) => response,
     async (error: AxiosError) => {
+      const mode = await resolveApiMode(window.localApi)
+
+      if (mode.mode === 'local') {
+        // There is no refresh token to exchange in local mode -- identity
+        // comes from `ProfileModule`'s own middleware, not a JWT this app
+        // issued. A 401 here means the session token main injected was
+        // rejected (a real bug: a stale token after a restart, or the guard
+        // itself misbehaving), never an expired session, so this must not
+        // retry, must not touch `window.tokenStore` (which local mode never
+        // populates in the first place), and must not dispatch
+        // `auth:logout` -- there is no login screen for it to send the user
+        // to. Surfacing the rejection as-is is what lets it look like the
+        // real failure it is, instead of a silently empty screen.
+        return Promise.reject(error)
+      }
+
       const original = error.config as InternalAxiosRequestConfig & {
         _retried?: boolean
       }

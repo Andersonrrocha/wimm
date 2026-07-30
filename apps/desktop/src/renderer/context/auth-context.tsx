@@ -9,6 +9,7 @@ import React, {
 import type { AuthResponse, LoginRequest, RegisterRequest, User } from '@wimm/shared'
 import { applyLocale, getGuestLocale } from '../i18n/config'
 import { apiClient } from '../lib/api-client'
+import { resolveApiMode } from '../lib/api-mode'
 
 type AuthState =
   | { status: 'loading' }
@@ -55,6 +56,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
     initialized.current = true
 
     const restore = async (): Promise<void> => {
+      const mode = await resolveApiMode(window.localApi)
+
+      // Local mode has no login flow and therefore no access token to look
+      // for: there is nothing in `window.tokenStore` to check, ever, since
+      // nothing in local mode ever calls `setTokens`. Identity there comes
+      // from the profile's single `User` row, admitted once the embedded
+      // API's session-token guard accepts the request (see
+      // `SessionTokenGuard` and `ProfileModule`'s middleware) -- so the
+      // equivalent "is there a session" check is simply asking `/users/me`
+      // directly, with no token gate in front of it. A failure here (the
+      // embedded API unreachable, or the session token rejected) still
+      // degrades to `unauthenticated` rather than throwing past this
+      // effect -- there is no meaningfully different UI to show for "not
+      // logged in" versus "the local backend did not answer", and Phase 4c
+      // owns building a dedicated failure state for the latter.
+      if (mode.mode === 'local') {
+        try {
+          const { data } = await apiClient.get<User>('/users/me')
+          setState({ status: 'authenticated', user: data })
+          await applyLocale(data.preferredLocale)
+        } catch {
+          setState({ status: 'unauthenticated' })
+          await applyLocale(getGuestLocale())
+        }
+        return
+      }
+
       const token = await window.tokenStore.getAccessToken()
       if (!token) {
         setState({ status: 'unauthenticated' })

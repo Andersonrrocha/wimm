@@ -1,4 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type {
+  ApiMode,
+  LocalApiRequestPayload,
+  LocalApiResponsePayload,
+} from '../shared/local-api-protocol'
 
 export type TokenStore = {
   getAccessToken: () => Promise<string | undefined>
@@ -51,3 +56,34 @@ const updater: UpdaterApi = {
 }
 
 contextBridge.exposeInMainWorld('updater', updater)
+
+/**
+ * The renderer's only way to reach the embedded local API. Deliberately
+ * exposes just two operations, neither of which ever hands the renderer a
+ * session token:
+ *
+ * - `getMode` reports whether main booted the embedded API at all --
+ *   `api-client.ts` uses this, via `api-mode.ts`, to decide once (and only
+ *   once) whether to install the local IPC adapter or leave the existing
+ *   hosted HTTP path untouched.
+ * - `request` is the transport itself: `local-api-adapter.ts` hands it a
+ *   method/path/data/params/headers tuple with no credential in it at all,
+ *   and `index.ts`'s `local-api:request` handler (via
+ *   `forwardLocalApiRequest`, `main/local-api-bridge.ts`) attaches the real,
+ *   per-launch session token in main before the request ever leaves the
+ *   process. See that module's doc comment for why this boundary is the
+ *   whole point of this design: the renderer -- and therefore any XSS or
+ *   compromised dependency running inside it -- never receives, stores, or
+ *   forwards the token, because it is never handed one.
+ */
+export type LocalApi = {
+  getMode: () => Promise<ApiMode>
+  request: (config: LocalApiRequestPayload) => Promise<LocalApiResponsePayload>
+}
+
+const localApi: LocalApi = {
+  getMode: () => ipcRenderer.invoke('local-api:get-mode'),
+  request: (config: LocalApiRequestPayload) => ipcRenderer.invoke('local-api:request', config),
+}
+
+contextBridge.exposeInMainWorld('localApi', localApi)
