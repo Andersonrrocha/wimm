@@ -207,7 +207,13 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // Finding 4 (phase 4b security review): the preload script
+      // (`preload/index.ts`) uses only `contextBridge` and `ipcRenderer`,
+      // both fully available under Electron's renderer sandbox -- there is
+      // no Node built-in (`fs`, `path`, ...) it needs directly. `false` here
+      // bought nothing and gave a compromised renderer more of the OS
+      // process to work with than it needed.
+      sandbox: true,
     },
   })
 
