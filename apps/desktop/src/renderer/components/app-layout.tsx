@@ -27,7 +27,7 @@ const navLinkClass = (active: boolean): string =>
 
 export function AppLayout(): JSX.Element {
   const { t } = useTranslation();
-  const { logout, state } = useAuth();
+  const { logout, state, mode } = useAuth();
   const navigate = useNavigate();
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [initialTab, setInitialTab] = useState<QuickAddTab>("transaction");
@@ -134,9 +134,17 @@ export function AppLayout(): JSX.Element {
               @{userBadgeLabel}
             </span>
           ) : null}
-          <Button variant="subtle" onClick={handleLogout}>
-            {t("layout.signOut")}
-          </Button>
+          {/* Hidden in local mode: there is no session to end there, so
+              `logout()` is a deliberate no-op and `/login` redirects away. A
+              button that is present but silently does nothing is worse than
+              no button -- it tells the user an action exists when it does
+              not. While the mode is still resolving (`null`) the control
+              stays hidden rather than flashing in and out. */}
+          {mode?.mode === "hosted" ? (
+            <Button variant="subtle" onClick={handleLogout}>
+              {t("layout.signOut")}
+            </Button>
+          ) : null}
         </div>
       </header>
       <main className="flex-1 overflow-auto px-8 pb-12 pt-6">
