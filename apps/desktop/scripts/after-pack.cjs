@@ -613,26 +613,6 @@ module.exports = async function afterPack(context) {
   // structural check below would otherwise catch).
   restorePlainDependencyOverrides(extractTo)
 
-  // Mutation-testing hook -- never set this outside proving
-  // verifyDependencyGraph (and this restoration mechanism) are trustworthy.
-  // Applied here, directly against the real extracted tree, immediately
-  // before the real repack below -- see the Task report's "Fix round 4" for
-  // captured runs with each of these set.
-  const mutationTest = process.env['WIMM_AFTER_PACK_MUTATION_TEST']
-  if (mutationTest === 'delete-package') {
-    const target = path.join(extractTo, 'node_modules', 'yocto-queue')
-    console.log(`[after-pack] MUTATION TEST (delete-package): removing ${target}`)
-    fs.rmSync(target, { recursive: true, force: true })
-  } else if (mutationTest === 'bad-version') {
-    const target = path.join(extractTo, 'node_modules', 'p-locate', 'node_modules', 'p-limit', 'package.json')
-    console.log(`[after-pack] MUTATION TEST (bad-version): corrupting the version in ${target}`)
-    const pkg = JSON.parse(fs.readFileSync(target, 'utf8'))
-    pkg.version = '9.9.9'
-    fs.writeFileSync(target, `${JSON.stringify(pkg, null, 2)}\n`)
-  } else if (mutationTest) {
-    throw new Error(`[after-pack] unknown WIMM_AFTER_PACK_MUTATION_TEST value: ${JSON.stringify(mutationTest)}`)
-  }
-
   // Strip node-gyp build byproducts and other-platform prebuilds from every
   // better-sqlite3 copy this package ships -- see pruneBetterSqlite3BuildArtifacts's
   // and prunePrebuilds's doc comments. This covers both the nested copy just
