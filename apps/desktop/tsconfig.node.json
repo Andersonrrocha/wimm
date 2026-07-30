@@ -19,5 +19,5 @@
     "src/main/**/*",
     "src/preload/**/*"
   ],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "**/*.spec.ts"]
 }
