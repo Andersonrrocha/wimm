@@ -108,6 +108,56 @@
  * `path-to-regexp` copy is overlaid into the same extracted tree the
  * `better-sqlite3` fix already extracts, and ships fully packed inside the
  * repacked `app.asar` like any other plain JS dependency.
+ *
+ * **A third instance, and the moment this stopped being a one-off-patch
+ * problem.** `p-locate` (a transitive dependency of `electron-store` ->
+ * `conf` -> `pkg-up`, used by `store.ts`'s `new Store()` when its fallback
+ * package-root lookup runs -- which happens to not be exercised when the app
+ * runs from its real installed path, only from one with no ancestor
+ * `package.json`, e.g. `/Applications`) pins `p-limit` at `^2.2.0`; this
+ * checkout's real nested copy is `2.3.0`. `electron-builder`'s collector
+ * resolves that nested slot to an unrelated, hoisted top-level
+ * `node_modules/p-limit` this workspace happens to also contain at `3.1.0`
+ * (needed only by devDependencies -- `jest`, `electron-builder`'s own
+ * `dir-compare`, `@expo/fingerprint` -- never shipped otherwise) -- and that
+ * wrong copy is itself missing its own `yocto-queue` dependency entirely,
+ * since `3.1.0`'s `require('yocto-queue')` was never a dependency the
+ * *correct* (2.3.0) resolution needed in the first place.
+ *
+ * Investigating this one all the way to "what should the fix even overlay"
+ * is what surfaced the real scope of the problem: running the structural
+ * check `verify-dependency-graph.cjs` now provides (see that module's own
+ * doc comment) against this task's own already-packaged output found not
+ * three broken dependency edges but **twenty**, across at least seventeen
+ * distinct packages -- `p-locate`/`p-limit` among them, but also `express`'s
+ * and `body-parser`'s and `finalhandler`'s and `send`'s own private `debug`,
+ * `@nestjs/config`'s own `lodash` and `dotenv-expand`, `electron-store`'s own
+ * `type-fest`, `multer`'s own `mkdirp`, `pkg-up`'s *entire own private copy*
+ * of the `find-up`/`locate-path`/`p-locate`/`p-limit`/`path-exists` chain
+ * (distinct from, and older than, the top-level `find-up` this repo also
+ * has), and several more. Every one of them is the identical shape: a
+ * package present in the packaged output, with at least one of its own
+ * declared `dependencies` silently resolved to the wrong physical copy (or
+ * to nothing at all) by `electron-builder`'s collector, while this
+ * checkout's own dev `node_modules` -- verified directly -- has the correct
+ * nested override sitting right there the whole time.
+ *
+ * Hand-listing the fourth, fifth, ... twentieth of these one constant block
+ * at a time (as `NESTED_RELATIVE_PATH` and `EXPRESS_PATH_TO_REGEXP_RELATIVE_PATH`
+ * above do) is exactly the "losing game" this task's own brief warned
+ * against. So, past this point, only the two fixes with genuine extra
+ * complexity stay hand-written above: `better-sqlite3` (native-module ABI
+ * and `asarUnpack` concerns no generic mechanism should paper over) and
+ * `express`'s `path-to-regexp` (already a proven, specific fix, kept as-is
+ * rather than churned for no functional gain). Every other plain-JS instance
+ * of this same bug -- `p-locate`/`p-limit`/`yocto-queue` included -- is
+ * corrected by one general mechanism, `restorePlainDependencyOverrides`
+ * below: it re-derives, from this checkout's own real dev tree, exactly
+ * which nested overrides the packaged tree is missing or has wrong, and
+ * overlays only those, iterating until the packaged tree's own dependency
+ * graph is self-consistent (correcting one wrong nested package can reveal
+ * that *its* own dependency is also wrong or missing -- see that function's
+ * doc comment for a concrete example).
  */
 const fs = require('fs')
 const os = require('os')
@@ -120,6 +170,12 @@ const asar = require('@electron/asar')
 // this specific build actually runs on, robustly across architectures
 // rather than assuming this machine's own `arm64`.
 const { Arch } = require('builder-util')
+const {
+  listNodeModulePackagesFromDisk,
+  resolveDependencyDir,
+  rangeIsSatisfied,
+  findDependencyGraphProblems,
+} = require('./verify-dependency-graph.cjs')
 
 function archName(arch) {
   return Arch[arch]
@@ -319,6 +375,123 @@ function buildUnpackDirPattern(relativeDirs) {
   return `{${posixDirs.map((d) => `${d}{/**,}`).join(',')}}`
 }
 
+/**
+ * Deletes one entry from a package's own `dependencies` field, in the
+ * *extracted-tree copy* only (never the dev checkout this hook reads from --
+ * callers must pass a path under `extractTo`). Used for exactly one, already
+ * narrowly-justified case: see `INSTALL_ONLY_DEPENDENCIES_TO_STRIP` below and
+ * `verify-dependency-graph.cjs`'s doc comment ("What it deliberately does not
+ * check") for the full reasoning. No-ops if the entry is already absent.
+ */
+function stripDependencyDeclaration(packageDir, depName) {
+  const pkgJsonPath = path.join(packageDir, 'package.json')
+  const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'))
+  if (pkg.dependencies && depName in pkg.dependencies) {
+    delete pkg.dependencies[depName]
+    fs.writeFileSync(pkgJsonPath, `${JSON.stringify(pkg, null, 2)}\n`)
+    console.log(`[after-pack] stripped install-time-only "${depName}" dependency declaration from ${pkgJsonPath}`)
+  }
+}
+
+/**
+ * `better-sqlite3@12.x`'s own `package.json` declares `prebuild-install` as a
+ * regular (non-dev) `dependency` -- used only by its own `install` lifecycle
+ * script to fetch a prebuilt binary, never `require()`d by the package's
+ * runtime code (`lib/database.js`'s exhaustive `bindings` search-candidate
+ * trace, captured verbatim in this task's Fix round 1, never mentions it).
+ * Left in place, `verifyDependencyGraph` below would refuse to ship a build
+ * that has never needed this package at runtime -- a false alarm on a
+ * genuine limitation of treating `dependencies` as a pure runtime-requires
+ * list (see that module's doc comment). Narrow and explicit on purpose: this
+ * is not a general "ignore install-time tooling" allowance, just the one
+ * instance this hook already controls by hand and has verified is safe.
+ */
+const INSTALL_ONLY_DEPENDENCIES_TO_STRIP = [{ relativeDir: NESTED_RELATIVE_PATH, depName: 'prebuild-install' }]
+
+const MAX_RESTORATION_PASSES = 10
+
+/**
+ * Restores every plain (no native binary involved) nested dependency
+ * override that this checkout's own dev `node_modules` has, but the
+ * extracted, packaged tree at `extractTo` is missing or has at the wrong
+ * version -- see this file's own doc comment ("A third instance, and the
+ * moment this stopped being a one-off-patch problem") for why a general
+ * mechanism replaced hand-listing a fourth, fifth, ... constant.
+ *
+ * **Why this loops instead of applying one pass.** Correcting one wrong
+ * nested package can reveal that *its own* dependency is also wrong or
+ * missing, in the packaged tree specifically (not in dev, where it was
+ * already fine). Concretely, hit while building this mechanism: the packaged
+ * tree's `@anthropic-ai/sdk/node_modules/@types/node` was itself the wrong
+ * (hoisted, too-new) instance; only *after* restoring the correct nested
+ * `@types/node` from dev did that package's own `undici-types` dependency
+ * (a different declared range than the wrong instance had) resolve
+ * correctly against the tree's existing top-level copy. A single pass over a
+ * snapshot taken before any fix would have missed this; re-scanning the
+ * *packaged* tree fresh every iteration is what catches it.
+ *
+ * Each iteration: list the packaged tree's own current state, find every
+ * broken dependency edge (`findDependencyGraphProblems`), and for each one,
+ * check whether *this checkout's own dev tree* resolves the same
+ * dependent-directory + dependency-name edge to something that actually
+ * satisfies the declared range. If so, copy that dev directory into the
+ * packaged tree at the identical relative path (recreating dev's own
+ * resolved shape, not inventing a new one). Stops when a full pass finds no
+ * more problems, or makes no further progress (whatever remains is not
+ * something this checkout's own dev tree can answer -- left for
+ * `verifyDependencyGraph`, run after the repack, to report and fail on
+ * honestly rather than silently ignore).
+ */
+function restorePlainDependencyOverrides(extractTo) {
+  const devPackages = listNodeModulePackagesFromDisk(REPO_ROOT)
+  const restored = []
+
+  for (let pass = 0; pass < MAX_RESTORATION_PASSES; pass++) {
+    const packagedPackages = listNodeModulePackagesFromDisk(extractTo)
+    const problems = findDependencyGraphProblems(packagedPackages)
+    if (problems.length === 0) {
+      console.log(`[after-pack] restorePlainDependencyOverrides: clean after ${pass} pass(es), ${restored.length} correction(s)`)
+      return restored
+    }
+
+    let progressed = false
+    for (const problem of problems) {
+      const devResolvedDir = resolveDependencyDir(devPackages, problem.dependentDir, problem.depName)
+      if (!devResolvedDir) continue
+      const devInfo = devPackages.get(devResolvedDir)
+      if (!rangeIsSatisfied(problem.declaredRange, devInfo.version)) continue
+
+      const alreadyRestored = restored.some((r) => r.relativeDir === devResolvedDir)
+      if (alreadyRestored) continue
+
+      const src = path.join(REPO_ROOT, devResolvedDir)
+      const dest = path.join(extractTo, devResolvedDir)
+      console.log(
+        `[after-pack] restorePlainDependencyOverrides: overlaying ${devResolvedDir} (${devInfo.version}) from dev ` +
+          `-- fixes ${problem.dependentName}@${problem.dependentVersion}'s "${problem.depName}" ` +
+          `(${JSON.stringify(problem.declaredRange)})`,
+      )
+      copyRecursive(src, dest)
+      restored.push({ relativeDir: devResolvedDir, version: devInfo.version })
+      progressed = true
+    }
+
+    if (!progressed) {
+      console.log(
+        `[after-pack] restorePlainDependencyOverrides: ${problems.length} problem(s) remain that this checkout's ` +
+          'own dev tree cannot resolve -- leaving them for the final verifyDependencyGraph check to report.',
+      )
+      return restored
+    }
+  }
+
+  console.log(
+    `[after-pack] restorePlainDependencyOverrides: reached the ${MAX_RESTORATION_PASSES}-pass safety limit -- ` +
+      'leaving any remainder for the final check.',
+  )
+  return restored
+}
+
 module.exports = async function afterPack(context) {
   if (context.electronPlatformName !== 'darwin') {
     // This hook is only proven for the macOS packaged layout
@@ -416,6 +589,26 @@ module.exports = async function afterPack(context) {
     `[after-pack]   with ${expressPathToRegexpSourceDir} (version ${expressPathToRegexpSourceVersion})`,
   )
   copyRecursive(expressPathToRegexpSourceDir, destExpressPathToRegexpDir)
+
+  // Strip prebuild-install (install-lifecycle-only, never required at
+  // runtime) from the corrected better-sqlite3 copy's own package.json --
+  // see INSTALL_ONLY_DEPENDENCIES_TO_STRIP's doc comment. Must happen before
+  // restorePlainDependencyOverrides below, or that mechanism would otherwise
+  // faithfully "fix" this by pulling in prebuild-install's entire real
+  // install-time dependency tree (tar-fs, node-abi, pump, rc, ... -- verified
+  // empirically while building this mechanism: omitting this step first
+  // pulled in 53 packages instead of the ~27 plain overrides actually
+  // needed).
+  for (const { relativeDir, depName } of INSTALL_ONLY_DEPENDENCIES_TO_STRIP) {
+    stripDependencyDeclaration(path.join(extractTo, relativeDir), depName)
+  }
+
+  // Restore every other plain nested dependency override this checkout's dev
+  // tree has but the packaged tree is missing or has wrong -- see
+  // restorePlainDependencyOverrides's own doc comment. This is what actually
+  // fixes the p-locate/p-limit/yocto-queue bug (and everything else the
+  // structural check below would otherwise catch).
+  restorePlainDependencyOverrides(extractTo)
 
   // Strip node-gyp build byproducts and other-platform prebuilds from every
   // better-sqlite3 copy this package ships -- see pruneBetterSqlite3BuildArtifacts's
