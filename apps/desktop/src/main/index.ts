@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import type { IpcMainInvokeEvent } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
 import {
@@ -17,14 +18,10 @@ let mainWindow: BrowserWindow | null = null
 
 // --- Renderer origin allowlist ---------------------------------------------
 //
-// Finding 2 of the phase 4b security review: this file registered no
-// `will-navigate` guard, so a top-level navigation to a remote origin would
-// have survived unchecked -- which, combined with Finding 1's bridge being
-// reachable from `window.localApi` on *any* origin the window happens to
-// display, would let that remote page drive the embedded API through this
-// app's own IPC surface. `isAppOwnUrl` below answers "is this actually our
-// own renderer?" so the `will-navigate` guard in `createWindow` (below) can
-// deny anything else.
+// Findings 2 and 3 of the phase 4b security review both reduce to the same
+// question: "is this actually our own renderer?" -- Finding 2 asks it of a
+// top-level navigation attempt, Finding 3 asks it of an IPC sender. Both
+// need the same answer, computed the same way, so it lives here once.
 //
 // In dev, electron-vite injects `ELECTRON_RENDERER_URL` (the Vite dev
 // server's origin, e.g. `http://localhost:5173`) -- see `createWindow`
@@ -45,6 +42,12 @@ const RENDERER_INDEX_FILE_URL = pathToFileURL(RENDERER_INDEX_PATH).href
  * than one path under it), or this build's own packaged `index.html` file in
  * production (an exact match, since nothing else this app ever loads is a
  * legitimate navigation target).
+ *
+ * Used both to decide whether a top-level navigation should be allowed
+ * (Finding 2's `will-navigate` guard, below) and whether an IPC message
+ * actually came from the app's own top-level frame (Finding 3's
+ * `assertTrustedSender`, below) -- a compromised or navigated-away renderer
+ * answers `false` to both.
  */
 function isAppOwnUrl(url: string): boolean {
   if (RENDERER_DEV_SERVER_URL) {
@@ -55,6 +58,38 @@ function isAppOwnUrl(url: string): boolean {
     }
   }
   return url === RENDERER_INDEX_FILE_URL
+}
+
+/**
+ * Finding 3 of the phase 4b security review: `local-api:request` and every
+ * `tokens:*` handler trusted any sender at all. `event.senderFrame` is the
+ * `WebFrameMain` that actually invoked this handler -- checking it against
+ * `frame.top` rejects a call from a nested frame (an `<iframe>` this app
+ * never intentionally embeds, but nothing before this stopped one from
+ * calling these handlers if it existed), and checking its `.url` against
+ * `isAppOwnUrl` rejects a call from a frame that navigated somewhere else
+ * first (Finding 2's own attack, if it were ever to succeed despite the
+ * `will-navigate` guard -- defense in depth, not a substitute for it).
+ *
+ * `event.senderFrame` can be `null` if the originating frame has already
+ * been destroyed by the time this runs; treated as untrusted, the same as
+ * any other failed check.
+ */
+function isTrustedSender(event: IpcMainInvokeEvent): boolean {
+  const frame = event.senderFrame
+  if (!frame || frame !== frame.top) {
+    return false
+  }
+  return isAppOwnUrl(frame.url)
+}
+
+/** Throws unless `isTrustedSender(event)` -- see that function's doc comment. */
+function assertTrustedSender(event: IpcMainInvokeEvent, channel: string): void {
+  if (!isTrustedSender(event)) {
+    throw new Error(
+      `${channel}: rejected -- this request did not originate from the app's own top-level renderer frame.`,
+    )
+  }
 }
 
 /**
@@ -93,15 +128,36 @@ if (!gotSingleInstanceLock) {
 }
 
 function registerIpcHandlers(): void {
-  ipcMain.handle('tokens:getAccess', () => getAccessToken())
-  ipcMain.handle('tokens:getRefresh', () => getRefreshToken())
-  ipcMain.handle('tokens:getPersistSession', () => getPersistSession())
+  // Finding 3 (phase 4b security review): every handler below that reads or
+  // writes a credential -- the hosted-mode refresh/access tokens, or the
+  // embedded API's session token -- now verifies `assertTrustedSender`
+  // first. See that function's doc comment for what it actually checks and
+  // why. `local-api:get-mode` and `updater:quitAndInstall` are deliberately
+  // left as they were: neither reads nor writes anything sensitive, so
+  // there is nothing here for an untrusted sender to gain.
+  ipcMain.handle('tokens:getAccess', (event) => {
+    assertTrustedSender(event, 'tokens:getAccess')
+    return getAccessToken()
+  })
+  ipcMain.handle('tokens:getRefresh', (event) => {
+    assertTrustedSender(event, 'tokens:getRefresh')
+    return getRefreshToken()
+  })
+  ipcMain.handle('tokens:getPersistSession', (event) => {
+    assertTrustedSender(event, 'tokens:getPersistSession')
+    return getPersistSession()
+  })
   ipcMain.handle(
     'tokens:set',
-    (_event, access: string, refresh: string, rememberMe?: boolean) =>
-      setTokens(access, refresh, rememberMe !== false),
+    (event, access: string, refresh: string, rememberMe?: boolean) => {
+      assertTrustedSender(event, 'tokens:set')
+      return setTokens(access, refresh, rememberMe !== false)
+    },
   )
-  ipcMain.handle('tokens:clear', () => clearTokens())
+  ipcMain.handle('tokens:clear', (event) => {
+    assertTrustedSender(event, 'tokens:clear')
+    return clearTokens()
+  })
   ipcMain.handle('updater:quitAndInstall', () => quitAndInstallUpdate())
 
   // --- Embedded local API handshake ---------------------------------------
@@ -123,7 +179,8 @@ function registerIpcHandlers(): void {
     return localApiHandle ? { mode: 'local' } : { mode: 'hosted' }
   })
 
-  ipcMain.handle('local-api:request', (_event, payload: LocalApiRequestPayload) => {
+  ipcMain.handle('local-api:request', (event, payload: LocalApiRequestPayload) => {
+    assertTrustedSender(event, 'local-api:request')
     if (!localApiHandle) {
       // The renderer only calls this after `local-api:get-mode` reported
       // `'local'`, which only happens once `localApiHandle` is set -- this
