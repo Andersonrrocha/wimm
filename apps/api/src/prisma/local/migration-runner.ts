@@ -128,6 +128,57 @@ import { join } from 'path'
 import { openLocalDatabase } from './open-local-database'
 import { snapshotDatabase } from './snapshot'
 
+/**
+ * Stable discriminant on `DatabaseMigratedByNewerBuildError.code`.
+ *
+ * A caller across a package boundary (Electron `main`, in `apps/desktop`,
+ * consuming this module through `@wimm/api/dist/...`) needs to identify this
+ * specific failure -- "the database is ahead of this build" -- to show the
+ * user something actionable instead of a stack trace. Two ways to do that
+ * were considered: `instanceof DatabaseMigratedByNewerBuildError`, or this
+ * field.
+ *
+ * Both work correctly in *this* codebase today: `@wimm/api` is consumed
+ * through exactly one resolved copy (a `workspace:*` symlink under pnpm's
+ * hoisted `node_modules`, not a duplicated nested install), so the module
+ * `apps/desktop/src/main/local-api.ts` imports from
+ * `@wimm/api/dist/prisma/local/migration-runner` resolves to the identical
+ * absolute file -- and therefore the identical class reference -- as the one
+ * this function throws from. `instanceof` is not unsound here.
+ *
+ * The field is still the primary, documented way to identify this error, for
+ * two reasons that outlive that fact: first, it is what makes the class
+ * exported for `instanceof` at all a belt-and-suspenders convenience rather
+ * than the only mechanism -- if `apps/desktop`'s bundling or dependency
+ * resolution ever changes in a way that loads a second copy of this module
+ * (a duplicated `node_modules` entry, a future non-workspace publish of
+ * `@wimm/api`, ...), `instanceof` silently starts returning `false` across
+ * that boundary with no error of its own, while `error.code === ...` keeps
+ * working regardless of which copy of the class constructed the object.
+ * Second, a string constant survives serialization (postMessage, IPC,
+ * `JSON.stringify`) that a class identity does not -- not exercised by this
+ * module's current callers, but a reason not to make identity load-bearing
+ * for a value that might cross a process boundary later.
+ */
+export const DATABASE_MIGRATED_BY_NEWER_BUILD_CODE = 'DATABASE_MIGRATED_BY_NEWER_BUILD' as const
+
+/**
+ * Thrown when `file` records migrations as applied that this build does not
+ * ship -- i.e. a newer build already migrated this database and an older
+ * build (this one) was pointed at it afterwards. See the "ahead of this
+ * build" check below for the full reasoning; see
+ * `DATABASE_MIGRATED_BY_NEWER_BUILD_CODE`'s doc comment for why callers
+ * should match on `code` rather than `instanceof` alone.
+ */
+export class DatabaseMigratedByNewerBuildError extends Error {
+  readonly code = DATABASE_MIGRATED_BY_NEWER_BUILD_CODE
+
+  constructor(message: string) {
+    super(message)
+    this.name = 'DatabaseMigratedByNewerBuildError'
+  }
+}
+
 export interface MigrationResult {
   /** Migrations applied during this call, in the order they were applied. */
   applied: string[]
@@ -313,7 +364,7 @@ export function applyPendingMigrations(options: {
       .filter((name) => !discoveredNames.has(name))
       .sort()
     if (aheadOfThisBuild.length > 0) {
-      throw new Error(
+      throw new DatabaseMigratedByNewerBuildError(
         `${file} was already migrated by a newer build of this app: it records migration(s) ` +
           `${aheadOfThisBuild.join(', ')} as applied, but this build does not ship them. Running an older build ` +
           "against a database a newer build already migrated is not supported -- this build doesn't know what " +

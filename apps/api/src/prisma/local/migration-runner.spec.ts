@@ -3,7 +3,11 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { openLocalDatabase } from './open-local-database'
 import { listSnapshots } from './snapshot'
-import { applyPendingMigrations } from './migration-runner'
+import {
+  applyPendingMigrations,
+  DATABASE_MIGRATED_BY_NEWER_BUILD_CODE,
+  DatabaseMigratedByNewerBuildError,
+} from './migration-runner'
 
 const ROOT = '/tmp/wimm-migration-runner-spec'
 const DB_FILE = join(ROOT, 'wimm.db')
@@ -581,6 +585,48 @@ describe('applyPendingMigrations', () => {
     // Detecting this must not itself take a snapshot or touch the database: nothing was going to run.
     expect(listSnapshots(BACKUP_DIR, DATABASE_ID)).toEqual(snapshotsAfterFirstRun)
     expect(tableNames(DB_FILE)).toEqual(expect.arrayContaining(['widgets', 'gadgets']))
+  })
+
+  // A caller across a package boundary (apps/desktop's local-api.ts, via
+  // @wimm/api/dist/...) needs to identify this specific failure without
+  // relying on this function's error *message* -- a caller that has to
+  // parse or pattern-match human-readable text to make a decision breaks
+  // silently the moment that text is reworded (a typo fix, a clarification).
+  // This test deliberately never reads `.message` at all, to pin down that
+  // the error is identifiable by type and by its `code` discriminant alone.
+  // See `DATABASE_MIGRATED_BY_NEWER_BUILD_CODE`'s doc comment for why `code`
+  // is the documented, primary mechanism (not just `instanceof`).
+  it('throws an error identifiable by type and by a stable `code`, without reading its message', () => {
+    const newerMigrationsDir = join(ROOT, 'migrations-newer-build-typed')
+    writeMigration(newerMigrationsDir, '0000_first', 'CREATE TABLE "widgets" ("id" TEXT NOT NULL PRIMARY KEY);')
+    writeMigration(newerMigrationsDir, '0001_second', 'CREATE TABLE "gadgets" ("id" TEXT NOT NULL PRIMARY KEY);')
+
+    applyPendingMigrations({
+      file: DB_FILE,
+      migrationsDir: newerMigrationsDir,
+      backupDir: BACKUP_DIR,
+      databaseId: DATABASE_ID,
+      now: new Date('2026-01-01T00:00:00.000Z'),
+    })
+
+    const olderMigrationsDir = join(ROOT, 'migrations-older-build-view-typed')
+    writeMigration(olderMigrationsDir, '0000_first', 'CREATE TABLE "widgets" ("id" TEXT NOT NULL PRIMARY KEY);')
+
+    let thrown: unknown
+    try {
+      applyPendingMigrations({
+        file: DB_FILE,
+        migrationsDir: olderMigrationsDir,
+        backupDir: BACKUP_DIR,
+        databaseId: DATABASE_ID,
+        now: new Date('2026-01-01T01:00:00.000Z'),
+      })
+    } catch (err) {
+      thrown = err
+    }
+
+    expect(thrown).toBeInstanceOf(DatabaseMigratedByNewerBuildError)
+    expect((thrown as DatabaseMigratedByNewerBuildError).code).toBe(DATABASE_MIGRATED_BY_NEWER_BUILD_CODE)
   })
 
   // Item 4: a boot-time migration that fails the same way on every relaunch

@@ -17,10 +17,17 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { DATABASE_MIGRATED_BY_NEWER_BUILD_CODE } from '@wimm/api/dist/prisma/local/migration-runner'
 import { openLocalDatabase } from '@wimm/api/dist/prisma/local/open-local-database'
 import { SESSION_TOKEN_HEADER } from '@wimm/api/dist/profile/session-token'
 
-import { NewerDatabaseError, startLocalApi, type LocalApiHandle } from './local-api'
+import {
+  isDatabaseMigratedByNewerBuildError,
+  NewerDatabaseError,
+  rethrowMigrationFailure,
+  startLocalApi,
+  type LocalApiHandle,
+} from './local-api'
 
 jest.setTimeout(30000)
 
@@ -169,8 +176,15 @@ describe('startLocalApi', () => {
       caught = err
     }
 
+    // Detection (this instanceof check) is what's load-bearing here -- it
+    // must not depend on migration-runner.ts's specific wording (see the
+    // "newer-database detection reacts to the typed error" describe block
+    // below for the dedicated proof of that). The message is asserted only
+    // to be non-empty, i.e. actually propagated from the underlying error --
+    // not pinned to any particular phrasing, which is free to change in
+    // migration-runner.ts without breaking this test.
     expect(caught).toBeInstanceOf(NewerDatabaseError)
-    expect((caught as Error).message).toMatch(/newer build/)
+    expect((caught as Error).message.length).toBeGreaterThan(0)
   })
 
   describe('loopback binding -- proven both ways, not assumed', () => {
@@ -200,5 +214,56 @@ describe('startLocalApi', () => {
         expect(accepted).toBe(false)
       }
     })
+  })
+})
+
+describe('newer-database detection reacts to the typed error, not its message', () => {
+  // These exercise `isDatabaseMigratedByNewerBuildError` / `rethrowMigrationFailure`
+  // directly with synthetic errors -- no real migration run needed -- to prove
+  // detection is decoupled from `migration-runner.ts`'s specific wording. See
+  // this task's report ("Fix round 1") for the mutation proof that pins this
+  // down against the real runner (reword the message: detection still works;
+  // break the `code` discriminant: detection fails).
+
+  it('detects a reworded message as long as the `code` discriminant is present (not message-based)', () => {
+    // Same shape migration-runner.ts's DatabaseMigratedByNewerBuildError has
+    // (an Error with a `code` field), but with a message that shares no
+    // words with the original -- deliberately not "newer build", not
+    // "restore", not "snapshot". If detection were still matching on
+    // message text, this would fall through as a plain Error instead of
+    // becoming a NewerDatabaseError.
+    const reworded = Object.assign(new Error('this profile predates a rollback and cannot be opened by this build'), {
+      code: DATABASE_MIGRATED_BY_NEWER_BUILD_CODE,
+    })
+
+    expect(isDatabaseMigratedByNewerBuildError(reworded)).toBe(true)
+
+    let caught: unknown
+    try {
+      rethrowMigrationFailure(reworded)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(NewerDatabaseError)
+  })
+
+  it('does NOT detect the original message text on its own, without the `code` discriminant', () => {
+    // The exact historical marker this task's first round matched on as a
+    // substring, now attached to a plain Error with no `code` field at all --
+    // proving detection no longer falls back to text matching by accident.
+    const oldStyleError = new Error(
+      'some-file.db was already migrated by a newer build of this app: it records migration(s) 0001_x as applied',
+    )
+
+    expect(isDatabaseMigratedByNewerBuildError(oldStyleError)).toBe(false)
+
+    let caught: unknown
+    try {
+      rethrowMigrationFailure(oldStyleError)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).not.toBeInstanceOf(NewerDatabaseError)
+    expect(caught).toBe(oldStyleError)
   })
 })

@@ -70,7 +70,10 @@ import { NestFactory } from '@nestjs/core'
 
 import { AppLocalModule } from '@wimm/api/dist/app.local.module'
 import { LocalPrismaService } from '@wimm/api/dist/prisma/local/local-prisma.service'
-import { applyPendingMigrations } from '@wimm/api/dist/prisma/local/migration-runner'
+import {
+  applyPendingMigrations,
+  DATABASE_MIGRATED_BY_NEWER_BUILD_CODE,
+} from '@wimm/api/dist/prisma/local/migration-runner'
 import {
   createProfile,
   listProfiles,
@@ -138,15 +141,20 @@ export interface LocalApiHandle {
 /**
  * Thrown by `startLocalApi` when the profile's database was already migrated
  * by a build newer than this one -- `migration-runner.ts`'s own hard refusal
- * (see its doc comment), re-thrown here as a distinguishable error so the
- * caller (Electron `main`) can show the user something actionable instead of
- * a stack trace. `migration-runner.ts` cannot be modified by this task (it
- * belongs to `apps/api/src`, out of scope here), so detection is necessarily
- * a message match against its documented, stable wording rather than a
- * dedicated error class or `code` field -- brittle against a future wording
- * change there, but the alternative (never distinguishing this case at all)
- * is strictly worse. If `migration-runner.ts`'s message ever changes, this
- * degrades to the generic "unexpected boot failure" path below, not a crash.
+ * (`DatabaseMigratedByNewerBuildError`, see its doc comment), re-thrown here
+ * as this module's own distinguishable error so the caller (Electron `main`)
+ * can show the user something actionable instead of a stack trace, without
+ * `main` needing to import anything from `@wimm/api` itself.
+ *
+ * Detection (`isDatabaseMigratedByNewerBuildError` below) matches on
+ * `migration-runner.ts`'s `DATABASE_MIGRATED_BY_NEWER_BUILD_CODE` discriminant
+ * field, never on the error's *message* -- a caller that had to pattern-match
+ * human-readable text would break silently the moment that text was
+ * reworded. See `DATABASE_MIGRATED_BY_NEWER_BUILD_CODE`'s doc comment
+ * (`apps/api/src/prisma/local/migration-runner.ts`) for the full reasoning,
+ * including why `code` is preferred over `instanceof` even though this
+ * repo's specific module resolution (a single `workspace:*`-resolved copy of
+ * `@wimm/api`) makes `instanceof` sound here too.
  */
 export class NewerDatabaseError extends Error {
   constructor(message: string) {
@@ -155,11 +163,32 @@ export class NewerDatabaseError extends Error {
   }
 }
 
-const NEWER_BUILD_MARKER = 'was already migrated by a newer build of this app'
+/**
+ * True when `err` is `migration-runner.ts`'s `DatabaseMigratedByNewerBuildError`,
+ * identified structurally by its `code` field rather than `instanceof` or a
+ * message match. Exported for `local-api.spec.ts` to exercise directly with a
+ * synthetic error object -- proving this reacts to the discriminant and not
+ * to any particular wording of `.message`.
+ */
+export function isDatabaseMigratedByNewerBuildError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code: unknown }).code === DATABASE_MIGRATED_BY_NEWER_BUILD_CODE
+  )
+}
 
-function rethrowMigrationFailure(err: unknown): never {
+/**
+ * Exported (not just called internally) so `local-api.spec.ts` can prove,
+ * directly and without going through a real failing migration, that this
+ * reacts to `isDatabaseMigratedByNewerBuildError`'s discriminant check and
+ * not to any specific message text -- see that spec for the "reworded
+ * message, same detection" and "same message, broken discriminant" cases.
+ */
+export function rethrowMigrationFailure(err: unknown): never {
   const message = err instanceof Error ? err.message : String(err)
-  if (message.includes(NEWER_BUILD_MARKER)) {
+  if (isDatabaseMigratedByNewerBuildError(err)) {
     throw new NewerDatabaseError(message)
   }
   throw err instanceof Error ? err : new Error(message)
