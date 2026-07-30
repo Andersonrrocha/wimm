@@ -50,7 +50,7 @@ import { ImportsModule } from './imports/imports.module'
 import { LocalPrismaService } from './prisma/local/local-prisma.service'
 import { PrismaService } from './prisma/prisma.service'
 import { ProfileModule } from './profile/profile.module'
-import { SESSION_TOKEN } from './profile/session-token'
+import { assertUsableSessionToken, SESSION_TOKEN } from './profile/session-token'
 import { SessionTokenGuard } from './profile/session-token.guard'
 import { RecurrencesModule } from './recurrences/recurrences.module'
 import { ReportsModule } from './reports/reports.module'
@@ -109,6 +109,16 @@ export interface AppLocalModuleOptions {
 @Module({})
 export class AppLocalModule {
   static forRoot(options: AppLocalModuleOptions): DynamicModule {
+    // Verify-then-refuse, at the one call site nothing can route around --
+    // see `assertUsableSessionToken`'s doc comment for why booting is the
+    // right place for this check (and not, say, `SessionTokenGuard`'s
+    // constructor: by the time Nest gets there, the misconfiguration has
+    // already become either a silent total lockout or a request-time 500,
+    // instead of a boot failure that names the problem). Mirrors the
+    // set-verify-refuse contract `openLocalDatabase` and
+    // `assertNativeAbiSelectedAt` already use elsewhere in this package.
+    assertUsableSessionToken(options.sessionToken)
+
     return {
       module: AppLocalModule,
       global: true,

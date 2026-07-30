@@ -206,4 +206,61 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
       }
     })
   })
+
+  describe('sessionToken validation: refuses to compose without a usable token', () => {
+    // `AppLocalModuleOptions.sessionToken` is typed `string`, so these cast
+    // around the type checker on purpose -- the whole point is proving what
+    // happens with the exact runtime values a JS caller (or anything that
+    // skips the type checker) could actually pass, not what TypeScript
+    // would otherwise reject at compile time. `databaseFile` points at a
+    // path that is never touched: `forRoot` is synchronous and validates
+    // the token as its first statement, before building the `DynamicModule`
+    // that would eventually reference this path -- these tests exist to
+    // prove exactly that ordering, so a nonexistent file is deliberate, not
+    // an oversight.
+    const irrelevantDatabaseFile = join(ROOT, 'sessionToken-validation', 'never-touched.db')
+
+    it('throws synchronously (does not even reach Test.createTestingModule) on an empty token', () => {
+      expect(() =>
+        AppLocalModule.forRoot({ databaseFile: irrelevantDatabaseFile, sessionToken: '' }),
+      ).toThrow(/non-empty, non-whitespace string/)
+    })
+
+    it('throws on a whitespace-only token', () => {
+      expect(() =>
+        AppLocalModule.forRoot({ databaseFile: irrelevantDatabaseFile, sessionToken: '   ' }),
+      ).toThrow(/non-empty, non-whitespace string/)
+    })
+
+    it('throws on undefined rather than letting it reach the guard as a request-time 500', () => {
+      expect(() =>
+        AppLocalModule.forRoot({
+          databaseFile: irrelevantDatabaseFile,
+          sessionToken: undefined as unknown as string,
+        }),
+      ).toThrow(/non-empty, non-whitespace string/)
+    })
+
+    it('throws on a non-string value, naming its type but never echoing it', () => {
+      let thrown: Error | undefined
+      try {
+        AppLocalModule.forRoot({
+          databaseFile: irrelevantDatabaseFile,
+          sessionToken: 987654321 as unknown as string,
+        })
+      } catch (error) {
+        thrown = error as Error
+      }
+
+      expect(thrown).toBeInstanceOf(Error)
+      expect(thrown?.message).toContain('non-empty, non-whitespace string')
+      expect(thrown?.message).not.toContain('987654321')
+    })
+
+    it('still composes normally with a valid token (no regression)', () => {
+      expect(() =>
+        AppLocalModule.forRoot({ databaseFile: irrelevantDatabaseFile, sessionToken: TEST_SESSION_TOKEN }),
+      ).not.toThrow()
+    })
+  })
 })
