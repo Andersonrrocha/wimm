@@ -86,7 +86,15 @@
       "!node_modules/lucide-react/**/*",
       "!node_modules/@radix-ui/**/*",
       "!node_modules/@tanstack/**/*",
-      "!node_modules/axios/**/*"
+      "!node_modules/axios/**/*",
+      "!node_modules/react-router/**/*",
+      "!node_modules/react-redux/**/*",
+      "!node_modules/@reduxjs/**/*",
+      "!node_modules/es-toolkit/**/*",
+      "!node_modules/victory-vendor/**/*",
+      "!node_modules/date-fns-jalali/**/*",
+      "!node_modules/immer/**/*",
+      "!node_modules/@babel/**/*"
     ],
     "asar": true,
     "asarUnpack": [

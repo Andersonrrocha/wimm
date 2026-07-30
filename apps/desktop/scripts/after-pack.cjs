@@ -71,6 +71,17 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const asar = require('@electron/asar')
+// `builder-util`'s `Arch` enum is already a transitive dependency of
+// electron-builder itself (not something this hook adds) -- used only to
+// turn `context.arch` (a numeric enum value) back into the string
+// (`"arm64"`, `"x64"`, ...) `prunePrebuilds` needs to pick the one prebuild
+// this specific build actually runs on, robustly across architectures
+// rather than assuming this machine's own `arm64`.
+const { Arch } = require('builder-util')
+
+function archName(arch) {
+  return Arch[arch]
+}
 
 const NESTED_RELATIVE_PATH = path.join(
   'node_modules',
@@ -125,6 +136,84 @@ function copyRecursive(src, dest) {
     recursive: true,
     filter: (source) => !source.split(path.sep).includes('.bin'),
   })
+}
+
+/**
+ * Strips node-gyp's build-time byproducts from a `better-sqlite3`-shaped
+ * directory (root or nested), keeping only what is needed to `require()` the
+ * package at runtime: the JS wrapper (`lib/`), `package.json`/`LICENSE`, and
+ * the compiled addon (`build/Release/*.node` -- nothing else under `build/`).
+ *
+ * Measured directly on this repo's own packaged output before this function
+ * existed: `deps/` (the bundled SQLite amalgamation source, ~9.8 MB per
+ * copy), `src/` (this addon's own C++ source, ~160 KB), and everything under
+ * `build/` besides the compiled `.node` file itself (intermediate `.o`/`.a`
+ * objects, `.deps/` dependency files, Makefiles, `gyp-mac-tool`, a
+ * `test_extension.node` built only for this package's own test suite -- 9+
+ * MB per copy) are 100% build-time artifacts. None of them are read at
+ * runtime -- `require('better-sqlite3')` only ever touches `lib/*.js` and
+ * the one compiled addon `bindings.js` locates. Removing them is safe
+ * precisely because compilation already happened before this hook runs;
+ * there is nothing left that will ever rebuild from `deps`/`src` again for
+ * this shipped copy.
+ *
+ * No-ops (does not throw) if the directory does not look like this package
+ * at all, so callers can call it speculatively.
+ */
+function pruneBetterSqlite3BuildArtifacts(dir) {
+  if (!fs.existsSync(path.join(dir, 'package.json'))) return
+
+  fs.rmSync(path.join(dir, 'deps'), { recursive: true, force: true })
+  fs.rmSync(path.join(dir, 'src'), { recursive: true, force: true })
+  fs.rmSync(path.join(dir, 'binding.gyp'), { force: true })
+  // `bin/<platform>-<arch>-<abi>/better-sqlite3.node` is a stale artifact of
+  // however this specific copy was originally installed (prebuild-install's
+  // own cache convention) -- confirmed empirically that `bindings`' own
+  // search order (the error trace this task's report captures verbatim)
+  // never probes this path; only `build/Release/*.node` and a handful of
+  // other candidates rooted at the package directory are ever tried.
+  fs.rmSync(path.join(dir, 'bin'), { recursive: true, force: true })
+
+  const buildDir = path.join(dir, 'build')
+  if (!fs.existsSync(buildDir)) return
+  const releaseDir = path.join(buildDir, 'Release')
+  const compiledAddons = fs.existsSync(releaseDir)
+    ? fs.readdirSync(releaseDir).filter((name) => name.endsWith('.node') && name !== 'test_extension.node')
+    : []
+  // Rebuild `build/` from scratch containing only the compiled addon(s) --
+  // simpler and more robust than trying to enumerate every intermediate
+  // byproduct gyp/make can leave behind.
+  for (const addon of compiledAddons) {
+    const tmp = path.join(dir, `.__keep__${addon}`)
+    fs.cpSync(path.join(releaseDir, addon), tmp)
+    fs.rmSync(buildDir, { recursive: true, force: true })
+    fs.mkdirSync(path.join(dir, 'build', 'Release'), { recursive: true })
+    fs.renameSync(tmp, path.join(dir, 'build', 'Release', addon))
+  }
+  if (compiledAddons.length === 0) {
+    fs.rmSync(buildDir, { recursive: true, force: true })
+  }
+}
+
+/**
+ * Prunes a `prebuilds/<platform>-<arch>.node` directory (the layout the
+ * *root*, portable `better-sqlite3` copy ships -- see
+ * `apps/api/src/prisma/local/native-abi-guard.ts`'s doc comment for why this
+ * copy is distinct from the pinned nested one) down to just the file this
+ * packaged build actually runs on. electron-builder's own collector does not
+ * prune this layout on its own -- confirmed directly: a `darwin`/`arm64`
+ * package built on this machine still shipped all eight platform binaries
+ * (~16 MB) before this function existed, for a build that can only ever load
+ * one of them.
+ */
+function prunePrebuilds(prebuildsDir, platform, arch) {
+  if (!fs.existsSync(prebuildsDir)) return
+  const keep = `${platform}-${arch}.node`
+  for (const name of fs.readdirSync(prebuildsDir)) {
+    if (name !== keep) {
+      fs.rmSync(path.join(prebuildsDir, name), { force: true })
+    }
+  }
 }
 
 /**
@@ -249,6 +338,18 @@ module.exports = async function afterPack(context) {
     console.log(`[after-pack] copying ${depSource} -> ${depDest}`)
     copyRecursive(depSource, depDest)
   }
+
+  // Strip node-gyp build byproducts and other-platform prebuilds from every
+  // better-sqlite3 copy this package ships -- see pruneBetterSqlite3BuildArtifacts's
+  // and prunePrebuilds's doc comments. This covers both the nested copy just
+  // corrected above and the separate, portable root copy `open-local-database.ts`/
+  // `snapshot.ts` use directly (untouched by the correction above, but shipping
+  // the same kind of build-time cruft since it comes from the same kind of
+  // node-gyp-built package).
+  const rootBetterSqlite3Dir = path.join(extractTo, 'node_modules', 'better-sqlite3')
+  pruneBetterSqlite3BuildArtifacts(rootBetterSqlite3Dir)
+  prunePrebuilds(path.join(rootBetterSqlite3Dir, 'prebuilds'), 'darwin', archName(context.arch))
+  pruneBetterSqlite3BuildArtifacts(destNestedDir)
 
   // Repack, preserving every directory electron-builder had already chosen
   // to unpack, plus this hook's three corrected directories explicitly (they
