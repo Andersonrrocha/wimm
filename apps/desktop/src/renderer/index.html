@@ -3,6 +3,45 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Finding 2 (phase 4b security review): the renderer had no
+      Content-Security-Policy at all. `default-src 'self'` closes off
+      everything not explicitly allowed below, which is what actually stops
+      an injected `<script>`, a `fetch` to an attacker's server, or a loaded
+      remote stylesheet/image, even if a future bug lets one get as far as
+      being rendered.
+
+      `style-src` needs `'unsafe-inline'`: Radix UI's popover/select
+      positioning (`@radix-ui/react-popover`, `@radix-ui/react-select`,
+      used by the date pickers and selects under `components/ui/`) and
+      Recharts' internal sizing set the `style` property directly via the
+      CSSOM, and React's own `style={{...}}` prop -- used throughout the
+      page components -- compiles to the same thing. All three are inline
+      style application, which `style-src` blocks by default regardless of
+      whether the value came from an HTML `style="..."` attribute or a
+      script-driven `.style.foo = ...` assignment; nonces/hashes only cover
+      static `<style>`/`<link>` content, not dynamic per-render values like
+      these, so there is no tighter equivalent available. This is scoped to
+      `style-src` only -- `script-src` below stays `'self'`, so this does
+      not permit executing injected script, which is the primary thing a
+      CSP defends against.
+
+      `connect-src 'self'` covers local mode's actual transport: every
+      request goes through `window.localApi.request` (IPC, not `fetch`/XHR,
+      see `local-api-adapter.ts`), so nothing the renderer does needs a
+      network-level `connect-src` allowance at all in the build this app
+      actually ships (`main`'s `runApp` always boots the embedded API before
+      creating a window -- see `index.ts` -- so the separate direct-HTTP
+      "hosted" transport in `api-client.ts` is not reachable in a real
+      packaged run). No image, font, or stylesheet in this app is loaded
+      from a remote origin or as a `data:` URI (grepped for both across
+      `src/renderer` -- none exist), so `img-src`/`font-src` need nothing
+      beyond `'self'` either.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';"
+    />
     <title>Wimm</title>
   </head>
   <body>

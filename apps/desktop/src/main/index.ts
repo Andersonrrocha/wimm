@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { join } from 'path'
+import { pathToFileURL } from 'url'
 import {
   clearTokens,
   getAccessToken,
@@ -13,6 +14,48 @@ import { quitAndInstallUpdate, setupAutoUpdater } from './updater'
 import type { ApiMode, LocalApiRequestPayload } from '../shared/local-api-protocol'
 
 let mainWindow: BrowserWindow | null = null
+
+// --- Renderer origin allowlist ---------------------------------------------
+//
+// Finding 2 of the phase 4b security review: this file registered no
+// `will-navigate` guard, so a top-level navigation to a remote origin would
+// have survived unchecked -- which, combined with Finding 1's bridge being
+// reachable from `window.localApi` on *any* origin the window happens to
+// display, would let that remote page drive the embedded API through this
+// app's own IPC surface. `isAppOwnUrl` below answers "is this actually our
+// own renderer?" so the `will-navigate` guard in `createWindow` (below) can
+// deny anything else.
+//
+// In dev, electron-vite injects `ELECTRON_RENDERER_URL` (the Vite dev
+// server's origin, e.g. `http://localhost:5173`) -- see `createWindow`
+// below, which loads exactly that URL. In a packaged build there is no dev
+// server; the renderer is loaded from this build's own `index.html` on
+// disk, via `loadFile`, which Electron resolves to a `file://` URL itself.
+// `RENDERER_INDEX_FILE_URL` is computed with `pathToFileURL` (never
+// string concatenation) so this matches byte-for-byte on every platform,
+// including Windows, where a naive `file://${path}` would mishandle the
+// drive letter and backslashes.
+const RENDERER_DEV_SERVER_URL = process.env['ELECTRON_RENDERER_URL']
+const RENDERER_INDEX_PATH = join(__dirname, '../renderer/index.html')
+const RENDERER_INDEX_FILE_URL = pathToFileURL(RENDERER_INDEX_PATH).href
+
+/**
+ * True only when `url` is exactly this app's own renderer location: the dev
+ * server's origin in development (an origin match, since Vite serves more
+ * than one path under it), or this build's own packaged `index.html` file in
+ * production (an exact match, since nothing else this app ever loads is a
+ * legitimate navigation target).
+ */
+function isAppOwnUrl(url: string): boolean {
+  if (RENDERER_DEV_SERVER_URL) {
+    try {
+      return new URL(url).origin === new URL(RENDERER_DEV_SERVER_URL).origin
+    } catch {
+      return false
+    }
+  }
+  return url === RENDERER_INDEX_FILE_URL
+}
 
 /**
  * The embedded local API's handle for this launch, once booted -- `port`
@@ -111,11 +154,34 @@ function createWindow(): void {
     },
   })
 
+  // Finding 2 (phase 4b security review): deny every top-level navigation
+  // that is not to this app's own renderer. Without this, a compromised
+  // renderer (or a link it renders) could navigate the window to an
+  // attacker-controlled origin -- which, combined with Finding 1's bridge
+  // being reachable from `window.localApi` on *any* origin the window
+  // happens to display, would let that remote page drive the embedded API
+  // through this app's own IPC surface. This app has no legitimate external
+  // link today (grepped for `https://`/`mailto:`/`target="_blank"` across
+  // the renderer -- none exist), so there is nothing to allowlist through
+  // `shell.openExternal` here; if one is ever added, it must be routed
+  // through `shell.openExternal` explicitly, never through a relaxed guard.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (!isAppOwnUrl(url)) {
+      event.preventDefault()
+    }
+  })
+
+  // Same finding: deny every `window.open`/`target="_blank"` attempt outright
+  // rather than opening a second, unmanaged `BrowserWindow` with its own
+  // (potentially attacker-controlled) content -- see the comment above for
+  // why there is nothing legitimate here to allowlist instead.
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+
   // In dev, electron-vite injects ELECTRON_RENDERER_URL
-  if (process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  if (RENDERER_DEV_SERVER_URL) {
+    mainWindow.loadURL(RENDERER_DEV_SERVER_URL)
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(RENDERER_INDEX_PATH)
   }
 
   mainWindow.on('closed', () => {
@@ -164,6 +230,19 @@ async function bootLocalApi(): Promise<LocalApiHandle | undefined> {
 
 async function runApp(): Promise<void> {
   await app.whenReady()
+
+  // Finding 2 (phase 4b security review): deny every `<webview>` attach
+  // attempt, on every webContents this app ever creates -- registered on
+  // `app`, not on `mainWindow.webContents`, so it also covers any future
+  // window (or a nested frame within one) this app creates, not just the
+  // first one. This app never uses `<webview>` itself; a compromised
+  // renderer trying to embed one would otherwise get an unmanaged, un-
+  // sandboxed content surface of its own choosing.
+  app.on('web-contents-created', (_event, contents) => {
+    contents.on('will-attach-webview', (event) => {
+      event.preventDefault()
+    })
+  })
 
   registerIpcHandlers()
 
