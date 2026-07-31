@@ -28,7 +28,11 @@ export function toCents(amount: string | number): number {
   const roundsUp = fraction.length > 2 && Number(fraction[2]) >= 5
   const cents = Number(whole) * 100 + hundredths + (roundsUp ? 1 : 0)
 
-  return sign === '-' ? -cents : cents
+  // Guard against `-0`: `sign === '-'` with an all-zero amount (e.g. '-0.00')
+  // would otherwise return the value -0, which is `-0 === 0` but fails
+  // `Object.is(-0, 0)` — a strict-identity trap for any caller comparing by
+  // `Object.is` or serializing with something other than JSON.
+  return sign === '-' && cents !== 0 ? -cents : cents
 }
 
 export function fromCents(cents: number): string {
