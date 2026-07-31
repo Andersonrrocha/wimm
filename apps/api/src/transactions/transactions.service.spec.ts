@@ -217,9 +217,13 @@ describe('TransactionsService', () => {
 
   describe('updateForUser', () => {
     it('recomputes billing when source and date unchanged still matches create logic', async () => {
+      // A complete row, not a bare `{ id, userId, sourceId, occurredAt }`
+      // fragment: `findRowForUser`'s result (`existing` below) is unmapped
+      // today, but a full row means this double keeps working, rather than
+      // throwing RangeError out of `fromCents`, the moment someone routes it
+      // through `toTransactionDto`.
       prismaMock.transaction.findFirst.mockResolvedValue({
-        id: 't1',
-        userId: 'user-1',
+        ...baseRow,
         sourceId: 'src-cc',
         occurredAt: new Date('2024-01-10T00:00:00.000Z'),
       })
@@ -253,9 +257,10 @@ describe('TransactionsService', () => {
     })
 
     it('writes amountCents converted from the input value when amount changes', async () => {
+      // Same reasoning as the double above: a complete row so this stays
+      // safe if `findRowForUser`'s result is ever mapped.
       prismaMock.transaction.findFirst.mockResolvedValue({
-        id: 't1',
-        userId: 'user-1',
+        ...baseRow,
         sourceId: null,
         occurredAt: new Date('2024-01-10T00:00:00.000Z'),
       })
