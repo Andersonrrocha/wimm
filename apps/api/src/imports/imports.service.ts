@@ -6,6 +6,7 @@ import {
 import {
   CategoryType,
   ImportBatchFormat,
+  type ImportParserWarning,
   SourceType,
   TransactionKind,
   toCents,
@@ -38,7 +39,6 @@ import { mapBanrisulWarningsForPreview } from './map-banrisul-parser-warnings'
 import { mapCresolWarningsForPreview } from './map-cresol-parser-warnings'
 import { parseCresolStatementFromExtractedText } from './parsers/cresol/parse-cresol-statement-extracted-text'
 import { cresolStatementToLedgerRows } from './parsers/cresol/to-ledger-rows'
-import type { ImportParserWarning } from '@wimm/shared'
 import type { CommitImportDto } from './dto/commit-import.dto'
 import { sanitizePersistedInstallment } from './import-installment.util'
 import {
