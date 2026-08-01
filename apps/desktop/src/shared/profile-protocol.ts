@@ -33,14 +33,30 @@ export interface ProfileSummary {
 }
 
 /**
- * What `profiles:get-situation` reports. `'ready'` means a profile is
- * already open (or in the process of opening) and the renderer should
- * proceed to the normal app -- `local-api:get-mode` will report `'local'`
- * once it does. `'no-profiles'` and `'multiple-profiles'` are exactly
+ * What `profiles:get-situation` (and, on success, `profiles:create` /
+ * `profiles:open` / `profiles:switch`) reports. `'ready'` means a profile
+ * is already open (or just became open) and the renderer should proceed to
+ * the normal app -- `local-api:get-mode` will report `'local'` once it
+ * does. `'no-profiles'` and `'multiple-profiles'` are exactly
  * `profile-lifecycle.ts`'s same-named `ProfileSituation` cases, serialized
  * for IPC.
+ *
+ * `'ready'` carries the open profile itself (Phase 4c task 3) -- the
+ * switcher UI (`profile-switcher.tsx`) needs to know which of
+ * `profiles:list`'s entries is the one already open, both to label it and
+ * to skip a pointless switch-to-self. `ProfileGate`'s existing
+ * `'ready'`-means-"render `children`" handling ignores this field entirely,
+ * so adding it here does not change that component's behaviour.
+ *
+ * `profile` is optional, not required: `profiles:get-situation`'s one
+ * defensive fallback branch (`localApiHandle` and `pendingProfileSituation`
+ * both unset -- "unreachable in practice", see that handler's doc comment)
+ * reports `'ready'` with no real profile to describe, on purpose, rather
+ * than fabricate one. Every real caller (a successful `create`/`open`/
+ * `switch`, or `get-situation` once a profile is genuinely open) does
+ * supply it.
  */
 export type ProfilesSituationPayload =
-  | { kind: 'ready' }
+  | { kind: 'ready'; profile?: ProfileSummary }
   | { kind: 'no-profiles' }
   | { kind: 'multiple-profiles'; profiles: ProfileSummary[] }

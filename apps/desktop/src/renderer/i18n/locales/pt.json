@@ -83,7 +83,13 @@
     "aiKeyInvalid": "Chaves Anthropic começam com sk-ant-…",
     "aiKeyFailed": "Não foi possível salvar a chave.",
     "localeEn": "English",
-    "localePt": "Português (Brasil)"
+    "localePt": "Português (Brasil)",
+    "profiles": {
+      "title": "Perfis",
+      "subtitle": "Alterne para outro perfil neste computador. Cada perfil mantém seu próprio histórico financeiro, separado dos demais.",
+      "current": "(atual)",
+      "switch": "Alternar"
+    }
   },
   "quickAdd": {
     "modalTitle": "Adicionar ao registro",

@@ -13,6 +13,7 @@ import { Button } from '../../components/ui/button'
 import { ChartDateModeToggle } from '../../components/ui/chart-date-mode-toggle'
 import { Field } from '../../components/ui/field'
 import { Panel } from '../../components/ui/panel'
+import { ProfileSwitcher } from '../../components/profile-switcher'
 import { Select } from '../../components/ui/select'
 
 export function PreferencesTab(): JSX.Element {
@@ -183,6 +184,11 @@ export function PreferencesTab(): JSX.Element {
         {error ? (
           <p className="m-0 text-wm-sm text-negative">{error}</p>
         ) : null}
+
+        {/* Renders nothing in hosted mode, and nothing at all when there is
+            only one profile to begin with -- see ProfileSwitcher's own doc
+            comment. */}
+        <ProfileSwitcher />
       </div>
     </Panel>
   )

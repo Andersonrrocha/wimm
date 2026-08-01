@@ -70,6 +70,35 @@
  * profile to use -- see `profile-lifecycle.ts` for that decision, kept
  * deliberately separate and pure so it can be tested without a filesystem.
  *
+ * **Phase 4c task 3 adds a third entry point, `switchProfile`,** for moving
+ * from one already-open profile to another without restarting the app. It
+ * tears the current profile's Nest application down and boots the target
+ * through the exact same `bootProfileDatabase` the two entry points above
+ * use -- there is no separate, parallel "switch" boot path to keep in sync
+ * with the other two.
+ *
+ * **Does switching rotate the session token? Yes -- for free, and it could
+ * not be otherwise without extra code to prevent it.** `bootProfileDatabase`
+ * calls `generateSessionToken()` on every boot, unconditionally; `openProfile`
+ * and `createProfileAndOpen` already rely on that (reopening the same
+ * profile a second time gets a new token too -- see `local-api.spec.ts`'s
+ * "reopens the existing profile" test, which never asserts the token stays
+ * the same). `switchProfile` reuses `openProfile` for the target, so the new
+ * token is simply whatever that boot generates -- there is no old token to
+ * "carry over" even if that were desirable. This is also the *correct*
+ * behaviour, not just the convenient one: a session token authenticates
+ * against one specific, currently-running `AppLocalModule` instance (its
+ * `SessionTokenGuard` holds exactly that one value), not against "the app"
+ * as an abstract, ongoing concept. Once the old instance is torn down, its
+ * token authenticates nothing -- keeping it "valid" would be a token that
+ * accepts requests no server is listening for. And because the renderer
+ * never receives a session token in the first place (`local-api-bridge.ts`
+ * attaches it in main, from whichever `LocalApiHandle` is current, read
+ * fresh at request time -- see that module's doc comment), there is no
+ * stale-token cleanup for the renderer to perform after a switch either: the
+ * very next `local-api:request` call simply gets routed with the new
+ * handle's token, transparently.
+ *
 
  * **CORS.** Deliberately not configured here at all -- see the phase 4b task
  * 2 report for the full reasoning. In short: the hosted build's
@@ -175,6 +204,39 @@ export interface LocalApiHandle {
    * logged. See `generateSessionToken`'s doc comment.
    */
   token: string
+  /**
+   * The profile this handle is serving. Added for Task 3 (profile
+   * switching): `switchProfile` (below) needs to know which profile to
+   * reopen if the profile it is switching TO fails to boot -- see that
+   * function's rollback behaviour. Carrying it on the handle itself is what
+   * lets both `switchProfile` and its caller (`index.ts`) treat "which
+   * profile is this handle serving" as a single fact instead of a second,
+   * separately-tracked variable that could drift out of sync with
+   * `localApiHandle` itself.
+   */
+  profile: Profile
+  /**
+   * The underlying NestJS application. No production code path other than
+   * `close()` below (which already wraps `app.close()`) needs this -- it is
+   * exposed so `local-api.spec.ts` can reach this profile's real
+   * `LocalPrismaService` (`app.get(LocalPrismaService)`) and hold a
+   * genuine, in-flight write transaction against it. That turned out to be
+   * the only way to construct a real, OS-level SQLite lock on a profile's
+   * database file that `switchProfile`'s teardown can be proven to release:
+   * an idle connection -- even a fully open one -- holds no SQLite lock at
+   * all (see `assertExclusiveAccess`'s doc comment,
+   * `apps/api/src/prisma/local/snapshot.ts`), so there is nothing for an
+   * exclusive-lock probe to catch unless a real transaction is genuinely in
+   * flight. See this task's report for the full investigation, including a
+   * previously-undocumented finding: a probe using the root workspace
+   * `better-sqlite3` build (what `assertExclusiveAccess` itself uses)
+   * cannot see a lock held by `LocalPrismaService`'s connection at all, in
+   * this environment, because `@prisma/adapter-better-sqlite3` bundles a
+   * *different* `better-sqlite3` build internally -- the probe in
+   * `local-api.spec.ts` therefore deliberately opens the SAME bundled build
+   * Prisma itself uses, not the root one.
+   */
+  app: INestApplication
   /** Closes the HTTP server and disconnects Prisma. See the module doc comment's teardown notes. */
   close(): Promise<void>
 }
@@ -404,6 +466,8 @@ async function bootProfileDatabase(
     return {
       port,
       token: sessionToken,
+      profile,
+      app,
       close: async () => {
         await app.close()
       },
@@ -450,4 +514,126 @@ export async function createProfileAndOpen(options: CreateProfileOptions): Promi
   const profile = createProfile(options.profileDir, name, randomUUID(), now)
   touchProfile(options.profileDir, profile.id, now)
   return bootProfileDatabase(options.profileDir, profile, now, true)
+}
+
+/** What `switchProfile` needs to move from one already-open profile to another. */
+export interface SwitchProfileOptions {
+  profileDir: string
+  /**
+   * The profile currently open -- torn down (the hard requirement below)
+   * before `target` is ever touched. `current.profile` is what
+   * `switchProfile` reopens if `target` fails to boot; see
+   * `ProfileSwitchError`'s doc comment.
+   */
+  current: LocalApiHandle
+  /**
+   * The profile to switch to. `switchProfile` never reads the registry
+   * itself to validate this -- the caller (`index.ts`'s `profiles:switch`
+   * handler) re-reads it fresh and confirms `target` is a real entry before
+   * calling this, the same "validate in main, never trust a renderer-
+   * supplied id" contract `profiles:open` already follows.
+   */
+  target: Profile
+}
+
+/**
+ * Thrown by `switchProfile` when `target` could not be opened -- a corrupt
+ * database, a `NewerDatabaseError`, or any other boot failure `openProfile`
+ * can raise (see `bootProfileDatabase`'s doc comment). By the time this is
+ * thrown, `current` is already closed: the hard teardown-first requirement
+ * below applies unconditionally, whether or not the switch itself goes on
+ * to succeed. The caller therefore cannot simply keep using `current` --
+ * `rolledBackHandle` is what `switchProfile` could put back in its place:
+ *
+ * - A freshly booted handle for the SAME profile `current` was already
+ *   serving, if reopening it succeeded. This is the expected outcome for a
+ *   bad *target* (the common failure: the profile the user picked is
+ *   corrupt, or was written by a newer build) -- the user lands back on
+ *   exactly the profile they started from, still working, under a new
+ *   session token (see the module doc comment's "does switching rotate the
+ *   token" note: every boot generates one, and rollback is just another
+ *   boot of the same profile).
+ * - `undefined` if even that reopen failed -- both the target and the
+ *   profile the user started from are now unopenable, and nothing is
+ *   running. Rare (it means a profile that was working moments ago no
+ *   longer is), but the caller must still handle it: see `index.ts`'s
+ *   `profiles:switch` handler, which falls back to re-deriving the
+ *   picker/onboarding situation so a renderer reload (the existing
+ *   `local-backend-error` screen's own recovery action, reused rather than
+ *   inventing a second failure surface -- see this task's report) lands the
+ *   user on a real recovery screen instead of nothing.
+ */
+export class ProfileSwitchError extends Error {
+  constructor(
+    message: string,
+    public readonly rolledBackHandle: LocalApiHandle | undefined,
+  ) {
+    super(message)
+    this.name = 'ProfileSwitchError'
+  }
+}
+
+/**
+ * Switches from `options.current` to `options.target`: tears the current
+ * profile's Nest application and Prisma connection down, then boots the
+ * target the same way `openProfile` boots any other existing profile.
+ *
+ * **Hard requirement, carried over from the Phase 2 review and restated
+ * here because it is not negotiable: `current` is fully closed BEFORE
+ * `target`'s database file is ever touched.** Overwriting or even just
+ * opening a second connection to a SQLite file while another connection is
+ * still using it is undefined behaviour -- corruption, or a stale page-
+ * cache read, and either way silently. `await current.close()` runs first,
+ * unconditionally, before `openProfile(target)` is ever called -- there is
+ * no code path in this function that reaches `openProfile` without having
+ * already awaited that close. This matters beyond this function's own
+ * correctness: `restoreSnapshot` (Task 4, next) refuses when it cannot get
+ * exclusive access to its target, but it can only detect a connection that
+ * is genuinely mid-transaction at the moment it checks -- not an idle open
+ * handle (see `assertExclusiveAccess`'s doc comment,
+ * `apps/api/src/prisma/local/snapshot.ts`). A handle this function leaked
+ * would not announce itself there; it would either slip past that check
+ * silently or turn a later restore into a refusal the user cannot explain.
+ * `local-api.spec.ts` proves the teardown is genuine with a real OS-level
+ * SQLite lock, not a spy on `close()` -- see that file's "switchProfile"
+ * describe block, and this task's report for why a naive lock probe cannot
+ * prove this on its own (an idle connection holds no lock to detect).
+ *
+ * If `target` fails to boot, `current` is NOT reopened automatically as a
+ * side effect of the failure being thrown -- this function makes exactly
+ * one attempt to land the user somewhere usable (reopening `current.profile`
+ * once) and reports the outcome via `ProfileSwitchError.rolledBackHandle`
+ * rather than silently retrying or leaving the caller to guess what state
+ * things are in. See that class's doc comment for the two possible
+ * outcomes.
+ */
+export async function switchProfile(options: SwitchProfileOptions): Promise<LocalApiHandle> {
+  const { profileDir, current, target } = options
+
+  // The hard requirement above -- nothing below this line may run before
+  // this resolves.
+  await current.close()
+
+  try {
+    return await openProfile({ profileDir, profile: target })
+  } catch (err) {
+    let rolledBackHandle: LocalApiHandle | undefined
+    try {
+      rolledBackHandle = await openProfile({ profileDir, profile: current.profile })
+    } catch (rollbackErr) {
+      // Logged, never swallowed: this is the one place that can still name
+      // the rollback's own failure. The error thrown below carries the
+      // ORIGINAL switch failure (what the user actually needs to see);
+      // conflating it with the rollback failure would bury one message
+      // inside the other instead of reporting either clearly.
+      console.error(
+        `switchProfile: rollback to the previous profile ("${current.profile.id}") also failed after switching ` +
+          `to "${target.id}" failed:`,
+        rollbackErr,
+      )
+    }
+
+    const message = err instanceof Error ? err.message : String(err)
+    throw new ProfileSwitchError(`Could not switch to profile "${target.name}": ${message}`, rolledBackHandle)
+  }
 }

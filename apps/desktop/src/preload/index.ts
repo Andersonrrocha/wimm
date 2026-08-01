@@ -4,7 +4,7 @@ import type {
   LocalApiRequestPayload,
   LocalApiResponsePayload,
 } from '../shared/local-api-protocol'
-import type { ProfilesSituationPayload } from '../shared/profile-protocol'
+import type { ProfileSummary, ProfilesSituationPayload } from '../shared/profile-protocol'
 
 export type TokenStore = {
   getAccessToken: () => Promise<string | undefined>
@@ -102,12 +102,32 @@ export type ProfilesApi = {
   getSituation: () => Promise<ProfilesSituationPayload>
   create: (name: string) => Promise<ProfilesSituationPayload>
   open: (id: string) => Promise<ProfilesSituationPayload>
+  /**
+   * Every registered profile, regardless of which one (if any) is
+   * currently open -- Phase 4c task 3's switcher UI uses this to show what
+   * the user can switch to. Unlike `getSituation`, this is meaningful only
+   * once a profile is already open (there is nothing to switch away from
+   * otherwise); main does not gate on that itself, since `listProfiles`
+   * behaves the same regardless.
+   */
+  list: () => Promise<ProfileSummary[]>
+  /**
+   * Tears the currently open profile down and boots `id` in its place. See
+   * `main/local-api.ts`'s `switchProfile` for the teardown-then-rebuild
+   * contract and its rollback behaviour on failure, and `main/index.ts`'s
+   * `profiles:switch` handler for how a failure is turned into a rejected
+   * promise here -- main has already attempted to land on a working profile
+   * (the original one, if reopening it succeeded) by the time this rejects.
+   */
+  switch: (id: string) => Promise<ProfilesSituationPayload>
 }
 
 const profiles: ProfilesApi = {
   getSituation: () => ipcRenderer.invoke('profiles:get-situation'),
   create: (name: string) => ipcRenderer.invoke('profiles:create', name),
   open: (id: string) => ipcRenderer.invoke('profiles:open', id),
+  list: () => ipcRenderer.invoke('profiles:list'),
+  switch: (id: string) => ipcRenderer.invoke('profiles:switch', id),
 }
 
 contextBridge.exposeInMainWorld('profiles', profiles)

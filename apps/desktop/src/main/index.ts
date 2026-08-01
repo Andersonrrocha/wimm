@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
-import type { Profile } from '@wimm/api/dist/prisma/local/profile-registry'
+import { listProfiles, type Profile } from '@wimm/api/dist/prisma/local/profile-registry'
 import {
   clearTokens,
   getAccessToken,
@@ -10,7 +10,14 @@ import {
   getRefreshToken,
   setTokens,
 } from './store'
-import { createProfileAndOpen, NewerDatabaseError, openProfile, type LocalApiHandle } from './local-api'
+import {
+  createProfileAndOpen,
+  NewerDatabaseError,
+  openProfile,
+  ProfileSwitchError,
+  switchProfile,
+  type LocalApiHandle,
+} from './local-api'
 import { forwardLocalApiRequest } from './local-api-bridge'
 import { resolveProfileSituation, type ProfileSituation } from './profile-lifecycle'
 import { quitAndInstallUpdate, setupAutoUpdater } from './updater'
@@ -43,14 +50,40 @@ const RENDERER_INDEX_FILE_URL = pathToFileURL(RENDERER_INDEX_PATH).href
  * True only when `url` is exactly this app's own renderer location: the dev
  * server's origin in development (an origin match, since Vite serves more
  * than one path under it), or this build's own packaged `index.html` file in
- * production (an exact match, since nothing else this app ever loads is a
- * legitimate navigation target).
+ * production (an exact match on everything except the hash fragment -- see
+ * below for why the fragment is deliberately ignored).
  *
  * Used both to decide whether a top-level navigation should be allowed
  * (Finding 2's `will-navigate` guard, below) and whether an IPC message
  * actually came from the app's own top-level frame (Finding 3's
  * `assertTrustedSender`, below) -- a compromised or navigated-away renderer
  * answers `false` to both.
+ *
+ * **Phase 4c task 3 bugfix: the packaged-build branch used to compare `url`
+ * against `RENDERER_INDEX_FILE_URL` with plain `===`.** This app uses
+ * `HashRouter` (`App.tsx`) for every in-app route -- `/transactions`,
+ * `/settings`, and so on are all `#/transactions`, `#/settings`, ... on top
+ * of the one `index.html` this build ever loads, never a real navigation to
+ * a different file. But `event.senderFrame.url` (what `isTrustedSender`
+ * reads on every IPC call, live) reflects the CURRENT hash, so the instant a
+ * user navigated anywhere other than the root route, that exact-string
+ * comparison stopped matching -- every subsequent `local-api:request` /
+ * `tokens:*` / `profiles:*` call from that page rejected with "did not
+ * originate from the app's own top-level renderer frame", in the packaged
+ * build only (dev mode's origin-only comparison was never affected, since
+ * `URL.origin` never includes the hash -- which is exactly why this went
+ * unnoticed: this project's prior end-to-end proofs, e.g. task-4c-2's, never
+ * happened to drive a packaged build past the root route). Found while
+ * proving Task 3's switcher end-to-end: it lives on `#/settings`, and
+ * without this fix `profiles:list`/`profiles:switch` -- and in fact every
+ * IPC call on every non-root page of a packaged build -- would fail this
+ * way. Fixed by comparing everything BUT the hash: a same-document hash
+ * change is exactly the in-app navigation this check is supposed to allow,
+ * and stripping only the hash (not loosening the origin, path, or query
+ * comparison at all) keeps the check exactly as strict against every
+ * genuine attack it defends against (a different origin, a different file,
+ * a `file://` path elsewhere on disk) while finally tolerating the
+ * legitimate case.
  */
 function isAppOwnUrl(url: string): boolean {
   if (RENDERER_DEV_SERVER_URL) {
@@ -60,7 +93,13 @@ function isAppOwnUrl(url: string): boolean {
       return false
     }
   }
-  return url === RENDERER_INDEX_FILE_URL
+  try {
+    const withoutHash = new URL(url)
+    withoutHash.hash = ''
+    return withoutHash.href === RENDERER_INDEX_FILE_URL
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -249,7 +288,7 @@ function registerIpcHandlers(): void {
 
     // A profile is already open (or `runApp` opened the sole one
     // automatically) -- nothing for the renderer to decide.
-    if (localApiHandle) return { kind: 'ready' }
+    if (localApiHandle) return { kind: 'ready', profile: toProfileSummary(localApiHandle.profile) }
 
     if (!pendingProfileSituation) {
       // Unreachable in practice: `runApp` always sets either `localApiHandle`
@@ -290,7 +329,7 @@ function registerIpcHandlers(): void {
     const handle = await createProfileAndOpen({ profileDir, name })
     localApiHandle = handle
     pendingProfileSituation = undefined
-    return { kind: 'ready' }
+    return { kind: 'ready', profile: toProfileSummary(handle.profile) }
   })
 
   ipcMain.handle('profiles:open', async (event, id: unknown): Promise<ProfilesSituationPayload> => {
@@ -319,7 +358,98 @@ function registerIpcHandlers(): void {
     const handle = await openProfile({ profileDir, profile })
     localApiHandle = handle
     pendingProfileSituation = undefined
-    return { kind: 'ready' }
+    return { kind: 'ready', profile: toProfileSummary(handle.profile) }
+  })
+
+  // --- Profile switching (Phase 4c task 3) ---------------------------------
+  //
+  // `profiles:list` and `profiles:switch` are only meaningful once a profile
+  // is already open (the settings screen that offers "switch profile" only
+  // renders once the app itself does) -- unlike `profiles:get-situation`,
+  // neither one consults `pendingProfileSituation` at all.
+
+  ipcMain.handle('profiles:list', (event): ProfileSummary[] => {
+    assertTrustedSender(event, 'profiles:list')
+
+    // Deliberately left uncaught: a corrupt registry here is a genuine,
+    // reportable error (see profile-registry.ts's module doc comment for
+    // why "corrupt" and "empty" must never be conflated) -- the renderer's
+    // switch screen shows it inline rather than this handler papering over
+    // it with an empty list, which would look identical to "there are no
+    // other profiles" and hide a real problem.
+    return listProfiles(profileDir).map(toProfileSummary)
+  })
+
+  ipcMain.handle('profiles:switch', async (event, id: unknown): Promise<ProfilesSituationPayload> => {
+    assertTrustedSender(event, 'profiles:switch')
+
+    if (!localApiHandle) {
+      throw new Error('profiles:switch: no profile is currently open to switch away from.')
+    }
+    if (typeof id !== 'string') {
+      throw new Error('profiles:switch: id must be a string.')
+    }
+    if (id === localApiHandle.profile.id) {
+      // Already the active profile -- a no-op, not an error. Avoids tearing
+      // down and rebooting the very profile the user is already using
+      // merely because they clicked their own entry in the switcher.
+      return { kind: 'ready', profile: toProfileSummary(localApiHandle.profile) }
+    }
+
+    // Re-reads the registry fresh -- the same "validate in main, never
+    // trust a renderer-supplied id" contract `profiles:open` already
+    // follows (see that handler above).
+    const target = listProfiles(profileDir).find((candidate) => candidate.id === id)
+    if (!target) {
+      throw new Error(`profiles:switch: no profile with id ${JSON.stringify(id)} was found.`)
+    }
+
+    const current = localApiHandle
+    // Nothing is reported open while the switch is in flight -- matches
+    // `switchProfile`'s own hard requirement (close current before target
+    // is ever touched): there is no moment where `localApiHandle` points at
+    // a handle this process is concurrently tearing down.
+    localApiHandle = undefined
+
+    try {
+      localApiHandle = await switchProfile({ profileDir, current, target })
+      return { kind: 'ready', profile: toProfileSummary(localApiHandle.profile) }
+    } catch (err) {
+      if (err instanceof ProfileSwitchError) {
+        // `switchProfile` already attempted to land the user back on the
+        // profile they started from -- see that function's doc comment.
+        // `rolledBackHandle` is whatever it managed: a working handle for
+        // the original profile in the common case, or `undefined` in the
+        // rare case that reopen also failed.
+        localApiHandle = err.rolledBackHandle
+
+        if (!localApiHandle) {
+          // Nothing is running at all. Re-derive the picker/onboarding
+          // situation so a renderer reload -- the existing
+          // `local-backend-error` screen's own recovery action, reused
+          // rather than inventing a second failure surface (see this
+          // task's report) -- lands the user on a real recovery screen
+          // instead of a `profiles:get-situation` call that has nothing
+          // accurate to report. `resolveProfileSituation` can also report
+          // `'single-profile'` or `'corrupt-registry'` here in principle;
+          // neither is renderer-facing (see `pendingProfileSituation`'s own
+          // doc comment), so this leaves it `undefined` for those two --
+          // exactly as rare as "switching was possible in the first place
+          // (at least two profiles existed) and the registry corrupted
+          // itself in the few milliseconds since."
+          const fallback = resolveProfileSituation(profileDir)
+          pendingProfileSituation =
+            fallback.kind === 'no-profiles' || fallback.kind === 'multiple-profiles' ? fallback : undefined
+        }
+
+        // Re-thrown as a plain Error: IPC serializes the message across to
+        // the renderer either way, and `ProfileSwitchError`'s own class
+        // identity does not survive that trip -- see `profiles:open`'s
+        // handler above for the same pattern.
+        throw new Error(err.message)
+      }
+      throw err
+    }
   })
 }
 

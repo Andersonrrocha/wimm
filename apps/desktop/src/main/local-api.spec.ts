@@ -22,14 +22,15 @@
  * guard.ts`) -- see `package.json`'s `pretest` script.
  */
 import { createConnection } from 'node:net'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { decryptWithAiKey, deriveAiKeyEncryptionKey, encryptWithAiKey } from '@wimm/api/dist/ai/ai-key-crypto'
 import { DATABASE_MIGRATED_BY_NEWER_BUILD_CODE } from '@wimm/api/dist/prisma/local/migration-runner'
+import { LocalPrismaService } from '@wimm/api/dist/prisma/local/local-prisma.service'
 import { openLocalDatabase } from '@wimm/api/dist/prisma/local/open-local-database'
-import { listProfiles, type Profile } from '@wimm/api/dist/prisma/local/profile-registry'
+import { listProfiles, profileDatabasePath, type Profile } from '@wimm/api/dist/prisma/local/profile-registry'
 import {
   LEGACY_SHARED_AI_KEY_ENCRYPTION_SECRET,
   profileSecretFilePath,
@@ -41,7 +42,9 @@ import {
   isDatabaseMigratedByNewerBuildError,
   NewerDatabaseError,
   openProfile,
+  ProfileSwitchError,
   rethrowMigrationFailure,
+  switchProfile,
   type LocalApiHandle,
 } from './local-api'
 
@@ -379,5 +382,295 @@ describe('per-profile AI key encryption secret (Task 1, phase 4c)', () => {
 
     // And it is genuinely re-encrypted, not left under the legacy secret.
     expect(() => decryptWithAiKey(legacyKey, storedNow)).toThrow()
+  })
+})
+
+// --- Task 3: profile switching ---------------------------------------------
+//
+// The exclusive-lock proof below needs a probe that shares OS-level lock
+// visibility with the REAL connection `LocalPrismaService` uses at runtime.
+// The obvious choice -- the root workspace `better-sqlite3` package, the
+// exact one `assertExclusiveAccess` itself uses
+// (`apps/api/src/prisma/local/snapshot.ts`) -- does NOT work here:
+// `@prisma/adapter-better-sqlite3` bundles a *different* `better-sqlite3`
+// build internally (see `native-abi-guard.ts`'s doc comment for why two
+// builds exist in this repo at all), and empirically, in this environment,
+// a lock held by that bundled build is invisible to a probe using the root
+// build, and vice versa -- confirmed directly while building this test (see
+// this task's report): a raw `better-sqlite3` (root) probe against a REAL,
+// live, genuinely mid-transaction `LocalPrismaService` connection reports no
+// lock at all. A test built on that probe would pass identically whether or
+// not `switchProfile` actually closes anything, which is exactly the "proves
+// nothing about the operating system" failure this task warns against.
+// `ADAPTER_BETTER_SQLITE3_DIR` below is the exact path
+// `scripts/select-native-abi.ts` and `apps/desktop/scripts/verify-native-
+// runtime.ts` already use for this same bundled copy; this file reuses it
+// for the probe only -- never for anything this app ships.
+const ADAPTER_BETTER_SQLITE3_DIR = join(
+  __dirname,
+  '..',
+  '..',
+  '..',
+  '..',
+  'node_modules/@prisma/adapter-better-sqlite3/node_modules/better-sqlite3',
+)
+
+interface AdapterBuildDatabase {
+  pragma(sql: string): unknown
+  exec(sql: string): unknown
+  close(): void
+}
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- must be the exact bundled build, not the root workspace one; see the comment above.
+const AdapterDatabase = require(ADAPTER_BETTER_SQLITE3_DIR) as new (file: string) => AdapterBuildDatabase
+
+/**
+ * True if a brand-new connection to `file`, opened with the SAME
+ * `better-sqlite3` build `LocalPrismaService` uses (see the comment above),
+ * can immediately escalate to an exclusive write lock: `busy_timeout = 0`
+ * (a conflict fails immediately instead of blocking) then `BEGIN IMMEDIATE`
+ * followed by `COMMIT`. Mirrors `assertExclusiveAccess`'s own technique
+ * (`apps/api/src/prisma/local/snapshot.ts`) exactly, just against the build
+ * that can actually see a lock this app's own connections hold.
+ */
+function canAcquireExclusiveLock(file: string): boolean {
+  const probe = new AdapterDatabase(file)
+  probe.pragma('busy_timeout = 0')
+  try {
+    probe.exec('BEGIN IMMEDIATE')
+    probe.exec('COMMIT')
+    return true
+  } catch (err) {
+    if ((err as { code?: string }).code === 'SQLITE_BUSY') return false
+    throw err
+  } finally {
+    probe.close()
+  }
+}
+
+/**
+ * Starts a genuine, held, uncommitted write transaction against `handle`'s
+ * own database, through its own real `LocalPrismaService`
+ * (`handle.app.get(...)`) -- see `LocalApiHandle.app`'s doc comment for why
+ * this is the only way found to put a real, OS-level SQLite lock on a
+ * profile's file that later matters for proving `switchProfile` releases
+ * it. An idle connection -- even a fully open one -- holds no SQLite lock
+ * at all, so there is nothing for `canAcquireExclusiveLock` to catch unless
+ * a transaction is genuinely in flight.
+ *
+ * The returned `started` promise resolves only once the write inside the
+ * transaction has actually completed -- i.e. once the lock is genuinely
+ * held -- so a caller that awaits it before probing never races the
+ * transaction's own async startup (an earlier version of this test
+ * probed immediately after calling this function, with no synchronization
+ * at all, and flaked exactly this way: the probe ran before `BEGIN` had
+ * even been issued). The transaction then stays open until the returned
+ * `release` is called. `settled` resolves once it has actually finished
+ * one way or another -- including "abandoned because the connection was
+ * closed out from under it", which is the expected, correct outcome of a
+ * genuine `close()` (see this task's report: `app.close()` does not wait
+ * for a pending interactive transaction, it tears the connection down
+ * immediately, and the transaction's own promise later rejects with a
+ * "Transaction not found" error from Prisma). That rejection is swallowed
+ * here rather than asserted on, because it is a side effect of the close
+ * this test is proving happened, not something the test needs to name.
+ */
+function holdOpenTransaction(handle: LocalApiHandle): {
+  started: Promise<void>
+  release: () => void
+  settled: Promise<void>
+} {
+  const prisma = handle.app.get(LocalPrismaService)
+  let release: () => void = () => {}
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let signalStarted: () => void = () => {}
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve
+  })
+
+  const settled = prisma
+    .$transaction(async (tx) => {
+      const user = await tx.user.findFirstOrThrow()
+      await tx.category.create({ data: { userId: user.id, name: 'Held open by a test', type: 'EXPENSE' } })
+      signalStarted()
+      await gate
+    })
+    .then(() => undefined)
+    .catch(() => undefined)
+
+  return { started, release, settled }
+}
+
+/** Truncates `file` to a handful of garbage bytes -- not a valid SQLite header, so any later open of it fails immediately. */
+function corruptDatabaseFile(file: string): void {
+  writeFileSync(file, Buffer.from('not a sqlite file'))
+}
+
+describe('switchProfile (Task 3: teardown and rebuild)', () => {
+  let profileDir: string
+  let handle: LocalApiHandle | undefined
+
+  beforeEach(() => {
+    profileDir = tmpProfileDir()
+  })
+
+  afterEach(async () => {
+    if (handle) {
+      await handle.close()
+      handle = undefined
+    }
+    rmSync(profileDir, { recursive: true, force: true })
+  })
+
+  it(
+    "genuinely releases the old profile's database connection -- an exclusive lock on its file succeeds " +
+      'immediately after switching, even though that connection was, until the moment switchProfile ran, ' +
+      'holding a real, uncommitted write transaction',
+    async () => {
+      const handleA = await createProfileAndOpen({ profileDir, name: 'Profile A' })
+      const dbFileA = profileDatabasePath(profileDir, handleA.profile)
+
+      const handleBSetup = await createProfileAndOpen({ profileDir, name: 'Profile B' })
+      await handleBSetup.close()
+      const profileB = handleBSetup.profile
+
+      const held = holdOpenTransaction(handleA)
+      await held.started
+
+      // Sanity check on the setup itself, not on switchProfile: the lock is
+      // genuinely held BEFORE switching. Without this, a bug that made
+      // `holdOpenTransaction` a no-op would make the main assertion below
+      // pass vacuously.
+      expect(canAcquireExclusiveLock(dbFileA)).toBe(false)
+
+      handle = await switchProfile({ profileDir, current: handleA, target: profileB })
+
+      // The mandatory assertion: after switching, an independent connection
+      // using the same better-sqlite3 build LocalPrismaService itself uses
+      // can immediately acquire an exclusive lock on profile A's file. If
+      // switchProfile had leaked handleA's connection (skipped closing it),
+      // the transaction started above would still be open and this would
+      // fail with SQLITE_BUSY -- see this task's report for the verbatim
+      // mutation-proof output.
+      expect(canAcquireExclusiveLock(dbFileA)).toBe(true)
+
+      // Lets the abandoned transaction's own promise settle (it rejects --
+      // see `holdOpenTransaction`'s doc comment) instead of leaving it
+      // dangling for the rest of the test run.
+      held.release()
+      await held.settled
+    },
+  )
+
+  it("switches to the target profile: the new handle serves it, and the old profile's HTTP server stops accepting connections", async () => {
+    const handleA = await createProfileAndOpen({ profileDir, name: 'Profile A' })
+    const oldPort = handleA.port
+    const oldToken = handleA.token
+
+    const handleBSetup = await createProfileAndOpen({ profileDir, name: 'Profile B' })
+    await handleBSetup.close()
+    const profileB = handleBSetup.profile
+
+    handle = await switchProfile({ profileDir, current: handleA, target: profileB })
+
+    // New handle serves the target profile, under a brand new port and
+    // session token -- see the module doc comment's "does switching rotate
+    // the token" note for why a new token every boot is deliberate, not
+    // incidental.
+    expect(handle.profile.id).toBe(profileB.id)
+    expect(handle.port).not.toBe(oldPort)
+    expect(handle.token).not.toBe(oldToken)
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/sources`, {
+      headers: { [SESSION_TOKEN_HEADER]: handle.token },
+    })
+    expect(res.status).toBe(200)
+
+    // The old HTTP listener is genuinely gone too, not just "not the one we
+    // talk to anymore" -- a second, real, OS-level teardown signal
+    // alongside the exclusive-lock proof above.
+    const oldPortStillListening = await attemptConnection('127.0.0.1', oldPort)
+    expect(oldPortStillListening).toBe(false)
+  })
+
+  it('rolls back to the original profile when the target fails to open (a NewerDatabaseError), and reports the original failure', async () => {
+    const handleA = await createProfileAndOpen({ profileDir, name: 'Profile A' })
+    const profileA = handleA.profile
+
+    const handleBSetup = await createProfileAndOpen({ profileDir, name: 'Profile B' })
+    await handleBSetup.close()
+    const profileB = handleBSetup.profile
+
+    // Simulate profile B having been migrated by a newer build -- same
+    // technique the "surfaces a NewerDatabaseError" test above uses.
+    const dbFileB = profileDatabasePath(profileDir, profileB)
+    const db = openLocalDatabase(dbFileB)
+    db.prepare(
+      `INSERT INTO "_prisma_migrations"
+        ("id", "checksum", "finished_at", "migration_name", "started_at", "applied_steps_count")
+       VALUES (?, ?, ?, ?, ?, 1)`,
+    ).run('mutation-proof-id', 'x'.repeat(64), new Date().toISOString(), '9999_future_migration', new Date().toISOString())
+    db.close()
+
+    let caught: unknown
+    try {
+      await switchProfile({ profileDir, current: handleA, target: profileB })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(ProfileSwitchError)
+    const switchError = caught as ProfileSwitchError
+    expect(switchError.message.length).toBeGreaterThan(0)
+    expect(switchError.rolledBackHandle).toBeDefined()
+    expect(switchError.rolledBackHandle?.profile.id).toBe(profileA.id)
+
+    handle = switchError.rolledBackHandle
+
+    const res = await fetch(`http://127.0.0.1:${handle!.port}/api/sources`, {
+      headers: { [SESSION_TOKEN_HEADER]: handle!.token },
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('leaves nothing open when BOTH the target and the rollback fail, reporting rolledBackHandle as undefined', async () => {
+    const handleA = await createProfileAndOpen({ profileDir, name: 'Profile A' })
+    const profileA = handleA.profile
+    const dbFileA = profileDatabasePath(profileDir, profileA)
+
+    const handleBSetup = await createProfileAndOpen({ profileDir, name: 'Profile B' })
+    await handleBSetup.close()
+    const profileB = handleBSetup.profile
+
+    // Target B: simulate a newer-build database, same as the test above.
+    const dbFileB = profileDatabasePath(profileDir, profileB)
+    const db = openLocalDatabase(dbFileB)
+    db.prepare(
+      `INSERT INTO "_prisma_migrations"
+        ("id", "checksum", "finished_at", "migration_name", "started_at", "applied_steps_count")
+       VALUES (?, ?, ?, ?, ?, 1)`,
+    ).run('mutation-proof-id', 'x'.repeat(64), new Date().toISOString(), '9999_future_migration', new Date().toISOString())
+    db.close()
+
+    // The profile being switched AWAY from also becomes unopenable by the
+    // time the rollback attempt runs -- corrupted on disk while handleA's
+    // own (still in-memory) connection is untouched, so `current.close()`
+    // itself succeeds normally; only the SUBSEQUENT reopen attempt fails.
+    corruptDatabaseFile(dbFileA)
+
+    let caught: unknown
+    try {
+      await switchProfile({ profileDir, current: handleA, target: profileB })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(ProfileSwitchError)
+    const switchError = caught as ProfileSwitchError
+    expect(switchError.rolledBackHandle).toBeUndefined()
+
+    // handle stays undefined -- nothing for afterEach to close.
   })
 })

@@ -83,7 +83,13 @@
     "aiKeyInvalid": "Anthropic keys start with sk-ant-…",
     "aiKeyFailed": "Could not save the key.",
     "localeEn": "English",
-    "localePt": "Portuguese (Brazil)"
+    "localePt": "Portuguese (Brazil)",
+    "profiles": {
+      "title": "Profiles",
+      "subtitle": "Switch to a different profile on this computer. Each profile keeps its own, separate financial history.",
+      "current": "(current)",
+      "switch": "Switch"
+    }
   },
   "quickAdd": {
     "modalTitle": "Add to your register",
