@@ -4,6 +4,7 @@ import type {
   LocalApiRequestPayload,
   LocalApiResponsePayload,
 } from '../shared/local-api-protocol'
+import type { ProfilesSituationPayload } from '../shared/profile-protocol'
 
 export type TokenStore = {
   getAccessToken: () => Promise<string | undefined>
@@ -87,3 +88,26 @@ const localApi: LocalApi = {
 }
 
 contextBridge.exposeInMainWorld('localApi', localApi)
+
+/**
+ * The renderer's only way to find out about, create, or open a local
+ * profile -- see `profile-protocol.ts` for the wire shapes and
+ * `main/index.ts`'s `profiles:*` handlers for what main actually validates
+ * before acting on `create`/`open`. This bridge does no validation itself
+ * (nor does anything else under `preload/`): it only relays the call across
+ * `contextBridge`, exactly like `localApi.request` above -- the renderer is
+ * the untrusted side of this boundary, so every real check happens in main.
+ */
+export type ProfilesApi = {
+  getSituation: () => Promise<ProfilesSituationPayload>
+  create: (name: string) => Promise<ProfilesSituationPayload>
+  open: (id: string) => Promise<ProfilesSituationPayload>
+}
+
+const profiles: ProfilesApi = {
+  getSituation: () => ipcRenderer.invoke('profiles:get-situation'),
+  create: (name: string) => ipcRenderer.invoke('profiles:create', name),
+  open: (id: string) => ipcRenderer.invoke('profiles:open', id),
+}
+
+contextBridge.exposeInMainWorld('profiles', profiles)

@@ -474,5 +474,18 @@
     "body": "Wimm could not reach its local database. This is a bug, not an expired session — please report it.",
     "detailLabel": "Details",
     "reload": "Reload"
+  },
+  "profiles": {
+    "onboarding": {
+      "title": "Welcome to WIMM",
+      "body": "WIMM keeps your financial history in a profile on this computer — nothing is sent anywhere. Give it a name to get started.",
+      "nameLabel": "Profile name",
+      "namePlaceholder": "e.g. My Finances",
+      "submit": "Create profile"
+    },
+    "picker": {
+      "title": "Choose a profile",
+      "body": "WIMM found more than one profile on this computer. Pick one to open it."
+    }
   }
 }

@@ -36,18 +36,41 @@
  * checkout (a symlink to `apps/api`) and, once Task 4 packages the API's
  * `dist/` and `prisma/migrations-sqlite/` alongside it, a packaged build.
  *
- * **Profile bootstrap here is headless only.** `ProfileModule` refuses to
- * boot against a database with zero `User` rows or more than one (a
- * deliberate phase 3 behaviour -- see `ActiveProfileService`'s doc comment).
- * Something has to guarantee exactly one profile, with exactly one `User`
- * row, exists before `AppLocalModule.forRoot` is ever called. `startLocalApi`
- * does the minimum needed for that: reuse the most recently opened profile if
- * one exists, or create a single default one (with a placeholder single user
- * row -- there are no credentials to collect in an offline, no-accounts
- * build) if none does. Choosing *which* profile to open, and letting the user
- * name one or create a second, is a picker UI -- Phase 4c's job, not this
- * one's.
+ * **This module never guesses which profile to open, and never creates one
+ * on its own.** `ProfileModule` refuses to boot against a database with zero
+ * `User` rows or more than one (a deliberate phase 3 behaviour -- see
+ * `ActiveProfileService`'s doc comment), so *something* has to guarantee
+ * exactly one profile, with exactly one `User` row, exists before
+ * `AppLocalModule.forRoot` is ever called -- but this module deliberately
+ * does not decide that on its own anymore. An earlier version of this file
+ * silently created a default profile on first launch and silently reopened
+ * "whichever one was used most recently" when several existed; both were
+ * scaffolding for phase 4b, kept only long enough to prove the embedded API
+ * could boot at all. WIMM is a standalone app for people who are not
+ * developers -- inventing a profile behind the user's back, or guessing
+ * among several without asking, is not acceptable product behaviour once
+ * profiles are a real, user-visible concept.
  *
+ * Phase 4c task 2 replaces that with two explicit entry points, each of
+ * which requires the caller (`index.ts`, driven by
+ * `profile-lifecycle.ts`'s `resolveProfileSituation`) to have already
+ * decided what should happen:
+ *
+ * - `openProfile` boots an *existing* profile the caller already identified
+ *   (the sole profile when exactly one exists, or whichever one the user
+ *   picked from a picker screen when several do).
+ * - `createProfileAndOpen` creates a brand new profile from a user-supplied
+ *   name (onboarding, when zero profiles exist) and then boots it.
+ *
+ * Both funnel into the same private `bootProfileDatabase`, which is
+ * everything this module used to do after "which profile" was already
+ * decided: apply pending migrations, resolve the AI key encryption secret,
+ * generate a session token, compose `AppLocalModule.forRoot`, and listen.
+ * Neither entry point ever reads the registry itself to decide *which*
+ * profile to use -- see `profile-lifecycle.ts` for that decision, kept
+ * deliberately separate and pure so it can be tested without a filesystem.
+ *
+
  * **CORS.** Deliberately not configured here at all -- see the phase 4b task
  * 2 report for the full reasoning. In short: the hosted build's
  * `app.enableCors()` is a permissive default that would let any origin
@@ -76,13 +99,14 @@ import {
 } from '@wimm/api/dist/prisma/local/migration-runner'
 import {
   createProfile,
-  listProfiles,
   profileDatabasePath,
   touchProfile,
   type Profile,
 } from '@wimm/api/dist/prisma/local/profile-registry'
 import { resolveProfileAiKeyEncryptionSecret } from '@wimm/api/dist/prisma/local/profile-secret'
 import { generateSessionToken } from '@wimm/api/dist/profile/session-token'
+
+import { validateProfileName } from './profile-lifecycle'
 
 // `require.resolve` rather than `__dirname`-relative traversal: the latter
 // would point at wherever electron-vite happens to emit this bundle's own
@@ -99,9 +123,6 @@ const nodeRequire = createRequire(__filename)
 const API_PACKAGE_ROOT = dirname(nodeRequire.resolve('@wimm/api/package.json'))
 const SQLITE_MIGRATIONS_DIR = join(API_PACKAGE_ROOT, 'prisma', 'migrations-sqlite')
 
-/** Name given to the single profile created on a first-ever launch. Phase 4c's onboarding replaces this with a name the user chooses. */
-const DEFAULT_PROFILE_NAME = 'Default'
-
 /**
  * Placeholder identity for the single `User` row a freshly created profile
  * needs (see `ActiveProfileService`'s "zero rows" failure). Local mode has
@@ -114,16 +135,35 @@ const DEFAULT_USER_EMAIL = 'local@wimm.local'
 const DEFAULT_USER_USERNAME = 'local'
 const DEFAULT_USER_PASSWORD_HASH = 'local-profile-no-password-required'
 
-export interface StartLocalApiOptions {
-  /**
-   * Absolute path to the directory that holds every local profile: the
-   * registry (`profiles.json`), each profile's SQLite file (under
-   * `profiles/`), and migration snapshots (under `backups/`). Resolved by
-   * the caller (`app.getPath('userData') + 'profiles'`, in main) and passed
-   * in -- `@wimm/api` must never import `electron`, so nothing in this
-   * module or in `@wimm/api` reads `app.getPath` itself.
-   */
+/**
+ * Absolute path to the directory that holds every local profile: the
+ * registry (`profiles.json`), each profile's SQLite file (under
+ * `profiles/`), and migration snapshots (under `backups/`). Resolved by
+ * the caller (`app.getPath('userData') + 'profiles'`, in main) and passed
+ * in -- `@wimm/api` must never import `electron`, so nothing in this
+ * module or in `@wimm/api` reads `app.getPath` itself.
+ */
+export interface OpenProfileOptions {
   profileDir: string
+  /**
+   * The profile to open, exactly as `profile-lifecycle.ts`'s
+   * `resolveProfileSituation` (or a picker screen, once the user has chosen)
+   * reported it. This module never reads the registry itself to find or
+   * choose a profile -- see the module doc comment.
+   */
+  profile: Profile
+}
+
+export interface CreateProfileOptions {
+  profileDir: string
+  /**
+   * The user-supplied name for the new profile, as typed into the
+   * onboarding screen. Validated and normalized by `validateProfileName`
+   * (`profile-lifecycle.ts`) before it ever reaches `createProfile` --
+   * never used to build a filesystem path either way, see that function's
+   * doc comment.
+   */
+  name: string
 }
 
 export interface LocalApiHandle {
@@ -196,48 +236,6 @@ export function rethrowMigrationFailure(err: unknown): never {
 }
 
 /**
- * Picks which profile to open when more than one exists: the one with the
- * most recent `lastOpenedAt`, treating `null` (never reopened since being
- * created) as older than any real timestamp. This is a placeholder for a
- * real choice -- Phase 4c's profile picker replaces it -- so it deliberately
- * does the simplest thing that is not silently wrong: never guesses among
- * profiles with no way to prefer one, just picks the most recently used.
- */
-function mostRecentlyOpened(profiles: readonly Profile[]): Profile {
-  return [...profiles].sort((a, b) => {
-    const aTime = a.lastOpenedAt ? Date.parse(a.lastOpenedAt) : 0
-    const bTime = b.lastOpenedAt ? Date.parse(b.lastOpenedAt) : 0
-    return bTime - aTime
-  })[0]
-}
-
-/**
- * Ensures exactly one profile exists in `profileDir` and returns it, creating
- * one (headlessly -- see the module doc comment) if the registry is empty.
- * Marks the returned profile as opened `now`. Returns whether the profile was
- * newly created, so the caller knows whether it still needs its single
- * `User` row seeded.
- */
-function ensureProfile(profileDir: string, now: Date): { profile: Profile; isNewProfile: boolean } {
-  const profiles = listProfiles(profileDir)
-
-  let profile: Profile
-  let isNewProfile: boolean
-
-  if (profiles.length === 0) {
-    profile = createProfile(profileDir, DEFAULT_PROFILE_NAME, randomUUID(), now)
-    isNewProfile = true
-  } else {
-    profile = mostRecentlyOpened(profiles)
-    isNewProfile = false
-  }
-
-  touchProfile(profileDir, profile.id, now)
-
-  return { profile, isNewProfile }
-}
-
-/**
  * Inserts the single `User` row a freshly created profile needs, through a
  * throwaway `LocalPrismaService` connection -- opened, used, and disconnected
  * before `AppLocalModule` composes its own connection to the same file, so
@@ -288,41 +286,44 @@ function assertBoundToLoopback(address: AddressInfo | string | null): void {
 }
 
 /**
- * Boots the local (offline, per-profile SQLite) NestJS composition and
- * starts serving it on an ephemeral loopback port. See the module doc
- * comment for the full design; in order, this:
+ * Everything needed to serve `profile` once "which profile" has already
+ * been decided by the caller -- the shared core of `openProfile` and
+ * `createProfileAndOpen`. In order, this:
  *
- * 1. Ensures a profile exists in `options.profileDir` (creating one, with its
- *    single `User` row, on first launch) and applies any pending SQLite
- *    migrations to it, snapshotting first if anything is pending.
- * 2. Resolves this profile's AI key encryption secret
+ * 1. Applies any pending SQLite migrations to `profile`'s database,
+ *    snapshotting first if anything is pending.
+ * 2. Seeds the single placeholder `User` row if `isNewProfile` (a profile
+ *    `createProfileAndOpen` just registered has no rows yet; one opened by
+ *    `openProfile` already has its row from when it was created).
+ * 3. Resolves this profile's AI key encryption secret
  *    (`resolveProfileAiKeyEncryptionSecret`, `@wimm/api`'s
  *    `prisma/local/profile-secret`), migrating a BYOK key encrypted under
  *    the old shared constant if this profile predates per-profile secrets.
- *    Runs after step 1 (the `User` table, and its row, must already exist)
- *    and before step 3 (the secret is a required, verified boot argument --
+ *    Runs after step 2 (the `User` table, and its row, must already exist)
+ *    and before step 4 (the secret is a required, verified boot argument --
  *    see `assertUsableAiKeyEncryptionSecret`).
- * 3. Generates a fresh per-launch session token and composes
+ * 4. Generates a fresh per-launch session token and composes
  *    `AppLocalModule.forRoot`.
- * 4. Listens on `127.0.0.1:0` (an OS-assigned ephemeral port), verifies the
+ * 5. Listens on `127.0.0.1:0` (an OS-assigned ephemeral port), verifies the
  *    kernel actually bound to loopback, and returns the assigned port, the
  *    token, and a `close()` that tears both down.
  *
  * Throws `NewerDatabaseError` if the profile's database was migrated by a
  * newer build of this app (see that class's doc comment) -- the caller
  * should show the user something actionable, not a stack trace. Throws a
- * plain `Error` for any other boot failure (checksum drift, a corrupt
- * registry, a CHECK-constraint violation in a hand-edited database, ...).
+ * plain `Error` for any other boot failure (checksum drift, a CHECK-
+ * constraint violation in a hand-edited database, ...).
  */
-export async function startLocalApi(options: StartLocalApiOptions): Promise<LocalApiHandle> {
-  const now = new Date()
-
-  const { profile, isNewProfile } = ensureProfile(options.profileDir, now)
-
-  const databaseFile = profileDatabasePath(options.profileDir, profile)
+async function bootProfileDatabase(
+  profileDir: string,
+  profile: Profile,
+  now: Date,
+  isNewProfile: boolean,
+): Promise<LocalApiHandle> {
+  const databaseFile = profileDatabasePath(profileDir, profile)
   mkdirSync(dirname(databaseFile), { recursive: true })
 
-  const backupDir = join(options.profileDir, 'backups')
+  const backupDir = join(profileDir, 'backups')
 
   try {
     applyPendingMigrations({
@@ -349,7 +350,7 @@ export async function startLocalApi(options: StartLocalApiOptions): Promise<Loca
   // no-op migration the first time it runs for it, exactly like every other
   // profile.
   const { secret: aiKeyEncryptionSecret, migration } = resolveProfileAiKeyEncryptionSecret({
-    profileDir: options.profileDir,
+    profileDir,
     profileId: profile.id,
     databaseFile,
   })
@@ -362,8 +363,8 @@ export async function startLocalApi(options: StartLocalApiOptions): Promise<Loca
     // degrades to "no key" for them), and this is the one place that can
     // still name it.
     console.warn(
-      `startLocalApi: ${migration.leftUntouchedUserIds.length} user row(s) in profile "${profile.id}" had an ` +
-        'aiApiKeyEncrypted value that could not be decrypted during AI key secret migration; left untouched. ' +
+      `bootProfileDatabase: ${migration.leftUntouchedUserIds.length} user row(s) in profile "${profile.id}" had ` +
+        'an aiApiKeyEncrypted value that could not be decrypted during AI key secret migration; left untouched. ' +
         'The affected user will see AI off and needs to re-enter their BYOK API key in Settings.',
     )
   }
@@ -415,4 +416,38 @@ export async function startLocalApi(options: StartLocalApiOptions): Promise<Loca
     })
     throw err
   }
+}
+
+/**
+ * Opens a profile the caller has already identified -- the sole profile
+ * `resolveProfileSituation` found, or the one a picker screen's user
+ * selected. Marks it as opened `now` (`touchProfile`) and boots it via
+ * `bootProfileDatabase`. Never creates a profile and never consults the
+ * registry to decide *which* one to open -- see the module doc comment.
+ */
+export async function openProfile(options: OpenProfileOptions): Promise<LocalApiHandle> {
+  const now = new Date()
+  touchProfile(options.profileDir, options.profile.id, now)
+  return bootProfileDatabase(options.profileDir, options.profile, now, false)
+}
+
+/**
+ * Registers a brand new profile named `options.name` (validated and
+ * normalized by `validateProfileName` -- throws `InvalidProfileNameError`
+ * for anything that fails that check, before touching the registry or the
+ * filesystem at all) and boots it via `bootProfileDatabase`, which seeds its
+ * single placeholder `User` row (see that function's doc comment) since a
+ * newly created profile has none yet.
+ *
+ * The new profile's `id` is generated here (`randomUUID()`), never derived
+ * from `options.name` -- `createProfile` (`profile-registry.ts`) builds
+ * `dbFileName` from this `id` alone, which is what keeps a user-chosen name
+ * from ever being able to influence a filesystem path.
+ */
+export async function createProfileAndOpen(options: CreateProfileOptions): Promise<LocalApiHandle> {
+  const now = new Date()
+  const name = validateProfileName(options.name)
+  const profile = createProfile(options.profileDir, name, randomUUID(), now)
+  touchProfile(options.profileDir, profile.id, now)
+  return bootProfileDatabase(options.profileDir, profile, now, true)
 }

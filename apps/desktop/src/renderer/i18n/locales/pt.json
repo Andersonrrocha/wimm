@@ -474,5 +474,18 @@
     "body": "O Wimm não conseguiu acessar seu banco de dados local. Isso é um bug, não uma sessão expirada — por favor, reporte o problema.",
     "detailLabel": "Detalhes",
     "reload": "Recarregar"
+  },
+  "profiles": {
+    "onboarding": {
+      "title": "Bem-vindo ao WIMM",
+      "body": "O WIMM guarda seu histórico financeiro em um perfil neste computador — nada é enviado para fora dele. Dê um nome para começar.",
+      "nameLabel": "Nome do perfil",
+      "namePlaceholder": "ex: Minhas Finanças",
+      "submit": "Criar perfil"
+    },
+    "picker": {
+      "title": "Escolha um perfil",
+      "body": "O WIMM encontrou mais de um perfil neste computador. Escolha um para abri-lo."
+    }
   }
 }

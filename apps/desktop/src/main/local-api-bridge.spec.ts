@@ -1,6 +1,6 @@
 /**
  * Behavioral proof for `forwardLocalApiRequest`, against a real, running
- * embedded API (via `startLocalApi`) -- not a mocked `fetch`. This is the
+ * embedded API (via `createProfileAndOpen`) -- not a mocked `fetch`. This is the
  * load-bearing seam for the "the session token never enters the renderer"
  * claim: every request built here carries no caller-supplied token at all
  * (mirroring exactly what the renderer's adapter actually sends), and this
@@ -21,7 +21,7 @@ import type { AddressInfo } from 'node:net'
 import { SESSION_TOKEN_HEADER } from '@wimm/api/dist/profile/session-token'
 import { CategoryType, SourceType } from '@wimm/shared'
 
-import { startLocalApi, type LocalApiHandle } from './local-api'
+import { createProfileAndOpen, type LocalApiHandle } from './local-api'
 import {
   assertAllowedMethod,
   buildAllowedHeaders,
@@ -42,7 +42,7 @@ describe('forwardLocalApiRequest', () => {
 
   beforeEach(async () => {
     profileDir = tmpProfileDir()
-    handle = await startLocalApi({ profileDir })
+    handle = await createProfileAndOpen({ profileDir, name: 'Test Profile' })
   })
 
   afterEach(async () => {
@@ -137,7 +137,7 @@ describe('forwardLocalApiRequest -- FormData reconstruction', () => {
 
   beforeEach(async () => {
     profileDir = tmpProfileDir()
-    handle = await startLocalApi({ profileDir })
+    handle = await createProfileAndOpen({ profileDir, name: 'Test Profile' })
   })
 
   afterEach(async () => {
@@ -256,7 +256,7 @@ describe('forwardLocalApiRequest -- rejects the open-proxy attack vectors (Findi
 
   beforeEach(async () => {
     profileDir = tmpProfileDir()
-    handle = await startLocalApi({ profileDir })
+    handle = await createProfileAndOpen({ profileDir, name: 'Test Profile' })
 
     sinkRequests = []
     sink = createServer((req: IncomingMessage, res) => {

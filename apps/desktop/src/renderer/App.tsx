@@ -3,6 +3,7 @@ import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { queryClient } from './query-client'
 import { AuthProvider } from './context/auth-context'
 import { AppLayout } from './components/app-layout'
+import { ProfileGate } from './components/profile-gate'
 import { ProtectedRoute } from './components/protected-route'
 import { UpdateToast } from './components/update-toast'
 import { LoginPage } from './pages/login-page'
@@ -16,52 +17,60 @@ import { SettingsPage } from './pages/settings-page'
 
 function App(): JSX.Element {
   return (
-    <HashRouter>
-      <AuthProvider>
-        <QueryClientProvider client={queryClient}>
-          <UpdateToast />
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/register" element={<RegisterPage />} />
-            <Route
-              path="/onboarding"
-              element={
-                <ProtectedRoute>
-                  <OnboardingPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/"
-              element={
-                <ProtectedRoute>
-                  <AppLayout />
-                </ProtectedRoute>
-              }
-            >
-              <Route index element={<DashboardPage />} />
-              <Route path="transactions" element={<TransactionsPage />} />
-              <Route path="imports" element={<ImportsPage />} />
-              <Route path="recurrences" element={<RecurrencesPage />} />
-              <Route path="settings" element={<SettingsPage />} />
+    // ProfileGate wraps everything below it, including AuthProvider --
+    // see that component's doc comment for why AuthProvider must not mount
+    // (and therefore must not resolve local/hosted mode) until a local-mode
+    // profile is actually open, or this is a hosted build with no profile
+    // concept at all (`window.profiles` absent, gate falls through
+    // immediately).
+    <ProfileGate>
+      <HashRouter>
+        <AuthProvider>
+          <QueryClientProvider client={queryClient}>
+            <UpdateToast />
+            <Routes>
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/register" element={<RegisterPage />} />
               <Route
-                path="categories"
-                element={<Navigate to="/settings" replace />}
+                path="/onboarding"
+                element={
+                  <ProtectedRoute>
+                    <OnboardingPage />
+                  </ProtectedRoute>
+                }
               />
               <Route
-                path="sources"
-                element={<Navigate to="/settings" replace />}
-              />
-              <Route
-                path="rules"
-                element={<Navigate to="/settings" replace />}
-              />
-            </Route>
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </QueryClientProvider>
-      </AuthProvider>
-    </HashRouter>
+                path="/"
+                element={
+                  <ProtectedRoute>
+                    <AppLayout />
+                  </ProtectedRoute>
+                }
+              >
+                <Route index element={<DashboardPage />} />
+                <Route path="transactions" element={<TransactionsPage />} />
+                <Route path="imports" element={<ImportsPage />} />
+                <Route path="recurrences" element={<RecurrencesPage />} />
+                <Route path="settings" element={<SettingsPage />} />
+                <Route
+                  path="categories"
+                  element={<Navigate to="/settings" replace />}
+                />
+                <Route
+                  path="sources"
+                  element={<Navigate to="/settings" replace />}
+                />
+                <Route
+                  path="rules"
+                  element={<Navigate to="/settings" replace />}
+                />
+              </Route>
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </QueryClientProvider>
+        </AuthProvider>
+      </HashRouter>
+    </ProfileGate>
   )
 }
 

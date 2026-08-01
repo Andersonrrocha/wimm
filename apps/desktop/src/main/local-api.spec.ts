@@ -1,12 +1,21 @@
 /**
- * Behavioral proof for `startLocalApi`: a real NestJS app actually boots
- * (proving decorator metadata survived the trip through `@wimm/api/dist`),
- * actually enforces the session token, actually reuses an existing profile
- * instead of duplicating it, actually surfaces a newer-database refusal as a
- * distinguishable error, and -- the part this task's report treats as load-
- * bearing -- is provably bound to loopback only, checked both by reading the
- * bound address back and by attempting a real TCP connection from a
- * non-loopback address of this machine.
+ * Behavioral proof for `openProfile` / `createProfileAndOpen`: a real NestJS
+ * app actually boots (proving decorator metadata survived the trip through
+ * `@wimm/api/dist`), actually enforces the session token, actually reopens
+ * an existing profile instead of duplicating it, actually surfaces a
+ * newer-database refusal as a distinguishable error, and -- the part this
+ * task's report treats as load-bearing -- is provably bound to loopback
+ * only, checked both by reading the bound address back and by attempting a
+ * real TCP connection from a non-loopback address of this machine.
+ *
+ * Neither entry point auto-creates or auto-picks a profile anymore (Phase
+ * 4c task 2) -- every test here is explicit about which one it means:
+ * `createProfileAndOpen` for "first launch, no profile yet" and
+ * `openProfile` (passed the `Profile` the previous call returned, or a
+ * fresh read of the registry) for "reopen an existing one". See
+ * `profile-lifecycle.spec.ts` for the pure zero/one/several/corrupt
+ * decision this file's caller (`index.ts`) makes before ever calling
+ * either.
  *
  * Runs under plain Node (via `ts-jest`), not Electron, and requires the
  * native ABI marker to say "node" (`apps/api/src/prisma/local/native-abi-
@@ -20,6 +29,7 @@ import { join } from 'node:path'
 import { decryptWithAiKey, deriveAiKeyEncryptionKey, encryptWithAiKey } from '@wimm/api/dist/ai/ai-key-crypto'
 import { DATABASE_MIGRATED_BY_NEWER_BUILD_CODE } from '@wimm/api/dist/prisma/local/migration-runner'
 import { openLocalDatabase } from '@wimm/api/dist/prisma/local/open-local-database'
+import { listProfiles, type Profile } from '@wimm/api/dist/prisma/local/profile-registry'
 import {
   LEGACY_SHARED_AI_KEY_ENCRYPTION_SECRET,
   profileSecretFilePath,
@@ -27,10 +37,11 @@ import {
 import { SESSION_TOKEN_HEADER } from '@wimm/api/dist/profile/session-token'
 
 import {
+  createProfileAndOpen,
   isDatabaseMigratedByNewerBuildError,
   NewerDatabaseError,
+  openProfile,
   rethrowMigrationFailure,
-  startLocalApi,
   type LocalApiHandle,
 } from './local-api'
 
@@ -38,6 +49,13 @@ jest.setTimeout(30000)
 
 function tmpProfileDir(): string {
   return mkdtempSync(join(tmpdir(), 'wimm-local-api-spec-'))
+}
+
+/** Reads back the sole profile a test has already created, for a subsequent `openProfile` call. */
+function readSoleRegisteredProfile(profileDir: string): Profile {
+  const profiles = listProfiles(profileDir)
+  expect(profiles).toHaveLength(1)
+  return profiles[0]
 }
 
 /** Every non-internal IPv4 address this machine's own network interfaces report. */
@@ -85,7 +103,7 @@ function attemptConnection(host: string, port: number): Promise<boolean> {
   })
 }
 
-describe('startLocalApi', () => {
+describe('createProfileAndOpen / openProfile', () => {
   let profileDir: string
   let handle: LocalApiHandle | undefined
 
@@ -102,7 +120,7 @@ describe('startLocalApi', () => {
   })
 
   it('returns a real ephemeral port and a usable session token, and serves the local API', async () => {
-    handle = await startLocalApi({ profileDir })
+    handle = await createProfileAndOpen({ profileDir, name: 'Test Profile' })
 
     expect(Number.isInteger(handle.port)).toBe(true)
     expect(handle.port).toBeGreaterThan(0)
@@ -117,7 +135,7 @@ describe('startLocalApi', () => {
   })
 
   it('rejects a request with no token, and a request with the wrong token, both with 401', async () => {
-    handle = await startLocalApi({ profileDir })
+    handle = await createProfileAndOpen({ profileDir, name: 'Test Profile' })
 
     const noToken = await fetch(`http://127.0.0.1:${handle.port}/api/sources`)
     expect(noToken.status).toBe(401)
@@ -128,18 +146,21 @@ describe('startLocalApi', () => {
     expect(wrongToken.status).toBe(401)
   })
 
-  it('reuses the existing profile and its single user on a second launch, without duplicating either', async () => {
-    handle = await startLocalApi({ profileDir })
+  it('reopens the existing profile and its single user via openProfile, without duplicating either', async () => {
+    handle = await createProfileAndOpen({ profileDir, name: 'Test Profile' })
     await handle.close()
     handle = undefined
 
-    // A second launch against the same profileDir. If this had created a
-    // second profile, or a second User row in the same profile,
+    const profile = readSoleRegisteredProfile(profileDir)
+
+    // A second launch against the same profile, via openProfile -- the
+    // entry point that never seeds a User row (see its doc comment). If
+    // this had somehow created a second User row in the same profile,
     // ActiveProfileService's own "expected exactly 1" boot check (see its
     // doc comment) would throw. This test proves the second boot instead
-    // succeeds cleanly -- meaning exactly one profile and exactly one user
-    // were reused, not duplicated.
-    handle = await startLocalApi({ profileDir })
+    // succeeds cleanly -- meaning the single existing user was reused, not
+    // duplicated.
+    handle = await openProfile({ profileDir, profile })
     const res = await fetch(`http://127.0.0.1:${handle.port}/api/sources`, {
       headers: { [SESSION_TOKEN_HEADER]: handle.token },
     })
@@ -148,18 +169,17 @@ describe('startLocalApi', () => {
 
   it('surfaces a NewerDatabaseError, not a raw crash, when the profile database was migrated by a newer build', async () => {
     // First launch creates and migrates a real profile database.
-    handle = await startLocalApi({ profileDir })
+    handle = await createProfileAndOpen({ profileDir, name: 'Test Profile' })
     await handle.close()
     handle = undefined
+
+    const profile = readSoleRegisteredProfile(profileDir)
 
     // Simulate "a newer build already migrated this database" the same way
     // migration-runner.spec.ts does: insert a migration record naming a
     // migration this build does not ship. migration-runner.ts's own "ahead
     // of this build" check (see its doc comment) is what this is exercising.
-    const registry = JSON.parse(readFileSync(join(profileDir, 'profiles.json'), 'utf8')) as Array<{
-      dbFileName: string
-    }>
-    const dbFile = join(profileDir, 'profiles', registry[0].dbFileName)
+    const dbFile = join(profileDir, 'profiles', profile.dbFileName)
     const db = openLocalDatabase(dbFile)
     db.prepare(
       `INSERT INTO "_prisma_migrations"
@@ -176,7 +196,7 @@ describe('startLocalApi', () => {
 
     let caught: unknown
     try {
-      await startLocalApi({ profileDir })
+      await openProfile({ profileDir, profile })
     } catch (err) {
       caught = err
     }
@@ -194,7 +214,7 @@ describe('startLocalApi', () => {
 
   describe('loopback binding -- proven both ways, not assumed', () => {
     it('accepts a connection on 127.0.0.1, and refuses one on every non-loopback address of this machine', async () => {
-      handle = await startLocalApi({ profileDir })
+      handle = await createProfileAndOpen({ profileDir, name: 'Test Profile' })
 
       const loopbackOk = await attemptConnection('127.0.0.1', handle.port)
       expect(loopbackOk).toBe(true)
@@ -289,18 +309,13 @@ describe('per-profile AI key encryption secret (Task 1, phase 4c)', () => {
     rmSync(profileDir, { recursive: true, force: true })
   })
 
-  /** Reads the one profile entry `startLocalApi` created/reused in `profileDir`. */
-  function readSoleProfile(): { id: string; dbFileName: string } {
-    const registry = JSON.parse(readFileSync(join(profileDir, 'profiles.json'), 'utf8')) as Array<{
-      id: string
-      dbFileName: string
-    }>
-    expect(registry).toHaveLength(1)
-    return registry[0]
+  /** Reads the one profile entry created/reused in `profileDir`. */
+  function readSoleProfile(): Profile {
+    return readSoleRegisteredProfile(profileDir)
   }
 
   it('creates a secret file for a freshly created profile, outside profiles/', async () => {
-    handle = await startLocalApi({ profileDir })
+    handle = await createProfileAndOpen({ profileDir, name: 'Test Profile' })
 
     const profile = readSoleProfile()
     const secretPath = profileSecretFilePath(profileDir, profile.id)
@@ -317,7 +332,7 @@ describe('per-profile AI key encryption secret (Task 1, phase 4c)', () => {
   it('migrates a BYOK key encrypted under the legacy shared secret on the next launch, and the key survives, decryptable under the new per-profile secret', async () => {
     // First launch: create the profile normally. This already resolves and
     // persists a per-profile secret (there is nothing to migrate yet).
-    handle = await startLocalApi({ profileDir })
+    handle = await createProfileAndOpen({ profileDir, name: 'Test Profile' })
     await handle.close()
     handle = undefined
 
@@ -342,8 +357,9 @@ describe('per-profile AI key encryption secret (Task 1, phase 4c)', () => {
     db.close()
 
     // Second launch: no secret file exists, so this must migrate the
-    // legacy-encrypted value before composing the app.
-    handle = await startLocalApi({ profileDir })
+    // legacy-encrypted value before composing the app. Via openProfile --
+    // this profile already exists and already has its User row.
+    handle = await openProfile({ profileDir, profile })
 
     expect(existsSync(secretPath)).toBe(true)
     const newSecret = readFileSync(secretPath, 'utf8')
