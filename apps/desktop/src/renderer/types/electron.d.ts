@@ -1,4 +1,4 @@
-import type { LocalApi, ProfilesApi, TokenStore, UpdaterApi } from '../../preload/index'
+import type { BackupsApi, LocalApi, ProfilesApi, TokenStore, UpdaterApi } from '../../preload/index'
 
 declare global {
   interface Window {
@@ -6,6 +6,7 @@ declare global {
     updater: UpdaterApi
     localApi: LocalApi
     profiles: ProfilesApi
+    backups: BackupsApi
   }
 }
 

@@ -12,15 +12,20 @@ import {
 } from './store'
 import {
   createProfileAndOpen,
+  exportActiveProfileDatabase,
+  listProfileBackups,
   NewerDatabaseError,
   openProfile,
+  ProfileRestoreError,
   ProfileSwitchError,
+  restoreProfileFromBackup,
   switchProfile,
   type LocalApiHandle,
 } from './local-api'
 import { forwardLocalApiRequest } from './local-api-bridge'
 import { resolveProfileSituation, type ProfileSituation } from './profile-lifecycle'
 import { quitAndInstallUpdate, setupAutoUpdater } from './updater'
+import type { ExportResult, ProfileBackups } from '../shared/backup-protocol'
 import type { ApiMode, LocalApiRequestPayload } from '../shared/local-api-protocol'
 import type { ProfileSummary, ProfilesSituationPayload } from '../shared/profile-protocol'
 
@@ -451,6 +456,146 @@ function registerIpcHandlers(): void {
       throw err
     }
   })
+
+  // --- Export and restore (Phase 4c task 4) --------------------------------
+  //
+  // Both operate on a profile identified by id, re-read fresh from the
+  // registry -- the same "validate in main, never trust a renderer-supplied
+  // id" contract every other new IPC surface in this phase follows.
+  // `backups:list`/`backups:restore` deliberately do NOT require `profileId`
+  // to be the currently active profile: a user with more than one profile
+  // can browse and restore a DIFFERENT, already-closed profile's own
+  // backups from here too (see `restoreProfileFromBackup`'s doc comment,
+  // "the multi-profile recovery path") -- reachable only once SOME profile
+  // is open (Settings does not exist otherwise), asserted below.
+
+  ipcMain.handle('backups:list', (event, profileId: unknown): ProfileBackups => {
+    assertTrustedSender(event, 'backups:list')
+    if (!localApiHandle) {
+      throw new Error('backups:list: no profile is currently open.')
+    }
+    if (typeof profileId !== 'string') {
+      throw new Error('backups:list: profileId must be a string.')
+    }
+    const profile = listProfiles(profileDir).find((candidate) => candidate.id === profileId)
+    if (!profile) {
+      throw new Error(`backups:list: no profile with id ${JSON.stringify(profileId)} was found.`)
+    }
+    return listProfileBackups(profileDir, profile)
+  })
+
+  ipcMain.handle('backups:export', async (event): Promise<ExportResult> => {
+    assertTrustedSender(event, 'backups:export')
+    if (!localApiHandle) {
+      throw new Error('backups:export: no profile is currently open.')
+    }
+    // Always the active profile -- D8 (see the phase plan) is explicit that
+    // export copies THE active profile, never an arbitrary one picked by
+    // id, which keeps this handler's attack surface to "which file the
+    // user is allowed to save their own currently-open data as."
+    const profile = localApiHandle.profile
+
+    const saveDialogOptions = {
+      title: 'Export Wimm Profile',
+      defaultPath: `${sanitizeForFileName(profile.name)}.db`,
+      filters: [{ name: 'Wimm Profile', extensions: ['db'] }],
+    }
+    const result = mainWindow
+      ? await dialog.showSaveDialog(mainWindow, saveDialogOptions)
+      : await dialog.showSaveDialog(saveDialogOptions)
+    if (result.canceled || !result.filePath) {
+      return { canceled: true }
+    }
+
+    exportActiveProfileDatabase(profileDir, profile, result.filePath)
+    return { canceled: false, path: result.filePath }
+  })
+
+  ipcMain.handle('backups:restore', async (event, payload: unknown): Promise<ProfilesSituationPayload> => {
+    assertTrustedSender(event, 'backups:restore')
+    if (!localApiHandle) {
+      throw new Error('backups:restore: no profile is currently open.')
+    }
+    if (typeof payload !== 'object' || payload === null) {
+      throw new Error('backups:restore: invalid payload.')
+    }
+    const { profileId, fileName } = payload as { profileId?: unknown; fileName?: unknown }
+    if (typeof profileId !== 'string' || typeof fileName !== 'string') {
+      throw new Error('backups:restore: profileId and fileName must both be strings.')
+    }
+
+    const profile = listProfiles(profileDir).find((candidate) => candidate.id === profileId)
+    if (!profile) {
+      throw new Error(`backups:restore: no profile with id ${JSON.stringify(profileId)} was found.`)
+    }
+
+    const isActive = localApiHandle.profile.id === profileId
+    const current = isActive ? localApiHandle : undefined
+    if (isActive) {
+      // Nothing is reported open while the restore is in flight -- matches
+      // `profiles:switch`'s own contract (see that handler above).
+      localApiHandle = undefined
+    }
+
+    try {
+      const result = await restoreProfileFromBackup({ profileDir, profile, fileName, current })
+      if (isActive) {
+        localApiHandle = result
+      }
+      // Restoring a non-active profile never touches `localApiHandle` at
+      // all -- `result` is always `undefined` in that branch (see
+      // `restoreProfileFromBackup`'s doc comment) and `localApiHandle`
+      // still holds whatever profile was already open.
+      if (!localApiHandle) {
+        // Only reachable in the (rare) isActive branch where the reopen
+        // after a successful restore itself failed without throwing --
+        // structurally not expected (a successful restoreSnapshot's reopen
+        // failure surfaces as ProfileRestoreError below instead), kept as a
+        // defensive fallback rather than asserting non-null.
+        throw new Error('backups:restore: profile is unexpectedly not open after a successful restore.')
+      }
+      return { kind: 'ready', profile: toProfileSummary(localApiHandle.profile) }
+    } catch (err) {
+      if (err instanceof ProfileRestoreError) {
+        if (isActive) {
+          localApiHandle = err.rolledBackHandle
+
+          if (!localApiHandle) {
+            // Mirrors `profiles:switch`'s own fallback: re-derive the
+            // picker/onboarding situation so a renderer reload lands on a
+            // real recovery screen instead of nothing.
+            const fallback = resolveProfileSituation(profileDir)
+            pendingProfileSituation =
+              fallback.kind === 'no-profiles' || fallback.kind === 'multiple-profiles' ? fallback : undefined
+          }
+        }
+        throw new Error(err.message)
+      }
+
+      if (isActive) {
+        // Restore never touched `current` -- restore it exactly as it was.
+        localApiHandle = current
+      }
+      throw err
+    }
+  })
+}
+
+/**
+ * A best-effort, filesystem-safe filename derived from a user-chosen
+ * profile name -- used only as `dialog.showSaveDialog`'s suggested
+ * `defaultPath` basename, which the OS dialog itself still lets the user
+ * freely edit or replace before confirming. Unlike `dbFileName`
+ * (`profile-registry.ts`), this never becomes an actual path segment this
+ * app writes to on its own, so it does not need `validateProfileName`'s
+ * full guarantees -- it only needs to avoid characters most filesystems
+ * reject outright, so the suggested name is not itself rejected by the save
+ * dialog before the user even gets to see it.
+ */
+function sanitizeForFileName(name: string): string {
+  // eslint-disable-next-line no-control-regex -- deliberately matching C0 controls alongside the usual reserved filesystem characters.
+  const cleaned = name.replace(/[\x00-\x1f<>:"/\\|?*]/g, ' ').trim()
+  return cleaned.length > 0 ? cleaned : 'wimm-profile'
 }
 
 function createWindow(): void {
@@ -522,14 +667,32 @@ function createWindow(): void {
  * checksum mismatch, a CHECK-constraint violation, ...) gets a generic-but-
  * honest dialog instead of a raw stack trace, still naming the underlying
  * message so it can be reported.
+ *
+ * **Phase 4c task 4: this dialog now names the real Restore feature by its
+ * exact location instead of gesturing vaguely at "a backup snapshot".**
+ * Restore lives in Settings, and Settings only exists once SOME profile is
+ * open -- which is exactly what this dialog fires *without* (this is the
+ * sole-profile, pre-window boot path; see this function's own doc comment
+ * above). So the guidance splits on the one fact that actually matters
+ * here: a person with more than one profile on this computer can open a
+ * DIFFERENT, working one and restore THIS profile from there (`backups:*`
+ * deliberately lets Settings browse and restore ANY registered profile's
+ * backups, not only the active one -- see `restoreProfileFromBackup`'s doc
+ * comment, "the multi-profile recovery path"); a person for whom this is
+ * their only profile has no window to reach Settings through at all, and
+ * reinstalling the newer build remains the only way back in. Both paths are
+ * stated plainly rather than only the one that happens to apply, since this
+ * dialog has no way to know in advance how many profiles exist.
  */
 function showProfileBootErrorDialog(err: unknown): void {
   if (err instanceof NewerDatabaseError) {
     dialog.showErrorBox(
       'This profile was created by a newer version of Wimm',
-      `${err.message}\n\nWimm cannot open this profile with the version currently installed. Reinstall the ` +
-        'newer version, or restore a backup snapshot taken BEFORE you last upgraded (not this database as it ' +
-        'is now).',
+      `${err.message}\n\nWimm cannot open this profile with the version currently installed.\n\n` +
+        'If you have another profile on this computer, open that one, then use Settings -> Backups -> Restore ' +
+        'from Backup to restore THIS profile from a snapshot taken BEFORE you last upgraded it (not this ' +
+        'database as it is now). If this is your only profile, the only way back in is reinstalling the newer ' +
+        'version of Wimm.',
     )
   } else {
     const message = err instanceof Error ? err.message : String(err)

@@ -99,6 +99,40 @@
  *   *display* a problem, not crash on it. `checkDatabaseHealth` calls the
  *   same private assert and turns a throw into a result, rather than
  *   duplicating the open-and-integrity-check logic a second time.
+ *
+ * - Phase 4c task 4 adds three things on top of the above, all driven by the
+ *   same need: a restore UI a real person has to choose from.
+ *
+ *   1. `SnapshotInfo.schemaVersion` -- the name of the newest migration
+ *      recorded as applied in a snapshot's own `_prisma_migrations` table, or
+ *      `null` if it cannot be determined (no such table, or the file cannot
+ *      be opened at all -- notably true of most preservation copies, which
+ *      exist precisely because they failed validation). Read best-effort,
+ *      never throwing: this is informational for a human choosing among
+ *      backups ("which of these predate the update that broke things" is the
+ *      one question they actually have), not a correctness gate anywhere in
+ *      this module's own logic. Computed for every entry `listSnapshots` and
+ *      `listPreservationCopies` return.
+ *
+ *   2. `listPreservationCopies`, the counterpart to `listSnapshots` for the
+ *      unvalidated copies `preserveTargetBeforeRestore` falls back to. Before
+ *      this, those copies existed on disk (named with `UNVALIDATED_MARKER`)
+ *      but nothing outside this module could enumerate them -- a restore UI
+ *      could offer every validated snapshot but never the one thing left
+ *      behind when a *previous* restore ran against an already-broken
+ *      target, which is exactly the last-resort case such a UI exists for.
+ *      Deliberately a separate function, not a flag on `listSnapshots`: the
+ *      two lists mean different things to a user (an ordinary restore point
+ *      vs. "we couldn't verify this, only use it if nothing else works"),
+ *      and conflating them would make it easy for a UI to offer an
+ *      unvalidated copy as an equal, undifferentiated choice.
+ *
+ *   3. `exportDatabaseCopy`, for the user-initiated "export a profile"
+ *      action -- see its own doc comment for why this is deliberately not a
+ *      snapshot (never written into `backupDir`, never pruned, never
+ *      returned by `listSnapshots`), while still applying the same
+ *      DELETE-journal-mode and post-write integrity checks every other copy
+ *      in this module does.
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'fs'
 import { createHash, randomBytes } from 'crypto'
@@ -115,6 +149,17 @@ export interface SnapshotInfo {
   path: string
   takenAt: Date
   sizeBytes: number
+  /**
+   * The newest migration name recorded as applied in this file's own
+   * `_prisma_migrations` table, or `null` when that cannot be determined
+   * (no such table -- an ancient snapshot, or one that never went through
+   * `applyPendingMigrations` -- or the file cannot be opened at all, which
+   * is expected for most entries `listPreservationCopies` returns). See the
+   * module doc comment's "Phase 4c task 4" section. Best-effort and
+   * read-only: never throws, never used by this module's own pruning or
+   * dedup logic, purely informational for a human choosing among backups.
+   */
+  schemaVersion: string | null
 }
 
 /** How many snapshots of a single database are kept before pruning the oldest. */
@@ -187,6 +232,64 @@ function parseSnapshotTimestamp(fileName: string, databaseId: string): Date | nu
   if (!fileName.startsWith(prefix) || !fileName.endsWith(SNAPSHOT_SUFFIX)) return null
   const timestampPart = fileName.slice(prefix.length, fileName.length - SNAPSHOT_SUFFIX.length)
   return parseTimestamp(timestampPart)
+}
+
+/**
+ * The `listPreservationCopies` counterpart to `parseSnapshotTimestamp`:
+ * returns the timestamp encoded in `fileName` if it is an UNVALIDATED
+ * preservation copy of `databaseId` (see `preserveTargetBeforeRestore` and
+ * `unvalidatedCopyFileName`), or `null` otherwise. A plain, validated
+ * snapshot never matches this (its filename has no `UNVALIDATED_MARKER`
+ * segment), which is what keeps the two listings disjoint without either
+ * function needing to know about the other's result.
+ */
+function parsePreservationCopyTimestamp(fileName: string, databaseId: string): Date | null {
+  const prefix = `${databaseId}.`
+  const suffix = `.${UNVALIDATED_MARKER}${SNAPSHOT_SUFFIX}`
+  if (!fileName.startsWith(prefix) || !fileName.endsWith(suffix)) return null
+  const timestampPart = fileName.slice(prefix.length, fileName.length - suffix.length)
+  return parseTimestamp(timestampPart)
+}
+
+/**
+ * Best-effort reads the newest migration name recorded as applied in
+ * `file`'s own `_prisma_migrations` table -- see `SnapshotInfo.schemaVersion`'s
+ * doc comment for what this is for and why it never throws.
+ *
+ * Ordered by `started_at` (when each migration was actually applied to
+ * *this* file), not `migration_name` -- the two agree for every migration
+ * this app has ever shipped (the name is timestamp-prefixed, see
+ * `migration-runner.ts`'s `discoverMigrations`) but `started_at` is the
+ * fact this function actually means to report, and does not depend on that
+ * naming convention holding forever.
+ *
+ * Deliberately opened with `openLocalDatabase(file, { readonly: true })`,
+ * the same read-only helper every other read in this module uses -- never
+ * `foreignKeys: 'off'` or any write-capable option, since this never
+ * mutates anything and must never be the reason a read-only preservation
+ * copy fails to open.
+ */
+function readSchemaVersionBestEffort(file: string): string | null {
+  let db: Database.Database
+  try {
+    db = openLocalDatabase(file, { readonly: true })
+  } catch {
+    return null
+  }
+
+  try {
+    const row = db
+      .prepare('SELECT "migration_name" AS migration_name FROM "_prisma_migrations" ORDER BY "started_at" DESC LIMIT 1')
+      .get() as { migration_name: string } | undefined
+    return row?.migration_name ?? null
+  } catch {
+    // No `_prisma_migrations` table, or some other read failure -- either
+    // way this is informational only, never a reason to throw. See the
+    // module doc comment.
+    return null
+  } finally {
+    db.close()
+  }
 }
 
 /**
@@ -288,10 +391,38 @@ export function listSnapshots(backupDir: string, databaseId: string): SnapshotIn
     const takenAt = parseSnapshotTimestamp(entry, databaseId)
     if (!takenAt) continue
     const path = join(backupDir, entry)
-    snapshots.push({ path, takenAt, sizeBytes: statSync(path).size })
+    snapshots.push({ path, takenAt, sizeBytes: statSync(path).size, schemaVersion: readSchemaVersionBestEffort(path) })
   }
 
   return snapshots.sort((a, b) => b.takenAt.getTime() - a.takenAt.getTime())
+}
+
+/**
+ * Lists UNVALIDATED preservation copies of `databaseId` found in `backupDir`,
+ * newest first -- the counterpart to `listSnapshots` for the fallback copies
+ * `preserveTargetBeforeRestore` writes when the current target cannot be
+ * validated before a restore overwrites it (wrong journal mode, or a failed
+ * `integrity_check`). See the module doc comment's "Phase 4c task 4" section
+ * for why this exists as its own function rather than folded into
+ * `listSnapshots`: these are a clearly-labelled last resort, never an
+ * ordinary restore candidate, and `listSnapshots` must keep excluding them
+ * exactly as it already does (see `parseSnapshotTimestamp`'s doc comment).
+ *
+ * Returns an empty array if `backupDir` does not exist yet, matching
+ * `listSnapshots`.
+ */
+export function listPreservationCopies(backupDir: string, databaseId: string): SnapshotInfo[] {
+  if (!existsSync(backupDir)) return []
+
+  const copies: SnapshotInfo[] = []
+  for (const entry of readdirSync(backupDir)) {
+    const takenAt = parsePreservationCopyTimestamp(entry, databaseId)
+    if (!takenAt) continue
+    const path = join(backupDir, entry)
+    copies.push({ path, takenAt, sizeBytes: statSync(path).size, schemaVersion: readSchemaVersionBestEffort(path) })
+  }
+
+  return copies.sort((a, b) => b.takenAt.getTime() - a.takenAt.getTime())
 }
 
 /** Deletes all but the newest `keep` snapshots of `databaseId` in `backupDir`. */
@@ -769,4 +900,41 @@ export async function restoreSnapshot(
   }
 
   renameSync(tempPath, targetFile)
+}
+
+/**
+ * Copies `file` to `destination` for the user-initiated "export a profile"
+ * action (Phase 4c task 4, design decision D8) -- deliberately NOT a
+ * snapshot: `destination` is wherever the user picked via a native save
+ * dialog (`apps/desktop/src/main/index.ts`'s `backups:export` handler),
+ * possibly on a different filesystem or a removable drive, so this is a
+ * plain copy, not `restoreSnapshot`'s atomic temp-then-rename replacement of
+ * a LIVE file -- there is nothing already at `destination` for a partial
+ * write to corrupt, and an interrupted export is simply retried by the user.
+ * This export is never written into `backupDir`, never counted against
+ * `MAX_SNAPSHOTS_PER_DATABASE`, and never returned by `listSnapshots` or
+ * `listPreservationCopies`.
+ *
+ * Still applies the same two checks every other copy in this module does,
+ * for the same reasons: `assertDeleteJournalMode` first (a copy taken in WAL
+ * mode can silently miss committed data -- see the module doc comment), and
+ * `assertValidDatabaseFile` on the freshly written copy afterward (a
+ * snapshot nobody has read is a guess, not a backup -- and an export is
+ * exactly a backup the user is about to carry off this machine, so it must
+ * not silently be handed to them broken).
+ *
+ * Throws, without writing anything, if `file` is not currently in DELETE
+ * journal mode. Throws, after the copy already exists at `destination`, if
+ * it fails `PRAGMA integrity_check` -- deliberately does NOT delete
+ * `destination` in that case (unlike `snapshotDatabase`'s cleanup of a
+ * failed snapshot in `backupDir`): `destination` is a location the user
+ * chose outside this app's own storage, and silently deleting a file there
+ * -- even one this function just wrote -- is not this function's call to
+ * make. The thrown error still names what is wrong, so the user knows not
+ * to trust it.
+ */
+export function exportDatabaseCopy(file: string, destination: string): void {
+  assertDeleteJournalMode(file)
+  copyFileSync(file, destination)
+  assertValidDatabaseFile(destination, 'Export failed validation after being written')
 }

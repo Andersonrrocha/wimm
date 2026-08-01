@@ -89,6 +89,29 @@
       "subtitle": "Switch to a different profile on this computer. Each profile keeps its own, separate financial history.",
       "current": "(current)",
       "switch": "Switch"
+    },
+    "backups": {
+      "title": "Backups",
+      "subtitle": "Export a copy of your data, or restore an earlier backup.",
+      "exportTitle": "Export profile",
+      "exportBody": "Save a copy of this profile's data as a file you control — for a backup, or to move it to another computer.",
+      "exportAiKeyNotice": "This copy will not include your AI key. If you set up your own Anthropic key, the exported file opens with AI categorization off, and you'll need to re-enter the key there.",
+      "exportButton": "Export…",
+      "exportSuccess": "Exported to {{path}}",
+      "restoreTitle": "Restore from backup",
+      "restoreBody": "Restoring replaces all of the selected profile's data with an earlier backup. The current data is saved as its own backup first, so this can be undone.",
+      "restoreProfileLabel": "Profile",
+      "noSnapshots": "No backups found for this profile yet.",
+      "snapshotsGroup": "Backups",
+      "preservationGroup": "Last resort (unverified)",
+      "preservationHint": "Saved automatically before an earlier restore, but could not be fully verified. Only use one of these if nothing else works.",
+      "schemaVersionLabel": "Version: {{version}}",
+      "schemaVersionUnknown": "Version: unknown",
+      "restoreButton": "Restore",
+      "restoreConfirmTitle": "Restore this backup?",
+      "restoreConfirmBody": "This replaces all current data in \"{{profile}}\" with the backup from {{date}}. The current data will be saved as its own backup first.",
+      "restoreConfirmAction": "Restore",
+      "restoreCancel": "Cancel"
     }
   },
   "quickAdd": {

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { ExportResult, ProfileBackups } from '../shared/backup-protocol'
 import type {
   ApiMode,
   LocalApiRequestPayload,
@@ -131,3 +132,28 @@ const profiles: ProfilesApi = {
 }
 
 contextBridge.exposeInMainWorld('profiles', profiles)
+
+/**
+ * The renderer's only way to reach export/restore (Phase 4c task 4) -- see
+ * `backup-protocol.ts` for the wire shapes and `main/index.ts`'s
+ * `backups:*` handlers for what main actually validates before acting. No
+ * validation happens here, same as every other bridge in this file: the
+ * renderer is the untrusted side of this boundary.
+ */
+export type BackupsApi = {
+  /** Lists `profileId`'s own backups -- not necessarily the currently active profile, see `main/local-api.ts`'s `restoreProfileFromBackup` doc comment. */
+  list: (profileId: string) => Promise<ProfileBackups>
+  /** Opens a native save dialog and, unless canceled, copies the ACTIVE profile's database to wherever the user chose. */
+  export: () => Promise<ExportResult>
+  /** Restores `profileId` from one of its own backups, named by `fileName` exactly as `list` reported it. */
+  restore: (profileId: string, fileName: string) => Promise<ProfilesSituationPayload>
+}
+
+const backups: BackupsApi = {
+  list: (profileId: string) => ipcRenderer.invoke('backups:list', profileId),
+  export: () => ipcRenderer.invoke('backups:export'),
+  restore: (profileId: string, fileName: string) =>
+    ipcRenderer.invoke('backups:restore', { profileId, fileName }),
+}
+
+contextBridge.exposeInMainWorld('backups', backups)

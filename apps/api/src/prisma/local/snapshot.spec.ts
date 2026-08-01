@@ -6,7 +6,15 @@ import { basename, join } from 'path'
 // import typechecks but is `undefined` at runtime for this CommonJS module.
 import Database = require('better-sqlite3')
 import { openLocalDatabase } from './open-local-database'
-import { checkDatabaseHealth, CloseExistingConnections, listSnapshots, restoreSnapshot, snapshotDatabase } from './snapshot'
+import {
+  checkDatabaseHealth,
+  CloseExistingConnections,
+  exportDatabaseCopy,
+  listPreservationCopies,
+  listSnapshots,
+  restoreSnapshot,
+  snapshotDatabase,
+} from './snapshot'
 
 const ROOT = '/tmp/wimm-snapshot-spec'
 const DB_FILE = join(ROOT, 'wimm.db')
@@ -547,5 +555,181 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
 
     expect(second).not.toBe(first)
     expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toHaveLength(2)
+  })
+})
+
+// --- Phase 4c task 4: schema version, preservation-copy listing, export ---
+
+/** Creates `_prisma_migrations` (matching migration-runner.ts's own DDL) on `file` and records `migrationName` as applied. */
+function recordAppliedMigration(file: string, migrationName: string, startedAt: string): void {
+  const db = openLocalDatabase(file)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS "_prisma_migrations" (
+      "id" VARCHAR(36) NOT NULL PRIMARY KEY,
+      "checksum" VARCHAR(64) NOT NULL,
+      "finished_at" DATETIME,
+      "migration_name" VARCHAR(255) NOT NULL,
+      "logs" TEXT,
+      "rolled_back_at" DATETIME,
+      "started_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "applied_steps_count" INTEGER NOT NULL DEFAULT 0
+    )
+  `)
+  db.prepare(
+    `INSERT INTO "_prisma_migrations" ("id", "checksum", "finished_at", "migration_name", "started_at", "applied_steps_count")
+     VALUES (?, ?, ?, ?, ?, 1)`,
+  ).run(`id-${migrationName}`, 'x'.repeat(64), startedAt, migrationName, startedAt)
+  db.close()
+}
+
+describe('SnapshotInfo.schemaVersion (Phase 4c task 4, carry-over 2)', () => {
+  beforeEach(() => {
+    mkdirSync(ROOT, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(ROOT, { recursive: true, force: true })
+  })
+
+  it('reports the newest applied migration name from a snapshot that has one', () => {
+    createDatabase(DB_FILE, ['alpha'])
+    recordAppliedMigration(DB_FILE, '0001_init', '2026-01-01T00:00:00.000Z')
+    recordAppliedMigration(DB_FILE, '0002_add_column', '2026-01-02T00:00:00.000Z')
+
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-03T00:00:00.000Z'))
+
+    const [info] = listSnapshots(BACKUP_DIR, 'wimm.db')
+    expect(info.path).toBe(snapshotPath)
+    expect(info.schemaVersion).toBe('0002_add_column')
+  })
+
+  it('reports null when the snapshot has no _prisma_migrations table at all', () => {
+    createDatabase(DB_FILE, ['alpha'])
+
+    snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+
+    const [info] = listSnapshots(BACKUP_DIR, 'wimm.db')
+    expect(info.schemaVersion).toBeNull()
+  })
+
+  it('two snapshots taken before and after an upgrade report different schema versions, so a picker can tell them apart', () => {
+    createDatabase(DB_FILE, ['alpha'])
+    recordAppliedMigration(DB_FILE, '0001_init', '2026-01-01T00:00:00.000Z')
+    const before = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T01:00:00.000Z'))
+
+    insertRow(DB_FILE, 'beta')
+    recordAppliedMigration(DB_FILE, '0002_broke_things', '2026-01-02T00:00:00.000Z')
+    const after = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-02T01:00:00.000Z'))
+
+    const snapshots = listSnapshots(BACKUP_DIR, 'wimm.db')
+    const beforeInfo = snapshots.find((s) => s.path === before)!
+    const afterInfo = snapshots.find((s) => s.path === after)!
+
+    expect(beforeInfo.schemaVersion).toBe('0001_init')
+    expect(afterInfo.schemaVersion).toBe('0002_broke_things')
+  })
+})
+
+describe('listPreservationCopies (Phase 4c task 4, carry-over 1)', () => {
+  beforeEach(() => {
+    mkdirSync(ROOT, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(ROOT, { recursive: true, force: true })
+  })
+
+  it('returns an empty array when backupDir does not exist yet', () => {
+    expect(listPreservationCopies(BACKUP_DIR, 'wimm.db')).toEqual([])
+  })
+
+  it('lists the unvalidated preservation copy restoreSnapshot writes for a corrupt target, with its size and a null schema version', async () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const goodSnapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+
+    // Corrupt the live target, exactly like the "restores over a corrupt
+    // target" test in the main describe block above.
+    truncateToHeaderOnly(DB_FILE)
+
+    await restoreSnapshot(goodSnapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:20.000Z'), NO_OP_CLOSE)
+
+    const copies = listPreservationCopies(BACKUP_DIR, 'wimm.db')
+    expect(copies).toHaveLength(1)
+    expect(copies[0].path).toContain('unvalidated')
+    expect(copies[0].sizeBytes).toBeGreaterThan(0)
+    // The corrupted (header-only) source can never yield a readable
+    // _prisma_migrations table -- proving this reads best-effort, not
+    // throwing, for exactly the case it exists to cover.
+    expect(copies[0].schemaVersion).toBeNull()
+
+    // Disjoint from listSnapshots -- still true after this task's changes,
+    // matching the existing "never returns" test in the main describe block.
+    expect(listSnapshots(BACKUP_DIR, 'wimm.db').map((s) => s.path)).toEqual([goodSnapshotPath])
+  })
+
+  it('scopes preservation copies by databaseId, the same way listSnapshots does', async () => {
+    createDatabase(DB_FILE, ['alpha'])
+    createDatabase(OTHER_DB_FILE, ['beta'])
+    const snapA = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+    snapshotDatabase(OTHER_DB_FILE, BACKUP_DIR, 'other.db', new Date('2026-01-01T00:00:00.000Z'))
+
+    truncateToHeaderOnly(DB_FILE)
+    await restoreSnapshot(snapA, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:20.000Z'), NO_OP_CLOSE)
+
+    expect(listPreservationCopies(BACKUP_DIR, 'wimm.db')).toHaveLength(1)
+    expect(listPreservationCopies(BACKUP_DIR, 'other.db')).toEqual([])
+  })
+})
+
+describe('exportDatabaseCopy', () => {
+  beforeEach(() => {
+    mkdirSync(ROOT, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(ROOT, { recursive: true, force: true })
+  })
+
+  it('copies the database to an arbitrary destination outside backupDir, readable and untracked by listSnapshots', () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const destination = join(ROOT, 'exported-elsewhere.db')
+
+    exportDatabaseCopy(DB_FILE, destination)
+
+    expect(existsSync(destination)).toBe(true)
+    expect(readRows(destination)).toEqual(['alpha'])
+    // Never written into backupDir, never a snapshot.
+    expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toEqual([])
+  })
+
+  it('refuses to export a database that is not in DELETE journal mode, naming WAL explicitly, and writes nothing', () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const raw = new Database(DB_FILE)
+    raw.pragma('journal_mode = WAL')
+    raw.close()
+
+    const destination = join(ROOT, 'should-not-exist.db')
+    expect(() => exportDatabaseCopy(DB_FILE, destination)).toThrow(/WAL/)
+    expect(existsSync(destination)).toBe(false)
+
+    const cleanup = new Database(DB_FILE)
+    cleanup.pragma('journal_mode = DELETE')
+    cleanup.close()
+  })
+
+  it('refuses to export a corrupt source database, matching the identical setup the main describe block above uses for snapshotDatabase', () => {
+    createDatabase(DB_FILE, ['alpha'])
+    truncateToHeaderOnly(DB_FILE)
+    const destination = join(ROOT, 'corrupt-export.db')
+
+    // Mirrors the "throws and removes the snapshot file when the written
+    // copy fails integrity_check" test above, which uses the identical
+    // fixture and also asserts only a generic throw: truncating to the
+    // 100-byte header can fail either assertDeleteJournalMode's own
+    // pragma read or the later assertValidDatabaseFile integrity_check,
+    // depending on exactly how much of page 1 survives -- what matters
+    // here is that exportDatabaseCopy refuses either way, never handing
+    // the user a silently broken export.
+    expect(() => exportDatabaseCopy(DB_FILE, destination)).toThrow()
   })
 })

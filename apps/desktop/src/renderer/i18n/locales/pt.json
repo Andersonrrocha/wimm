@@ -89,6 +89,29 @@
       "subtitle": "Alterne para outro perfil neste computador. Cada perfil mantém seu próprio histórico financeiro, separado dos demais.",
       "current": "(atual)",
       "switch": "Alternar"
+    },
+    "backups": {
+      "title": "Backups",
+      "subtitle": "Exporte uma cópia dos seus dados ou restaure um backup anterior.",
+      "exportTitle": "Exportar perfil",
+      "exportBody": "Salve uma cópia dos dados deste perfil como um arquivo sob seu controle — para um backup, ou para levar para outro computador.",
+      "exportAiKeyNotice": "Esta cópia não incluirá sua chave de IA. Se você configurou sua própria chave da Anthropic, o arquivo exportado abre com a categorização por IA desativada, e você precisará inserir a chave novamente lá.",
+      "exportButton": "Exportar…",
+      "exportSuccess": "Exportado para {{path}}",
+      "restoreTitle": "Restaurar de um backup",
+      "restoreBody": "Restaurar substitui todos os dados do perfil selecionado por um backup anterior. Os dados atuais são salvos como um backup próprio antes, então isso pode ser desfeito.",
+      "restoreProfileLabel": "Perfil",
+      "noSnapshots": "Nenhum backup encontrado para este perfil ainda.",
+      "snapshotsGroup": "Backups",
+      "preservationGroup": "Último recurso (não verificado)",
+      "preservationHint": "Salvo automaticamente antes de uma restauração anterior, mas não pôde ser totalmente verificado. Use um destes apenas se nada mais funcionar.",
+      "schemaVersionLabel": "Versão: {{version}}",
+      "schemaVersionUnknown": "Versão: desconhecida",
+      "restoreButton": "Restaurar",
+      "restoreConfirmTitle": "Restaurar este backup?",
+      "restoreConfirmBody": "Isso substitui todos os dados atuais em \"{{profile}}\" pelo backup de {{date}}. Os dados atuais serão salvos como um backup próprio antes.",
+      "restoreConfirmAction": "Restaurar",
+      "restoreCancel": "Cancelar"
     }
   },
   "quickAdd": {

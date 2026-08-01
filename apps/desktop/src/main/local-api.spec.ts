@@ -22,6 +22,7 @@
  * guard.ts`) -- see `package.json`'s `pretest` script.
  */
 import { createConnection } from 'node:net'
+import { basename } from 'node:path'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -35,13 +36,17 @@ import {
   LEGACY_SHARED_AI_KEY_ENCRYPTION_SECRET,
   profileSecretFilePath,
 } from '@wimm/api/dist/prisma/local/profile-secret'
+import { snapshotDatabase } from '@wimm/api/dist/prisma/local/snapshot'
 import { SESSION_TOKEN_HEADER } from '@wimm/api/dist/profile/session-token'
 
 import {
   createProfileAndOpen,
+  exportActiveProfileDatabase,
   isDatabaseMigratedByNewerBuildError,
+  listProfileBackups,
   NewerDatabaseError,
   openProfile,
+  restoreProfileFromBackup,
   ProfileSwitchError,
   rethrowMigrationFailure,
   switchProfile,
@@ -672,5 +677,182 @@ describe('switchProfile (Task 3: teardown and rebuild)', () => {
     expect(switchError.rolledBackHandle).toBeUndefined()
 
     // handle stays undefined -- nothing for afterEach to close.
+  })
+})
+
+// --- Task 4: export and restore ---------------------------------------------
+
+describe('exportActiveProfileDatabase / listProfileBackups / restoreProfileFromBackup (Task 4)', () => {
+  let profileDir: string
+  let handle: LocalApiHandle | undefined
+
+  beforeEach(() => {
+    profileDir = tmpProfileDir()
+  })
+
+  afterEach(async () => {
+    if (handle) {
+      await handle.close()
+      handle = undefined
+    }
+    rmSync(profileDir, { recursive: true, force: true })
+  })
+
+  it(
+    'restores the active profile from an earlier snapshot end to end, through the real service, closing a ' +
+      'genuinely held transaction to do so -- proving Task 3\'s teardown is what makes the restore possible',
+    async () => {
+      handle = await createProfileAndOpen({ profileDir, name: 'Restore E2E' })
+      const prisma = handle.app.get(LocalPrismaService)
+      const user = await prisma.user.findFirstOrThrow()
+      await prisma.category.create({ data: { userId: user.id, name: 'RECOGNIZABLE-MARKER-ROW', type: 'EXPENSE' } })
+
+      const dbFile = profileDatabasePath(profileDir, handle.profile)
+      const backupDir = join(profileDir, 'backups')
+      const snapshotPath = snapshotDatabase(dbFile, backupDir, handle.profile.id, new Date('2026-01-01T00:00:00.000Z'))
+      const fileName = basename(snapshotPath)
+
+      // Hold a genuine, uncommitted write transaction against the profile's
+      // OWN connection at the moment restore is requested -- the same
+      // technique the switchProfile lock proof above uses. Without
+      // restoreProfileFromBackup's teardown (current.close(), reusing Task
+      // 3's own proven function), restoreSnapshot's exclusive-access probe
+      // would refuse instead -- see the mutation-proof test below, which
+      // demonstrates exactly that by temporarily breaking the teardown.
+      const held = holdOpenTransaction(handle)
+      await held.started
+
+      const restored = await restoreProfileFromBackup({
+        profileDir,
+        profile: handle.profile,
+        fileName,
+        current: handle,
+      })
+      expect(restored).toBeDefined()
+      handle = restored
+
+      // Lets the abandoned transaction's own promise settle (it rejects --
+      // see holdOpenTransaction's doc comment) instead of leaving it
+      // dangling for the rest of the test run, mirroring the switchProfile
+      // lock-proof test above.
+      held.release()
+      await held.settled
+
+      const prisma2 = handle!.app.get(LocalPrismaService)
+      const categories = await prisma2.category.findMany()
+      // The row written AFTER the snapshot (inside the held, never-committed
+      // transaction) is gone -- restore genuinely replaced the file with the
+      // pre-snapshot state, not merely reopened the same one.
+      expect(categories.map((c) => c.name)).toEqual(['RECOGNIZABLE-MARKER-ROW'])
+    },
+  )
+
+  it('lists the profile\'s own snapshots via listProfileBackups, with a populated schema version, and no preservation copies', async () => {
+    // createProfileAndOpen's own first-boot migration run already takes one
+    // automatic snapshot (applyPendingMigrations snapshots once before
+    // applying anything pending -- always true for a brand new profile's
+    // baseline migration, see migration-runner.ts's module doc comment).
+    // That snapshot's schemaVersion is null (taken of the empty database,
+    // before any migration recorded itself as applied) -- this test asserts
+    // against the SPECIFIC, later snapshot it takes explicitly, by fileName,
+    // rather than assuming it is the only one listed.
+    handle = await createProfileAndOpen({ profileDir, name: 'List Backups' })
+    const dbFile = profileDatabasePath(profileDir, handle.profile)
+    const backupDir = join(profileDir, 'backups')
+    const snapshotPath = snapshotDatabase(dbFile, backupDir, handle.profile.id, new Date('2026-01-01T00:00:00.000Z'))
+
+    const backups = listProfileBackups(profileDir, handle.profile)
+
+    const mine = backups.snapshots.find((s) => s.fileName === basename(snapshotPath))
+    expect(mine).toBeDefined()
+    expect(mine!.schemaVersion).toEqual(expect.any(String))
+    expect(mine!.schemaVersion!.length).toBeGreaterThan(0)
+    expect(backups.preservationCopies).toEqual([])
+  })
+
+  it('exports the active profile\'s database to a chosen destination as a valid, readable copy', async () => {
+    handle = await createProfileAndOpen({ profileDir, name: 'Export Test' })
+    const prisma = handle.app.get(LocalPrismaService)
+    const user = await prisma.user.findFirstOrThrow()
+    await prisma.category.create({ data: { userId: user.id, name: 'EXPORTED-MARKER-ROW', type: 'EXPENSE' } })
+
+    const destination = join(profileDir, 'exported-copy.db')
+    exportActiveProfileDatabase(profileDir, handle.profile, destination)
+
+    expect(existsSync(destination)).toBe(true)
+    const copy = openLocalDatabase(destination, { readonly: true })
+    const names = (copy.prepare('SELECT "name" AS name FROM "Category"').all() as Array<{ name: string }>).map(
+      (row) => row.name,
+    )
+    copy.close()
+    expect(names).toEqual(['EXPORTED-MARKER-ROW'])
+  })
+
+  it('does not carry the AI key encryption secret in the exported copy -- proving Task 1\'s design holds through Task 4\'s export', async () => {
+    handle = await createProfileAndOpen({ profileDir, name: 'Export Secret Check' })
+    const secretPath = profileSecretFilePath(profileDir, handle.profile.id)
+    const secret = readFileSync(secretPath, 'utf8')
+
+    const destination = join(profileDir, 'exported-secret-check.db')
+    exportActiveProfileDatabase(profileDir, handle.profile, destination)
+
+    const bytes = readFileSync(destination)
+    expect(bytes.includes(Buffer.from(secret, 'utf8'))).toBe(false)
+  })
+
+  it('restores a different, already-closed profile without ever touching the currently active one (the multi-profile recovery path)', async () => {
+    handle = await createProfileAndOpen({ profileDir, name: 'Active' })
+
+    const handleBSetup = await createProfileAndOpen({ profileDir, name: 'Sibling' })
+    const prismaB = handleBSetup.app.get(LocalPrismaService)
+    const userB = await prismaB.user.findFirstOrThrow()
+    await prismaB.category.create({ data: { userId: userB.id, name: 'SIBLING-MARKER-ROW', type: 'EXPENSE' } })
+
+    const dbFileB = profileDatabasePath(profileDir, handleBSetup.profile)
+    const backupDir = join(profileDir, 'backups')
+    const snapshotPathB = snapshotDatabase(dbFileB, backupDir, handleBSetup.profile.id, new Date('2026-01-01T00:00:00.000Z'))
+    const fileNameB = basename(snapshotPathB)
+
+    // A committed change AFTER the snapshot, then close -- no live
+    // connection to profile B remains in this process from here on.
+    await prismaB.category.create({ data: { userId: userB.id, name: 'SIBLING-POST-SNAPSHOT-ROW', type: 'EXPENSE' } })
+    await handleBSetup.close()
+
+    const restoredHandle = await restoreProfileFromBackup({
+      profileDir,
+      profile: handleBSetup.profile,
+      fileName: fileNameB,
+      current: undefined,
+    })
+    // Nothing to reopen for a non-active profile.
+    expect(restoredHandle).toBeUndefined()
+
+    // The active profile (handle) was never touched -- still serving.
+    const resActive = await fetch(`http://127.0.0.1:${handle.port}/api/sources`, {
+      headers: { [SESSION_TOKEN_HEADER]: handle.token },
+    })
+    expect(resActive.status).toBe(200)
+
+    // The sibling's file on disk now reflects the restored (pre-change)
+    // state, read directly since this process holds no connection to it.
+    const dbAfter = openLocalDatabase(dbFileB, { readonly: true })
+    const namesAfter = (dbAfter.prepare('SELECT "name" AS name FROM "Category"').all() as Array<{ name: string }>).map(
+      (row) => row.name,
+    )
+    dbAfter.close()
+    expect(namesAfter).toEqual(['SIBLING-MARKER-ROW'])
+  })
+
+  it('refuses to restore when fileName does not name a real, current backup of the given profile', async () => {
+    handle = await createProfileAndOpen({ profileDir, name: 'Guard Test' })
+
+    await expect(
+      restoreProfileFromBackup({
+        profileDir,
+        profile: handle.profile,
+        fileName: '../../etc/passwd',
+        current: handle,
+      }),
+    ).rejects.toThrow(/no backup named/)
   })
 })

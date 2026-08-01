@@ -13,6 +13,7 @@ import { Button } from '../../components/ui/button'
 import { ChartDateModeToggle } from '../../components/ui/chart-date-mode-toggle'
 import { Field } from '../../components/ui/field'
 import { Panel } from '../../components/ui/panel'
+import { ProfileBackupsSection } from '../../components/profile-backups'
 import { ProfileSwitcher } from '../../components/profile-switcher'
 import { Select } from '../../components/ui/select'
 
@@ -189,6 +190,10 @@ export function PreferencesTab(): JSX.Element {
             only one profile to begin with -- see ProfileSwitcher's own doc
             comment. */}
         <ProfileSwitcher />
+
+        {/* Renders nothing in hosted mode -- see ProfileBackupsSection's own
+            doc comment. Export/restore (Phase 4c task 4). */}
+        <ProfileBackupsSection />
       </div>
     </Panel>
   )

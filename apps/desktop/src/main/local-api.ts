@@ -115,7 +115,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import type { AddressInfo } from 'node:net'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 import { INestApplication, ValidationPipe } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
@@ -133,8 +133,16 @@ import {
   type Profile,
 } from '@wimm/api/dist/prisma/local/profile-registry'
 import { resolveProfileAiKeyEncryptionSecret } from '@wimm/api/dist/prisma/local/profile-secret'
+import {
+  exportDatabaseCopy,
+  listPreservationCopies,
+  listSnapshots,
+  restoreSnapshot,
+  type SnapshotInfo,
+} from '@wimm/api/dist/prisma/local/snapshot'
 import { generateSessionToken } from '@wimm/api/dist/profile/session-token'
 
+import type { BackupSummary, ProfileBackups } from '../shared/backup-protocol'
 import { validateProfileName } from './profile-lifecycle'
 
 // `require.resolve` rather than `__dirname`-relative traversal: the latter
@@ -635,5 +643,207 @@ export async function switchProfile(options: SwitchProfileOptions): Promise<Loca
 
     const message = err instanceof Error ? err.message : String(err)
     throw new ProfileSwitchError(`Could not switch to profile "${target.name}": ${message}`, rolledBackHandle)
+  }
+}
+
+// --- Phase 4c task 4: export and restore -----------------------------------
+//
+// D8 (see the phase plan): a profile's SQLite file lives at
+// `userData/profiles/<id>.db` -- a location a non-technical person will
+// never find on their own. That location is only acceptable BECAUSE the app
+// gains an explicit export action, and restore is the recovery half of the
+// same story: the path back when an update, or a mistake, damages the data.
+// Every function below reuses the exact machinery Tasks 1-3 already built
+// (`profileDatabasePath`, `resolveProfileSituation`'s registry, and --
+// critically -- Task 3's own `LocalApiHandle.close()` teardown) rather than
+// inventing a second copy of any of it.
+
+/** Absolute path of `profileDir`'s shared backup directory -- see `snapshot.ts`'s module doc comment for why every profile's snapshots live in one directory, distinguished by `databaseId` (the profile's own `id`). */
+function backupDirFor(profileDir: string): string {
+  return join(profileDir, 'backups')
+}
+
+/** Strips `SnapshotInfo.path` down to a `fileName` before it crosses into the renderer -- see `backup-protocol.ts`'s doc comment for why. */
+function toBackupSummary(info: SnapshotInfo): BackupSummary {
+  return {
+    fileName: basename(info.path),
+    takenAt: info.takenAt.toISOString(),
+    sizeBytes: info.sizeBytes,
+    schemaVersion: info.schemaVersion,
+  }
+}
+
+/**
+ * Lists `profile`'s own backups -- both ordinary, validated snapshots and
+ * (carry-over 1) the unvalidated preservation copies a previous restore may
+ * have left behind, each carrying its schema version (carry-over 2). Never
+ * touches whether `profile` is the currently active one; a restore UI can
+ * browse a DIFFERENT, already-closed profile's backups just as well (the
+ * multi-profile recovery path -- see `restoreProfileFromBackup`'s doc
+ * comment).
+ */
+export function listProfileBackups(profileDir: string, profile: Profile): ProfileBackups {
+  const backupDir = backupDirFor(profileDir)
+  return {
+    snapshots: listSnapshots(backupDir, profile.id).map(toBackupSummary),
+    preservationCopies: listPreservationCopies(backupDir, profile.id).map(toBackupSummary),
+  }
+}
+
+/**
+ * Copies `profile`'s live database to `destination` -- the whole of "export"
+ * (D8): main's `backups:export` IPC handler resolves `destination` via
+ * `dialog.showSaveDialog` and calls straight through to this. Reuses
+ * `snapshot.ts`'s `exportDatabaseCopy` for the actual copy (DELETE-journal-
+ * mode check, then a post-write integrity check) -- this function's only
+ * job is resolving `profile`'s database file path, the same
+ * `profileDatabasePath` every other profile operation in this module uses.
+ *
+ * **What this does NOT copy, deliberately.** Task 1's AI key encryption
+ * secret lives at `<profileDir>/secrets/<id>.key` -- a sibling of
+ * `profiles/`, outside this function's reach entirely (it never even
+ * constructs that path). An exported profile therefore never carries the
+ * secret its BYOK key is encrypted under; `AiKeyResolverService` treats the
+ * resulting decrypt failure as "no key" and degrades to AI-off rather than
+ * crashing. See `profile-secret.ts`'s module doc comment for the full
+ * reasoning, and the export UI copy (`profile-backups.tsx`) for where this
+ * is disclosed to the user, in both `en` and `pt`, before they export.
+ */
+export function exportActiveProfileDatabase(profileDir: string, profile: Profile, destination: string): void {
+  exportDatabaseCopy(profileDatabasePath(profileDir, profile), destination)
+}
+
+/**
+ * Thrown by `restoreProfileFromBackup` when restoring the ACTIVE profile
+ * fails after its connection was already closed -- mirrors
+ * `ProfileSwitchError` exactly, including the one rollback attempt and the
+ * two possible outcomes for `rolledBackHandle`. See that class's doc
+ * comment; the reasoning is identical here, just for a restore instead of a
+ * switch.
+ */
+export class ProfileRestoreError extends Error {
+  constructor(
+    message: string,
+    public readonly rolledBackHandle: LocalApiHandle | undefined,
+  ) {
+    super(message)
+    this.name = 'ProfileRestoreError'
+  }
+}
+
+export interface RestoreProfileOptions {
+  profileDir: string
+  /** The profile being restored -- not necessarily the active one, see below. */
+  profile: Profile
+  /** `basename` of the snapshot or preservation copy to restore from, exactly as `listProfileBackups` reported it. Re-validated against a fresh listing before anything is touched -- see this function's doc comment. */
+  fileName: string
+  /**
+   * The currently open handle, if `profile` is the one it is serving --
+   * `undefined` when restoring a DIFFERENT, already-closed profile (this
+   * process holds no live connection to it, so there is nothing to close
+   * and nothing to reopen afterward). The caller (`index.ts`'s
+   * `backups:restore` handler) decides which case applies by comparing
+   * `profile.id` against whichever profile `localApiHandle` is currently
+   * serving.
+   */
+  current: LocalApiHandle | undefined
+}
+
+/**
+ * Restores `profile`'s database from one of its own backups (`fileName`),
+ * overwriting the live file.
+ *
+ * **Reuses Task 3's teardown, not a second one.** When `current` is
+ * provided (restoring the profile this process currently has open),
+ * `current.close()` -- the exact function `switchProfile` already proved
+ * genuinely releases the SQLite connection, even mid-transaction -- is
+ * passed straight through as `restoreSnapshot`'s required
+ * `closeExistingConnections` callback, run at the one moment that matters
+ * (immediately before `restoreSnapshot`'s own exclusive-access probe), not
+ * closed ahead of time and hoped to still be closed by the time it matters.
+ *
+ * **Never trusts `fileName` as a path.** The real candidate set is
+ * re-derived fresh from `listProfileBackups` and matched by basename; a
+ * `fileName` that does not name a real, current backup of `profile` is
+ * rejected before `restoreSnapshot` -- and therefore before
+ * `closeExistingConnections` -- ever runs. This is what keeps a restore
+ * request for an unrelated file (or a stale `fileName` from a listing taken
+ * before pruning removed it) from ever tearing down a live connection for
+ * nothing.
+ *
+ * **The multi-profile recovery path.** `current: undefined` is not merely
+ * "no profile is open at all" -- it is also the ordinary case for
+ * restoring a profile OTHER than the one currently active. A user with two
+ * profiles who hits `NewerDatabaseError` opening or switching to one of
+ * them can open the OTHER, working profile, and from there restore the
+ * broken one from an earlier backup (taken before whatever upgrade broke
+ * it) without this process ever needing a live connection to it. Recovering
+ * the active profile and recovering a sibling profile are the same
+ * operation here, distinguished only by whether `current` is supplied.
+ *
+ * **Failure after a successful close.** If `restoreSnapshot` fails for any
+ * reason AFTER `current.close()` has already run -- e.g. the exclusive-
+ * access probe still finds contention from some other process entirely --
+ * this makes exactly one rollback attempt (`openProfile(profile)`, the same
+ * profile, unchanged on disk since the failure happened before the final
+ * rename) and throws `ProfileRestoreError` carrying the result, mirroring
+ * `switchProfile`/`ProfileSwitchError`. If it fails BEFORE `current` was
+ * ever closed (the common case: the chosen backup itself fails validation,
+ * which is exactly what picking an "unvalidated" preservation copy can
+ * legitimately do), the original error is rethrown as-is -- `current` was
+ * never touched, so there is nothing to roll back.
+ */
+export async function restoreProfileFromBackup(options: RestoreProfileOptions): Promise<LocalApiHandle | undefined> {
+  const { profileDir, profile, fileName, current } = options
+  const backupDir = backupDirFor(profileDir)
+
+  const candidates = [...listSnapshots(backupDir, profile.id), ...listPreservationCopies(backupDir, profile.id)]
+  const match = candidates.find((candidate) => basename(candidate.path) === fileName)
+  if (!match) {
+    throw new Error(
+      `restoreProfileFromBackup: no backup named ${JSON.stringify(fileName)} was found for profile "${profile.id}".`,
+    )
+  }
+
+  const targetFile = profileDatabasePath(profileDir, profile)
+  const now = new Date()
+
+  if (!current) {
+    // No live connection in this process to close, and nothing to reopen
+    // afterward -- `profile` is not the one this process is serving. See
+    // this function's doc comment's "multi-profile recovery path".
+    await restoreSnapshot(match.path, targetFile, profile.id, now, () => {})
+    return undefined
+  }
+
+  let closed = false
+  const closeExistingConnections = async (): Promise<void> => {
+    // Task 3's own proven teardown -- see this function's doc comment.
+    await current.close()
+    closed = true
+  }
+
+  try {
+    await restoreSnapshot(match.path, targetFile, profile.id, now, closeExistingConnections)
+    return await openProfile({ profileDir, profile })
+  } catch (err) {
+    if (!closed) {
+      // Refused before touching anything -- current is untouched and still
+      // serving. Nothing to roll back.
+      throw err
+    }
+
+    let rolledBackHandle: LocalApiHandle | undefined
+    try {
+      rolledBackHandle = await openProfile({ profileDir, profile })
+    } catch (reopenErr) {
+      console.error(
+        `restoreProfileFromBackup: reopening profile "${profile.id}" after a failed restore also failed:`,
+        reopenErr,
+      )
+    }
+
+    const message = err instanceof Error ? err.message : String(err)
+    throw new ProfileRestoreError(`Could not restore profile "${profile.name}": ${message}`, rolledBackHandle)
   }
 }
