@@ -81,6 +81,7 @@ import {
   touchProfile,
   type Profile,
 } from '@wimm/api/dist/prisma/local/profile-registry'
+import { resolveProfileAiKeyEncryptionSecret } from '@wimm/api/dist/prisma/local/profile-secret'
 import { generateSessionToken } from '@wimm/api/dist/profile/session-token'
 
 // `require.resolve` rather than `__dirname`-relative traversal: the latter
@@ -294,9 +295,16 @@ function assertBoundToLoopback(address: AddressInfo | string | null): void {
  * 1. Ensures a profile exists in `options.profileDir` (creating one, with its
  *    single `User` row, on first launch) and applies any pending SQLite
  *    migrations to it, snapshotting first if anything is pending.
- * 2. Generates a fresh per-launch session token and composes
+ * 2. Resolves this profile's AI key encryption secret
+ *    (`resolveProfileAiKeyEncryptionSecret`, `@wimm/api`'s
+ *    `prisma/local/profile-secret`), migrating a BYOK key encrypted under
+ *    the old shared constant if this profile predates per-profile secrets.
+ *    Runs after step 1 (the `User` table, and its row, must already exist)
+ *    and before step 3 (the secret is a required, verified boot argument --
+ *    see `assertUsableAiKeyEncryptionSecret`).
+ * 3. Generates a fresh per-launch session token and composes
  *    `AppLocalModule.forRoot`.
- * 3. Listens on `127.0.0.1:0` (an OS-assigned ephemeral port), verifies the
+ * 4. Listens on `127.0.0.1:0` (an OS-assigned ephemeral port), verifies the
  *    kernel actually bound to loopback, and returns the assigned port, the
  *    token, and a `close()` that tears both down.
  *
@@ -332,10 +340,38 @@ export async function startLocalApi(options: StartLocalApiOptions): Promise<Loca
     await seedDefaultUser(databaseFile)
   }
 
+  // Resolves (creating and migrating on first use) this profile's own AI key
+  // encryption secret -- see profile-secret.ts for the full design, in
+  // particular why it lives outside `profiles/` (so Task 4's export of the
+  // `.db` file alone never carries it) and how a profile written before this
+  // existed is migrated from the old shared constant. A freshly created
+  // profile (isNewProfile above) has no BYOK key yet, so this is a cheap
+  // no-op migration the first time it runs for it, exactly like every other
+  // profile.
+  const { secret: aiKeyEncryptionSecret, migration } = resolveProfileAiKeyEncryptionSecret({
+    profileDir: options.profileDir,
+    profileId: profile.id,
+    databaseFile,
+  })
+
+  if (migration && migration.leftUntouchedUserIds.length > 0) {
+    // Not expected on the normal migration path -- see
+    // `MigrateAiKeyEncryptionSecretResult.leftUntouchedUserIds`'s doc
+    // comment for the narrow crash window that can cause it. Logged, never
+    // swallowed: the affected user's BYOK key is gone (AiKeyResolverService
+    // degrades to "no key" for them), and this is the one place that can
+    // still name it.
+    console.warn(
+      `startLocalApi: ${migration.leftUntouchedUserIds.length} user row(s) in profile "${profile.id}" had an ` +
+        'aiApiKeyEncrypted value that could not be decrypted during AI key secret migration; left untouched. ' +
+        'The affected user will see AI off and needs to re-enter their BYOK API key in Settings.',
+    )
+  }
+
   const sessionToken = generateSessionToken()
 
   const app: INestApplication = await NestFactory.create(
-    AppLocalModule.forRoot({ databaseFile, sessionToken }),
+    AppLocalModule.forRoot({ databaseFile, sessionToken, aiKeyEncryptionSecret }),
   )
 
   // Everything from here on can fail after the app (and, once `listen()`

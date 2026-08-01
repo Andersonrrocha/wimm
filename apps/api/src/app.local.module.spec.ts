@@ -53,6 +53,13 @@ const BASELINE = join(__dirname, '../prisma/migrations-sqlite/0000_baseline/migr
 // requires one.
 const TEST_SESSION_TOKEN = 'app-local-module-spec-fixed-session-token'
 
+// A fixed stand-in for `resolveProfileAiKeyEncryptionSecret()`'s output --
+// same reasoning as `TEST_SESSION_TOKEN` above: this suite is not testing
+// secret resolution or migration itself (see `profile-secret.spec.ts` for
+// that), only that `AppLocalModule.forRoot` accepts *some* usable value and
+// wires it through to `AiKeyCrypto` via `ConfigService`.
+const TEST_AI_KEY_ENCRYPTION_SECRET = 'app-local-module-spec-fixed-ai-key-encryption-secret'
+
 /** Builds a fresh SQLite file with the real, committed Phase 1 baseline applied. */
 function freshDatabaseFile(subdir: string): string {
   const dir = join(ROOT, subdir)
@@ -96,7 +103,13 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
       const userId = await seedUser(file, 'alice@example.com', 'alice')
 
       const moduleRef = await Test.createTestingModule({
-        imports: [AppLocalModule.forRoot({ databaseFile: file, sessionToken: TEST_SESSION_TOKEN })],
+        imports: [
+          AppLocalModule.forRoot({
+            databaseFile: file,
+            sessionToken: TEST_SESSION_TOKEN,
+            aiKeyEncryptionSecret: TEST_AI_KEY_ENCRYPTION_SECRET,
+          }),
+        ],
       }).compile()
 
       app = moduleRef.createNestApplication({ logger: false })
@@ -162,7 +175,13 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
 
       try {
         const moduleBuilder = Test.createTestingModule({
-          imports: [AppLocalModule.forRoot({ databaseFile: file, sessionToken: TEST_SESSION_TOKEN })],
+          imports: [
+            AppLocalModule.forRoot({
+              databaseFile: file,
+              sessionToken: TEST_SESSION_TOKEN,
+              aiKeyEncryptionSecret: TEST_AI_KEY_ENCRYPTION_SECRET,
+            }),
+          ],
         })
           .overrideProvider(PrismaService)
           .useClass(PrismaService)
@@ -184,7 +203,13 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
       const userId = await seedUser(file, 'carol@example.com', 'carol')
 
       const moduleRef = await Test.createTestingModule({
-        imports: [AppLocalModule.forRoot({ databaseFile: file, sessionToken: TEST_SESSION_TOKEN })],
+        imports: [
+          AppLocalModule.forRoot({
+            databaseFile: file,
+            sessionToken: TEST_SESSION_TOKEN,
+            aiKeyEncryptionSecret: TEST_AI_KEY_ENCRYPTION_SECRET,
+          }),
+        ],
       }).compile()
 
       try {
@@ -222,13 +247,21 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
 
     it('throws synchronously (does not even reach Test.createTestingModule) on an empty token', () => {
       expect(() =>
-        AppLocalModule.forRoot({ databaseFile: irrelevantDatabaseFile, sessionToken: '' }),
+        AppLocalModule.forRoot({
+          databaseFile: irrelevantDatabaseFile,
+          sessionToken: '',
+          aiKeyEncryptionSecret: TEST_AI_KEY_ENCRYPTION_SECRET,
+        }),
       ).toThrow(/non-empty, non-whitespace string/)
     })
 
     it('throws on a whitespace-only token', () => {
       expect(() =>
-        AppLocalModule.forRoot({ databaseFile: irrelevantDatabaseFile, sessionToken: '   ' }),
+        AppLocalModule.forRoot({
+          databaseFile: irrelevantDatabaseFile,
+          sessionToken: '   ',
+          aiKeyEncryptionSecret: TEST_AI_KEY_ENCRYPTION_SECRET,
+        }),
       ).toThrow(/non-empty, non-whitespace string/)
     })
 
@@ -237,6 +270,7 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
         AppLocalModule.forRoot({
           databaseFile: irrelevantDatabaseFile,
           sessionToken: undefined as unknown as string,
+          aiKeyEncryptionSecret: TEST_AI_KEY_ENCRYPTION_SECRET,
         }),
       ).toThrow(/non-empty, non-whitespace string/)
     })
@@ -247,6 +281,7 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
         AppLocalModule.forRoot({
           databaseFile: irrelevantDatabaseFile,
           sessionToken: 987654321 as unknown as string,
+          aiKeyEncryptionSecret: TEST_AI_KEY_ENCRYPTION_SECRET,
         })
       } catch (error) {
         thrown = error as Error
@@ -259,7 +294,79 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
 
     it('still composes normally with a valid token (no regression)', () => {
       expect(() =>
-        AppLocalModule.forRoot({ databaseFile: irrelevantDatabaseFile, sessionToken: TEST_SESSION_TOKEN }),
+        AppLocalModule.forRoot({
+          databaseFile: irrelevantDatabaseFile,
+          sessionToken: TEST_SESSION_TOKEN,
+          aiKeyEncryptionSecret: TEST_AI_KEY_ENCRYPTION_SECRET,
+        }),
+      ).not.toThrow()
+    })
+  })
+
+  describe('aiKeyEncryptionSecret validation: refuses to compose without a usable secret', () => {
+    // Mirrors the `sessionToken validation` block above exactly --
+    // `assertUsableAiKeyEncryptionSecret` follows `assertUsableSessionToken`'s
+    // precedent on purpose (see `profile-secret.ts`). Same reasoning for
+    // casting around the type checker and for `irrelevantDatabaseFile` never
+    // being touched: `forRoot` validates both the token and the secret as
+    // its first two statements, before anything that would reference this
+    // path exists.
+    const irrelevantDatabaseFile = join(ROOT, 'aiKeyEncryptionSecret-validation', 'never-touched.db')
+
+    it('throws synchronously on an empty secret', () => {
+      expect(() =>
+        AppLocalModule.forRoot({
+          databaseFile: irrelevantDatabaseFile,
+          sessionToken: TEST_SESSION_TOKEN,
+          aiKeyEncryptionSecret: '',
+        }),
+      ).toThrow(/AI key encryption secret/)
+    })
+
+    it('throws on a whitespace-only secret', () => {
+      expect(() =>
+        AppLocalModule.forRoot({
+          databaseFile: irrelevantDatabaseFile,
+          sessionToken: TEST_SESSION_TOKEN,
+          aiKeyEncryptionSecret: '   ',
+        }),
+      ).toThrow(/AI key encryption secret/)
+    })
+
+    it('throws on undefined rather than letting it reach AiKeyCrypto\'s constructor as a raw DI error', () => {
+      expect(() =>
+        AppLocalModule.forRoot({
+          databaseFile: irrelevantDatabaseFile,
+          sessionToken: TEST_SESSION_TOKEN,
+          aiKeyEncryptionSecret: undefined as unknown as string,
+        }),
+      ).toThrow(/AI key encryption secret/)
+    })
+
+    it('throws on a non-string value, naming its type but never echoing it', () => {
+      let thrown: Error | undefined
+      try {
+        AppLocalModule.forRoot({
+          databaseFile: irrelevantDatabaseFile,
+          sessionToken: TEST_SESSION_TOKEN,
+          aiKeyEncryptionSecret: 123456789 as unknown as string,
+        })
+      } catch (error) {
+        thrown = error as Error
+      }
+
+      expect(thrown).toBeInstanceOf(Error)
+      expect(thrown?.message).toContain('AI key encryption secret')
+      expect(thrown?.message).not.toContain('123456789')
+    })
+
+    it('still composes normally with a valid secret (no regression)', () => {
+      expect(() =>
+        AppLocalModule.forRoot({
+          databaseFile: irrelevantDatabaseFile,
+          sessionToken: TEST_SESSION_TOKEN,
+          aiKeyEncryptionSecret: TEST_AI_KEY_ENCRYPTION_SECRET,
+        }),
       ).not.toThrow()
     })
   })

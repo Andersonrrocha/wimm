@@ -13,12 +13,17 @@
  * guard.ts`) -- see `package.json`'s `pretest` script.
  */
 import { createConnection } from 'node:net'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { decryptWithAiKey, deriveAiKeyEncryptionKey, encryptWithAiKey } from '@wimm/api/dist/ai/ai-key-crypto'
 import { DATABASE_MIGRATED_BY_NEWER_BUILD_CODE } from '@wimm/api/dist/prisma/local/migration-runner'
 import { openLocalDatabase } from '@wimm/api/dist/prisma/local/open-local-database'
+import {
+  LEGACY_SHARED_AI_KEY_ENCRYPTION_SECRET,
+  profileSecretFilePath,
+} from '@wimm/api/dist/prisma/local/profile-secret'
 import { SESSION_TOKEN_HEADER } from '@wimm/api/dist/profile/session-token'
 
 import {
@@ -265,5 +270,98 @@ describe('newer-database detection reacts to the typed error, not its message', 
     }
     expect(caught).not.toBeInstanceOf(NewerDatabaseError)
     expect(caught).toBe(oldStyleError)
+  })
+})
+
+describe('per-profile AI key encryption secret (Task 1, phase 4c)', () => {
+  let profileDir: string
+  let handle: LocalApiHandle | undefined
+
+  beforeEach(() => {
+    profileDir = tmpProfileDir()
+  })
+
+  afterEach(async () => {
+    if (handle) {
+      await handle.close()
+      handle = undefined
+    }
+    rmSync(profileDir, { recursive: true, force: true })
+  })
+
+  /** Reads the one profile entry `startLocalApi` created/reused in `profileDir`. */
+  function readSoleProfile(): { id: string; dbFileName: string } {
+    const registry = JSON.parse(readFileSync(join(profileDir, 'profiles.json'), 'utf8')) as Array<{
+      id: string
+      dbFileName: string
+    }>
+    expect(registry).toHaveLength(1)
+    return registry[0]
+  }
+
+  it('creates a secret file for a freshly created profile, outside profiles/', async () => {
+    handle = await startLocalApi({ profileDir })
+
+    const profile = readSoleProfile()
+    const secretPath = profileSecretFilePath(profileDir, profile.id)
+
+    expect(existsSync(secretPath)).toBe(true)
+    // Sibling of profiles/, never inside it -- this is what keeps the
+    // secret out of what Task 4's export copies (the .db file alone).
+    expect(secretPath).not.toContain(join('profiles', profile.dbFileName))
+
+    const secret = readFileSync(secretPath, 'utf8')
+    expect(secret.length).toBeGreaterThan(0)
+  })
+
+  it('migrates a BYOK key encrypted under the legacy shared secret on the next launch, and the key survives, decryptable under the new per-profile secret', async () => {
+    // First launch: create the profile normally. This already resolves and
+    // persists a per-profile secret (there is nothing to migrate yet).
+    handle = await startLocalApi({ profileDir })
+    await handle.close()
+    handle = undefined
+
+    const profile = readSoleProfile()
+    const databaseFile = join(profileDir, 'profiles', profile.dbFileName)
+    const secretPath = profileSecretFilePath(profileDir, profile.id)
+    expect(existsSync(secretPath)).toBe(true)
+
+    // Simulate a profile that predates this feature: delete the per-profile
+    // secret file that was just created, and hand-write the single User
+    // row's BYOK key encrypted under the OLD shared constant -- exactly the
+    // state a profile written before this task shipped would be in.
+    rmSync(secretPath, { force: true })
+
+    const plaintext = 'sk-ant-a-real-looking-anthropic-key-for-migration-proof'
+    const legacyKey = deriveAiKeyEncryptionKey(LEGACY_SHARED_AI_KEY_ENCRYPTION_SECRET)
+    const legacyEncrypted = encryptWithAiKey(legacyKey, plaintext)
+
+    const db = openLocalDatabase(databaseFile)
+    const userId = (db.prepare('SELECT "id" AS id FROM "User"').get() as { id: string }).id
+    db.prepare('UPDATE "User" SET "aiApiKeyEncrypted" = ? WHERE "id" = ?').run(legacyEncrypted, userId)
+    db.close()
+
+    // Second launch: no secret file exists, so this must migrate the
+    // legacy-encrypted value before composing the app.
+    handle = await startLocalApi({ profileDir })
+
+    expect(existsSync(secretPath)).toBe(true)
+    const newSecret = readFileSync(secretPath, 'utf8')
+    expect(newSecret).not.toBe(LEGACY_SHARED_AI_KEY_ENCRYPTION_SECRET)
+
+    const dbAfter = openLocalDatabase(databaseFile, { readonly: true })
+    const storedNow = (
+      dbAfter.prepare('SELECT "aiApiKeyEncrypted" AS aiApiKeyEncrypted FROM "User" WHERE "id" = ?').get(userId) as {
+        aiApiKeyEncrypted: string
+      }
+    ).aiApiKeyEncrypted
+    dbAfter.close()
+
+    // The key survives: decryptable under the NEW per-profile secret, back
+    // to the exact original plaintext.
+    expect(decryptWithAiKey(deriveAiKeyEncryptionKey(newSecret), storedNow)).toBe(plaintext)
+
+    // And it is genuinely re-encrypted, not left under the legacy secret.
+    expect(() => decryptWithAiKey(legacyKey, storedNow)).toThrow()
   })
 })

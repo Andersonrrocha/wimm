@@ -50,6 +50,7 @@ import { join } from 'node:path'
 import Database = require('better-sqlite3')
 import { AppLocalModule } from '../app.local.module'
 import { LocalPrismaService } from '../prisma/local/local-prisma.service'
+import { generateAiKeyEncryptionSecret } from '../prisma/local/profile-secret'
 import { generateSessionToken, SESSION_TOKEN_HEADER } from './session-token'
 
 interface DiscoveredRoute {
@@ -135,16 +136,17 @@ describe('local composition route posture (behavioral)', () => {
   let app: INestApplication
   let baseUrl: string
   let routes: DiscoveredRoute[]
-  // The real generator this task builds, not a hand-picked literal --
-  // matches how a real launch would supply this value to `forRoot`.
+  // The real generators this task builds, not hand-picked literals --
+  // matches how a real launch would supply these values to `forRoot`.
   const sessionToken = generateSessionToken()
+  const aiKeyEncryptionSecret = generateAiKeyEncryptionSecret()
 
   beforeAll(async () => {
     const file = freshDatabaseFile()
     await seedUser(file)
 
     const moduleRef: TestingModule = await Test.createTestingModule({
-      imports: [AppLocalModule.forRoot({ databaseFile: file, sessionToken })],
+      imports: [AppLocalModule.forRoot({ databaseFile: file, sessionToken, aiKeyEncryptionSecret })],
     }).compile()
 
     // `logger: false` only silences Nest's console noise from expected

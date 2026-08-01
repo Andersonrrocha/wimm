@@ -48,6 +48,7 @@ import { CategoriesModule } from './categories/categories.module'
 import { CategorizationRulesModule } from './categorization-rules/categorization-rules.module'
 import { ImportsModule } from './imports/imports.module'
 import { LocalPrismaService } from './prisma/local/local-prisma.service'
+import { assertUsableAiKeyEncryptionSecret } from './prisma/local/profile-secret'
 import { PrismaService } from './prisma/prisma.service'
 import { ProfileModule } from './profile/profile.module'
 import { assertUsableSessionToken, SESSION_TOKEN } from './profile/session-token'
@@ -64,30 +65,20 @@ import { UsersModule } from './users/users.module'
  * is a hard dependency of `UsersService` (BYOK key encryption on
  * `PATCH /users/me`), which makes it a hard, transitive dependency of
  * `UsersModule`. `UsersModule` is one of "the same feature modules" this root
- * is required to serve, so this is not optional to satisfy: there is no
- * `.env` in the local build (no hosted secret exists to read), and there is
- * no other running instance to "keep the secret consistent across deploys"
- * with (`AiKeyCrypto`'s own doc comment) -- a single local profile *is* the
- * only deploy. A fixed, compiled-in value is therefore the honest choice
- * here, not a workaround: it is stable across restarts (so a previously
- * saved BYOK key stays decryptable), which a random-per-boot value would not
- * be (`AiKeyResolverService.resolveForUser` already treats a decrypt failure
- * as "no key" -- see its catch block -- so a wrong secret degrades
- * gracefully to "AI off", it does not crash).
+ * is required to serve, so this is not optional to satisfy.
  *
- * Worth being honest about, not papering over: this does not make the
- * BYOK key meaningfully secret against someone with filesystem access to the
- * profile's SQLite file -- the rest of that file (every transaction,
- * category, source) is already unencrypted on disk, so a fixed, known
- * constant only obscures the value from a casual glance at the raw database,
- * it is not a real security boundary. That is an accurate description of
- * what BYOK-at-rest "encryption" buys in a single-user, offline build, not a
- * defect introduced here -- flagged for whoever designs Phase 4's profile
- * storage in case a per-profile secret becomes worth the added complexity.
+ * This used to be a single value compiled into every build
+ * (`LOCAL_AI_KEY_ENCRYPTION_SECRET`), shared by every installation and
+ * extractable with `strings` -- harmless obscurity while the rest of the
+ * profile's SQLite file was already plaintext, until Task 4 of Phase 4c
+ * added an export action that can hand that file to anyone. It is now
+ * per-profile and caller-supplied instead, exactly like `sessionToken`
+ * below: `AppLocalModule` never generates, stores, or migrates it itself.
+ * See `prisma/local/profile-secret.ts` for where it lives (deliberately
+ * outside anything export copies), how a profile written under the old
+ * constant is migrated on open, and why the old constant survives there,
+ * clearly marked legacy-migration-only.
  */
-const LOCAL_AI_KEY_ENCRYPTION_SECRET =
-  'wimm-local-build-fixed-ai-key-encryption-secret-v1'
-
 export interface AppLocalModuleOptions {
   /**
    * Absolute path to the active profile's SQLite database file. Supplied by
@@ -104,6 +95,16 @@ export interface AppLocalModuleOptions {
    * the value and can present it back on outgoing requests.
    */
   sessionToken: string
+
+  /**
+   * This profile's AI key encryption secret -- what `AiKeyCrypto` uses to
+   * encrypt/decrypt the BYOK provider key stored in `User.aiApiKeyEncrypted`.
+   * Resolved (and migrated from the legacy shared constant, if needed) by
+   * `resolveProfileAiKeyEncryptionSecret()` (`prisma/local/profile-secret.ts`)
+   * and supplied here -- this module never generates, persists, or migrates
+   * it itself, exactly like `sessionToken` above.
+   */
+  aiKeyEncryptionSecret: string
 }
 
 @Module({})
@@ -117,7 +118,13 @@ export class AppLocalModule {
     // instead of a boot failure that names the problem). Mirrors the
     // set-verify-refuse contract `openLocalDatabase` and
     // `assertNativeAbiSelectedAt` already use elsewhere in this package.
+    // `assertUsableAiKeyEncryptionSecret` follows the exact same contract,
+    // at the exact same unbypassable point, for the same reason: by the
+    // time `AiKeyCrypto`'s constructor would otherwise be the first thing
+    // to notice a bad secret, the failure has already turned into a raw
+    // Nest DI error instead of a boot failure that names the problem.
     assertUsableSessionToken(options.sessionToken)
+    assertUsableAiKeyEncryptionSecret(options.aiKeyEncryptionSecret)
 
     return {
       module: AppLocalModule,
@@ -133,7 +140,7 @@ export class AppLocalModule {
         ConfigModule.forRoot({
           isGlobal: true,
           ignoreEnvFile: true,
-          load: [() => ({ AI_KEY_ENCRYPTION_SECRET: LOCAL_AI_KEY_ENCRYPTION_SECRET })],
+          load: [() => ({ AI_KEY_ENCRYPTION_SECRET: options.aiKeyEncryptionSecret })],
         }),
         ProfileModule.forRoot({ databaseFile: options.databaseFile }),
         UsersModule,
