@@ -6,12 +6,50 @@ import { basename, join } from 'path'
 // import typechecks but is `undefined` at runtime for this CommonJS module.
 import Database = require('better-sqlite3')
 import { openLocalDatabase } from './open-local-database'
-import { checkDatabaseHealth, listSnapshots, restoreSnapshot, snapshotDatabase } from './snapshot'
+import { checkDatabaseHealth, CloseExistingConnections, listSnapshots, restoreSnapshot, snapshotDatabase } from './snapshot'
 
 const ROOT = '/tmp/wimm-snapshot-spec'
 const DB_FILE = join(ROOT, 'wimm.db')
 const OTHER_DB_FILE = join(ROOT, 'other.db')
 const BACKUP_DIR = join(ROOT, 'backups')
+
+/** No connection to close in most of these tests -- an explicit no-op, not an implicit default. */
+const NO_OP_CLOSE: CloseExistingConnections = () => {}
+
+// --- The cross-build lock probe (the defect this file's guard now fixes) ---
+//
+// Two different compiled `better-sqlite3` libraries are live in this
+// process: the root workspace copy (`Database`, imported above, the one
+// every other helper in this file uses), and the copy
+// `@prisma/adapter-better-sqlite3` bundles internally -- the one
+// `LocalPrismaService`'s connections actually run on. Proven directly: a
+// write transaction held through one build is invisible to a probe made
+// through the other. `assertExclusiveAccess` (`snapshot.ts`) now probes both;
+// the tests below hold a lock through EACH build in turn to prove that.
+//
+// `ADAPTER_BETTER_SQLITE3_DIR` is the exact path `scripts/select-native-abi.ts`,
+// `apps/desktop/scripts/verify-native-runtime.ts`, and
+// `apps/desktop/src/main/local-api.spec.ts` already use for this same bundled
+// copy -- its own `package.json` `exports` map blocks a bare
+// `require('better-sqlite3')` from ever resolving to it.
+const ADAPTER_BETTER_SQLITE3_DIR = join(
+  __dirname,
+  '..',
+  '..',
+  '..',
+  '..',
+  '..',
+  'node_modules/@prisma/adapter-better-sqlite3/node_modules/better-sqlite3',
+)
+
+interface AdapterBuildDatabase {
+  pragma(sql: string): unknown
+  exec(sql: string): unknown
+  close(): void
+}
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- must be the exact bundled build, not the root workspace one; see the comment above.
+const AdapterDatabase = require(ADAPTER_BETTER_SQLITE3_DIR) as new (file: string) => AdapterBuildDatabase
 
 function createDatabase(file: string, values: string[]): void {
   const db = openLocalDatabase(file)
@@ -221,14 +259,14 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toHaveLength(0)
   })
 
-  it('restores the target and leaves the pre-restore state recoverable as its own snapshot', () => {
+  it('restores the target and leaves the pre-restore state recoverable as its own snapshot', async () => {
     createDatabase(DB_FILE, ['alpha'])
     const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
 
     insertRow(DB_FILE, 'beta')
     expect(readRows(DB_FILE)).toEqual(['alpha', 'beta'])
 
-    restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:10.000Z'))
+    await restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:10.000Z'), NO_OP_CLOSE)
 
     expect(readRows(DB_FILE)).toEqual(['alpha'])
 
@@ -238,29 +276,33 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     expect(readRows(preRestoreSnapshot!.path)).toEqual(['alpha', 'beta'])
   })
 
-  it('does not attempt to snapshot a target that does not exist yet before restoring into it', () => {
+  it('does not attempt to snapshot a target that does not exist yet before restoring into it, and never calls closeExistingConnections either', async () => {
     createDatabase(DB_FILE, ['alpha'])
     const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
     const freshTarget = join(ROOT, 'fresh.db')
+    const closeExistingConnections = jest.fn()
 
     expect(existsSync(freshTarget)).toBe(false)
-    restoreSnapshot(snapshotPath, freshTarget, 'fresh', new Date('2026-01-01T00:00:10.000Z'))
+    await restoreSnapshot(snapshotPath, freshTarget, 'fresh', new Date('2026-01-01T00:00:10.000Z'), closeExistingConnections)
 
     expect(readRows(freshTarget)).toEqual(['alpha'])
     expect(listSnapshots(BACKUP_DIR, 'fresh')).toHaveLength(0)
+    // Nothing existed to close a connection to -- calling it anyway would be
+    // asking the caller to close a connection to a file that isn't open.
+    expect(closeExistingConnections).not.toHaveBeenCalled()
   })
 
-  it('throws when restoring from a file that is not a valid SQLite database, leaving the target untouched', () => {
+  it('throws when restoring from a file that is not a valid SQLite database, leaving the target untouched', async () => {
     createDatabase(DB_FILE, ['alpha'])
     const bogusPath = join(ROOT, 'not-a-database.db')
     writeFileSync(bogusPath, 'this is definitely not a sqlite file')
 
-    expect(() => restoreSnapshot(bogusPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))).toThrow()
+    await expect(restoreSnapshot(bogusPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'), NO_OP_CLOSE)).rejects.toThrow()
     expect(readRows(DB_FILE)).toEqual(['alpha'])
     expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toHaveLength(0)
   })
 
-  it('leaves the target byte-identical to before when the copy into the temp file is interrupted', () => {
+  it('leaves the target byte-identical to before when the copy into the temp file is interrupted', async () => {
     createDatabase(DB_FILE, ['alpha'])
     const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
     insertRow(DB_FILE, 'beta')
@@ -282,7 +324,9 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
       })
 
     try {
-      expect(() => restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:20.000Z'))).toThrow()
+      await expect(
+        restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:20.000Z'), NO_OP_CLOSE),
+      ).rejects.toThrow()
     } finally {
       spy.mockRestore()
     }
@@ -296,7 +340,7 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     expect(leftovers).toEqual([])
   })
 
-  it('restores over a corrupt target, preserving it as an unvalidated copy that listSnapshots never returns', () => {
+  it('restores over a corrupt target, preserving it as an unvalidated copy that listSnapshots never returns', async () => {
     createDatabase(DB_FILE, ['alpha'])
     const goodSnapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
 
@@ -304,7 +348,7 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     // above does: this is the exact scenario a restore exists for.
     truncateToHeaderOnly(DB_FILE)
 
-    restoreSnapshot(goodSnapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:20.000Z'))
+    await restoreSnapshot(goodSnapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:20.000Z'), NO_OP_CLOSE)
 
     expect(readRows(DB_FILE)).toEqual(['alpha'])
 
@@ -319,7 +363,7 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
   // connection is actively using. The lock this test contends for is real --
   // a genuine second `better-sqlite3` connection with an open transaction,
   // not a stub of the lock-check mechanism itself.
-  it('refuses to restore over a target that another connection actively holds an open transaction against, naming the file', () => {
+  it('refuses to restore over a target that another connection actively holds an open transaction against, through the ROOT better-sqlite3 build, naming the file', async () => {
     createDatabase(DB_FILE, ['alpha'])
     const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
 
@@ -332,9 +376,9 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     try {
       before = readFileSync(DB_FILE)
 
-      expect(() => restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:10.000Z'))).toThrow(
-        DB_FILE,
-      )
+      await expect(
+        restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:10.000Z'), NO_OP_CLOSE),
+      ).rejects.toThrow(DB_FILE)
     } finally {
       busyConnection.exec('ROLLBACK')
       busyConnection.close()
@@ -347,24 +391,111 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toHaveLength(1)
   })
 
-  it('does not refuse a restore merely because another connection to the target is open but idle', () => {
+  // This is the defect this fix closes. Before it, a lock held ONLY through
+  // the adapter's bundled build (the one LocalPrismaService's connections
+  // actually run on) was invisible to assertExclusiveAccess, which probed
+  // exclusively through the root build -- see the module doc comment's
+  // "Two different compiled SQLite libraries" note and this task's report
+  // for the confirmed, reproduced case. Structurally identical to the test
+  // above; the only difference is which build holds the lock.
+  it('refuses to restore over a target that another connection actively holds an open transaction against, through the ADAPTER-bundled better-sqlite3 build (the build LocalPrismaService actually runs on), naming the file', async () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+
+    const busyConnection = new AdapterDatabase(DB_FILE)
+    busyConnection.exec('BEGIN IMMEDIATE')
+    busyConnection.exec("INSERT INTO items (\"value\") VALUES ('uncommitted')")
+
+    let before: Buffer
+    try {
+      before = readFileSync(DB_FILE)
+
+      await expect(
+        restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:10.000Z'), NO_OP_CLOSE),
+      ).rejects.toThrow(DB_FILE)
+    } finally {
+      busyConnection.exec('ROLLBACK')
+      busyConnection.close()
+    }
+
+    const after = readFileSync(DB_FILE)
+    expect(after.equals(before!)).toBe(true)
+    expect(readRows(DB_FILE)).toEqual(['alpha'])
+    expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toHaveLength(1)
+  })
+
+  it('does not refuse a restore merely because another connection to the target is open but idle', async () => {
     createDatabase(DB_FILE, ['alpha'])
     const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
     insertRow(DB_FILE, 'beta')
 
     // Documented limitation: a connection that is open but has no pending
     // transaction or in-flight statement holds no SQLite lock in DELETE
-    // journal mode, so the exclusive-access check cannot see it.
+    // journal mode, so the exclusive-access check cannot see it, through
+    // either build.
     const idleConnection = new Database(DB_FILE)
     try {
-      expect(() =>
-        restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:10.000Z')),
-      ).not.toThrow()
+      await expect(
+        restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:10.000Z'), NO_OP_CLOSE),
+      ).resolves.toBeUndefined()
     } finally {
       idleConnection.close()
     }
 
     expect(readRows(DB_FILE)).toEqual(['alpha'])
+  })
+
+  // Item 2: restoreSnapshot must actually run and await
+  // closeExistingConnections -- not merely accept it as an unused parameter.
+  it('awaits closeExistingConnections before probing for exclusive access, so a caller that genuinely closes its own connection there unblocks the restore', async () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+
+    // Held through the adapter build specifically -- the harder of the two
+    // cases now that both are probed.
+    const busyConnection = new AdapterDatabase(DB_FILE)
+    busyConnection.exec('BEGIN IMMEDIATE')
+    busyConnection.exec("INSERT INTO items (\"value\") VALUES ('uncommitted')")
+
+    let closeCalledBeforeProbe = false
+    const closeExistingConnections: CloseExistingConnections = async () => {
+      // If restoreSnapshot probed before awaiting this, the lock would still
+      // be held here and the assertion below on the restore's own outcome
+      // would fail -- this callback is what actually releases it.
+      await Promise.resolve()
+      busyConnection.exec('ROLLBACK')
+      busyConnection.close()
+      closeCalledBeforeProbe = true
+    }
+
+    await restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:10.000Z'), closeExistingConnections)
+
+    expect(closeCalledBeforeProbe).toBe(true)
+    // The restore actually went through -- proof the probe ran AFTER the
+    // close resolved, not before it.
+    expect(readRows(DB_FILE)).toEqual(['alpha'])
+  })
+
+  it('propagates a failure from closeExistingConnections without touching the target', async () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+    insertRow(DB_FILE, 'beta')
+    const before = readFileSync(DB_FILE)
+
+    const closeExistingConnections: CloseExistingConnections = () => {
+      throw new Error('pretend closing the connection failed')
+    }
+
+    await expect(
+      restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:10.000Z'), closeExistingConnections),
+    ).rejects.toThrow('pretend closing the connection failed')
+
+    const after = readFileSync(DB_FILE)
+    expect(after.equals(before)).toBe(true)
+    expect(readRows(DB_FILE)).toEqual(['alpha', 'beta'])
+    // No preservation copy either -- the failure happened before
+    // assertExclusiveAccess or preserveTargetBeforeRestore ever ran.
+    expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toHaveLength(1)
   })
 
   // Item 3: assertValidDatabaseFile's logic must be reachable from outside

@@ -74,13 +74,24 @@
  *   get exclusive access to `targetFile` via a real SQLite lock
  *   (`assertExclusiveAccess`). Overwriting a SQLite file while another
  *   connection is actively using it is undefined behaviour: corruption, or a
- *   stale page-cache read, and either way silently. This check is a
- *   point-in-time gate, not a held lock for the duration of the restore, and
- *   it can only see a connection that is genuinely mid-transaction at the
- *   moment it runs -- see `assertExclusiveAccess`'s doc comment for exactly
- *   what it does and does not catch. Callers closing their own connection to
- *   `targetFile` before calling `restoreSnapshot` remains a hard
- *   requirement this check narrows the risk of, not one it removes.
+ *   stale page-cache read, and either way silently. Two different compiled
+ *   `better-sqlite3` libraries are live in this one process -- the root
+ *   workspace copy this module otherwise uses everywhere, and the copy
+ *   `@prisma/adapter-better-sqlite3` bundles internally, which is the one
+ *   `LocalPrismaService`'s connections actually run on -- and SQLite's lock
+ *   bookkeeping does not cross between them: a lock held through one is
+ *   provably invisible to a probe made through the other (see this
+ *   function's own doc comment for the confirmed, reproduced case). So
+ *   `assertExclusiveAccess` probes with *both* builds and refuses if either
+ *   reports contention. This check is a point-in-time gate, not a held lock
+ *   for the duration of the restore, and even with both builds probed it can
+ *   only see a connection that is genuinely mid-transaction at the moment it
+ *   runs -- see that function's doc comment for exactly what it does and
+ *   does not catch. It is also not the only guard: `restoreSnapshot` now
+ *   takes a required `closeExistingConnections` callback and runs it,
+ *   immediately before this probe, precisely because the probe alone cannot
+ *   see a connection that is open but idle -- see `restoreSnapshot`'s doc
+ *   comment for what that callback does and does not guarantee.
  *
  * - `assertValidDatabaseFile`'s logic is also reachable from outside this
  *   module through `checkDatabaseHealth`, which is the exported, non-
@@ -91,11 +102,13 @@
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'fs'
 import { createHash, randomBytes } from 'crypto'
+import { createRequire } from 'module'
 import { basename, dirname, join } from 'path'
 // Same import form as open-local-database.ts: this package has
 // `allowSyntheticDefaultImports` but not `esModuleInterop`, so a default
 // import typechecks but is `undefined` at runtime for this CommonJS module.
 import Database = require('better-sqlite3')
+import { assertLocalNativeAbiSelected } from './native-abi-guard'
 import { openLocalDatabase } from './open-local-database'
 
 export interface SnapshotInfo {
@@ -382,88 +395,179 @@ function preserveTargetBeforeRestore(targetFile: string, backupDir: string, data
 }
 
 /**
- * Throws unless `file` can be locked for exclusive access right now.
- * Overwriting a SQLite database file while another connection is actively
- * using it is undefined behaviour -- corruption, or a stale page-cache read
- * on that other connection's side, and either way silently. This is the
- * guard `restoreSnapshot` runs before it touches `targetFile` at all.
- *
- * Mechanism: open a plain connection to `file` -- deliberately not through
- * `openLocalDatabase`, which would itself try to force `journal_mode =
- * DELETE`, an unwanted side effect for a connection whose only job here is
- * to check, not to configure -- disable the busy-retry wait
- * (`busy_timeout = 0`, so a conflict fails immediately instead of blocking
- * this call for seconds), and attempt `BEGIN IMMEDIATE` followed by
- * `COMMIT`. Under `DELETE` journal mode -- which every live database file in
- * this app is required to be in -- `BEGIN IMMEDIATE` and `BEGIN EXCLUSIVE`
- * are the same lock escalation (they only differ under WAL). A `SQLITE_BUSY`
- * error from either statement, specifically, means some other connection
- * currently holds a conflicting lock; it is turned into a refusal that names
- * `file` and tells the caller to close it first.
- *
- * Only `SQLITE_BUSY` is treated as "in use." Any other failure while
- * probing -- `file` not opening at all, or a write attempt failing because
- * the file is corrupt -- is not a locking conflict and is deliberately left
- * alone here: it is not this function's job to report, and the validation
- * and preservation logic `restoreSnapshot` runs right after this check
- * already handles a corrupt or unreadable target on its own, honestly. This
- * check does one thing: tell an active conflicting connection apart from
- * every other reason `file` might be unusable.
- *
- * What this provably catches: another connection that is genuinely
- * mid-transaction against `file` at the moment this check runs, whether
- * that transaction is reading or writing. An open write transaction on
- * another connection already holds the RESERVED lock this probe needs, so
- * `BEGIN IMMEDIATE` itself fails immediately; an open read transaction holds
- * a SHARED lock that is compatible with another connection also holding
- * RESERVED, so `BEGIN IMMEDIATE` succeeds but the follow-up `COMMIT` -- which
- * must escalate to EXCLUSIVE to finish -- fails instead. Either way this
- * function throws, and the half-open probe transaction is rolled back before
- * the probe connection is closed.
- *
- * What this does NOT catch, and structurally cannot: a connection that is
- * open but idle -- constructed and never used yet, or simply between
- * statements in autocommit mode -- holds no SQLite lock at all in `DELETE`
- * journal mode, so this check cannot see it and will let the restore
- * proceed. It also only checks at one instant, immediately before the
- * restore begins; it does not hold the lock for the restore's duration, so a
- * connection that opens and starts a transaction in the brief window between
- * this check and `restoreSnapshot`'s final `renameSync` is not caught
- * either. Neither gap is closable from user-space with SQLite's own locking
- * primitives -- they are exactly why the caller closing its own connection
- * to `file` before calling `restoreSnapshot` remains a hard requirement this
- * check narrows the risk of, not one it removes or makes optional.
+ * Structural type for a `better-sqlite3` connection, satisfied by both the
+ * root workspace package (typed via `Database.Database`) and the copy
+ * `@prisma/adapter-better-sqlite3` bundles internally (loaded via a raw
+ * `require()` against an absolute path, so it has no static type of its own
+ * -- see `loadAdapterBetterSqlite3Ctor`). Only the members that
+ * `probeExclusiveAccess` actually calls.
  */
-function assertExclusiveAccess(file: string): void {
-  let db: Database.Database
+interface MinimalSqliteConnection {
+  pragma(sql: string): unknown
+  exec(sql: string): unknown
+  close(): void
+}
+
+const nodeRequire = createRequire(__filename)
+
+/**
+ * Walks up from `startFile` until it finds a directory containing a
+ * `package.json` whose `name` field is `packageName`, and returns that
+ * directory. Used to locate `@prisma/adapter-better-sqlite3`'s own package
+ * root from its resolved entry file, rather than assuming a fixed number of
+ * `dirname()` calls -- entry files move between package versions (e.g.
+ * `dist/index.js` becoming `dist/cjs/index.js`); the *name* in the nearest
+ * enclosing `package.json` does not.
+ */
+function findPackageRoot(startFile: string, packageName: string): string {
+  let dir = dirname(startFile)
+  for (;;) {
+    const packageJsonPath = join(dir, 'package.json')
+    if (existsSync(packageJsonPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { name?: string }
+        if (pkg.name === packageName) return dir
+      } catch {
+        // Not readable, or not valid JSON -- not the package.json we're
+        // looking for either way. Keep climbing.
+      }
+    }
+    const parent = dirname(dir)
+    if (parent === dir) {
+      throw new Error(
+        `walked up from ${startFile} to the filesystem root without finding a package.json named "${packageName}"`,
+      )
+    }
+    dir = parent
+  }
+}
+
+let cachedAdapterBetterSqlite3Ctor: (new (file: string) => MinimalSqliteConnection) | undefined
+
+/**
+ * Lazily resolves, loads, and caches the SAME `better-sqlite3` build
+ * `@prisma/adapter-better-sqlite3` loads internally -- the one
+ * `LocalPrismaService`'s connections actually run on, as opposed to the root
+ * workspace copy (`Database`, imported at the top of this file) that every
+ * other function here uses. See the module doc comment's `restoreSnapshot`
+ * bullet for why a probe made through the root copy alone cannot see a lock
+ * held through this one.
+ *
+ * **Located by package identity, not by a fixed monorepo-relative path.**
+ * `require.resolve('@prisma/adapter-better-sqlite3')` finds the installed
+ * package root the same way in a development checkout (a pnpm-hoisted
+ * `node_modules` entry) and in a packaged Electron build (wherever
+ * `electron-builder` places it) -- unlike counting `dirname()` calls up from
+ * `__dirname`, which only happens to land on the monorepo root in a
+ * development checkout (see `native-abi-guard.ts`'s `isDevelopmentCheckout`,
+ * which exists precisely because that assumption breaks in a packaged app).
+ * This function's result is used by `assertExclusiveAccess`, which -- unlike
+ * `native-abi-guard.ts`'s dev-only sanity check -- must work correctly for a
+ * real restore in a packaged build too, so it cannot fall back to being a
+ * no-op there.
+ *
+ * The package's own `exports` map has no entry for its nested
+ * `node_modules/better-sqlite3` -- confirmed directly (`Package subpath
+ * './node_modules/better-sqlite3' is not defined by "exports"`), which is
+ * why this reaches in by absolute path at all; the same constraint documented
+ * in `apps/desktop/scripts/verify-native-runtime.ts` and
+ * `apps/desktop/src/main/local-api.spec.ts`, which probe the identical
+ * bundled copy for the identical reason.
+ *
+ * **This is an internal detail of a third-party package, and this function
+ * treats it as fragile on purpose.** If the bundled copy cannot be found
+ * exactly where expected, or fails to load, this throws -- loudly, naming
+ * what went wrong -- instead of silently proceeding with only the root-build
+ * probe. A restore that silently degraded back to today's blind spot the
+ * moment this path moved would be worse than an honest, immediate failure:
+ * nobody would know protection was gone until it mattered.
+ *
+ * Calls `assertLocalNativeAbiSelected()` before touching the native binary
+ * at all, for the same reason `LocalPrismaService.onModuleInit()` does (see
+ * that guard's doc comment): this bundled copy is pre-N-API and tied to the
+ * exact runtime it was compiled for, and `require()`-ing the wrong one does
+ * not fail gracefully. That check is a no-op outside a development checkout,
+ * so it never affects a packaged build, where the bundled copy is already
+ * correct by construction.
+ */
+function loadAdapterBetterSqlite3Ctor(): new (file: string) => MinimalSqliteConnection {
+  if (cachedAdapterBetterSqlite3Ctor) return cachedAdapterBetterSqlite3Ctor
+
+  assertLocalNativeAbiSelected()
+
+  let adapterEntry: string
   try {
-    db = new Database(file)
+    adapterEntry = nodeRequire.resolve('@prisma/adapter-better-sqlite3')
+  } catch (err) {
+    throw new Error(
+      'Cannot verify exclusive access to the target database: @prisma/adapter-better-sqlite3 could not be ' +
+        `resolved (${(err as Error).message}). Refusing rather than silently skipping the one probe that can see ` +
+        "the connection LocalPrismaService's queries actually run on.",
+    )
+  }
+
+  const adapterRoot = findPackageRoot(adapterEntry, '@prisma/adapter-better-sqlite3')
+  const bundledDir = join(adapterRoot, 'node_modules', 'better-sqlite3')
+
+  if (!existsSync(bundledDir)) {
+    throw new Error(
+      "Cannot verify exclusive access to the target database: expected @prisma/adapter-better-sqlite3's bundled " +
+        `better-sqlite3 copy at ${bundledDir}, but nothing exists there. This is an internal detail of a ` +
+        'third-party package that this check depends on; if it moved, refusing is safer than silently skipping ' +
+        'the one probe that can see the connection LocalPrismaService actually uses.',
+    )
+  }
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- must be
+    // this exact bundled copy, not the root workspace one; see this
+    // function's doc comment.
+    cachedAdapterBetterSqlite3Ctor = require(bundledDir)
+  } catch (err) {
+    throw new Error(
+      "Cannot verify exclusive access to the target database: requiring @prisma/adapter-better-sqlite3's bundled " +
+        `better-sqlite3 copy at ${bundledDir} failed (${(err as Error).message}). Refusing rather than silently ` +
+        'skipping this probe.',
+    )
+  }
+
+  return cachedAdapterBetterSqlite3Ctor as new (file: string) => MinimalSqliteConnection
+}
+
+type ExclusiveAccessProbeResult = 'ok' | 'busy' | 'inconclusive'
+
+/**
+ * Attempts `BEGIN IMMEDIATE` then `COMMIT` against `file` through a fresh
+ * connection built by `ConnectionCtor`, with `busy_timeout = 0` so a
+ * conflict fails immediately instead of blocking. Returns `'busy'` only for
+ * a `SQLITE_BUSY` error from either statement -- see
+ * `assertExclusiveAccess`'s doc comment for exactly what that does and does
+ * not mean. Returns `'inconclusive'` for every other way opening or probing
+ * `file` can fail (missing, unreadable, corrupt -- not this function's
+ * concern; the validation and preservation logic `restoreSnapshot` runs
+ * right after handles it honestly). Returns `'ok'` if the probe completed a
+ * full `BEGIN IMMEDIATE` + `COMMIT` cycle without contention.
+ */
+function probeExclusiveAccess(
+  ConnectionCtor: new (file: string) => MinimalSqliteConnection,
+  file: string,
+): ExclusiveAccessProbeResult {
+  let db: MinimalSqliteConnection
+  try {
+    db = new ConnectionCtor(file)
   } catch {
-    // Could not even open a plain connection -- not a locking conflict, so
-    // not this function's concern. See the doc comment: a missing, unreadable
-    // or corrupt `file` gets its own honest report from the validation and
-    // preservation logic that runs right after this check.
-    return
+    return 'inconclusive'
   }
 
   try {
     db.pragma('busy_timeout = 0')
 
-    const refuseIfBusy = (err: unknown): void => {
-      if ((err as { code?: string }).code !== 'SQLITE_BUSY') return
-      throw new Error(
-        `Refusing to restore over ${file}: another connection is actively using it right now ` +
-          `(${(err as Error).message}). Close every open connection to this database before restoring.`,
-      )
-    }
+    const isBusy = (err: unknown): boolean => (err as { code?: string }).code === 'SQLITE_BUSY'
 
     try {
       db.exec('BEGIN IMMEDIATE')
     } catch (err) {
-      refuseIfBusy(err)
-      // Some other failure (e.g. `file` is corrupt) -- not a locking
-      // conflict, so not this function's concern; see the doc comment.
-      return
+      return isBusy(err) ? 'busy' : 'inconclusive'
     }
 
     try {
@@ -475,13 +579,143 @@ function assertExclusiveAccess(file: string): void {
         // Best-effort cleanup of the half-open probe transaction; `db` is
         // closed in the outer `finally` below regardless.
       }
-      refuseIfBusy(err)
-      return
+      return isBusy(err) ? 'busy' : 'inconclusive'
     }
+
+    return 'ok'
   } finally {
     db.close()
   }
 }
+
+/**
+ * Throws unless `file` can be locked for exclusive access right now, probed
+ * through BOTH `better-sqlite3` builds live in this process. Overwriting a
+ * SQLite database file while another connection is actively using it is
+ * undefined behaviour -- corruption, or a stale page-cache read on that
+ * other connection's side, and either way silently. This is the guard
+ * `restoreSnapshot` runs before it touches `targetFile` at all.
+ *
+ * **Why two probes.** Confirmed directly, reproduced on demand: a write
+ * transaction held through the copy of `better-sqlite3` bundled inside
+ * `@prisma/adapter-better-sqlite3` -- the actual connection
+ * `LocalPrismaService` uses for every real query -- is invisible to a probe
+ * made through the root workspace copy (the one this file otherwise uses
+ * everywhere). SQLite's own documentation warns against linking two copies
+ * of the library into one process for exactly this reason: each keeps its
+ * own lock bookkeeping, so state changed through one is not guaranteed
+ * visible through the other, even against the same file, in the same
+ * process. A single-build check that happens to use the root copy therefore
+ * proves nothing about the connection that matters -- it can only ever
+ * catch another connection that also happens to hold its lock through that
+ * same build. So this function probes with the root copy first (cheap, no
+ * extra module to load) and, only if that reports no contention, also
+ * probes with the adapter's bundled copy (`loadAdapterBetterSqlite3Ctor`) --
+ * refusing if *either* reports `SQLITE_BUSY`. This directly closes the gap:
+ * a lock held through the adapter's build is now caught by the probe that
+ * shares its bookkeeping, not just by one that happens not to.
+ *
+ * Mechanism (identical for both probes, see `probeExclusiveAccess`): open a
+ * plain connection to `file` -- deliberately not through `openLocalDatabase`,
+ * which would itself try to force `journal_mode = DELETE`, an unwanted side
+ * effect for a connection whose only job here is to check, not to configure
+ * -- disable the busy-retry wait (`busy_timeout = 0`, so a conflict fails
+ * immediately instead of blocking this call for seconds), and attempt
+ * `BEGIN IMMEDIATE` followed by `COMMIT`. Under `DELETE` journal mode --
+ * which every live database file in this app is required to be in --
+ * `BEGIN IMMEDIATE` and `BEGIN EXCLUSIVE` are the same lock escalation (they
+ * only differ under WAL). A `SQLITE_BUSY` error from either statement,
+ * specifically, means some other connection using that same build currently
+ * holds a conflicting lock; it is turned into a refusal that names `file`
+ * and tells the caller to close it first.
+ *
+ * Only `SQLITE_BUSY` is treated as "in use." Any other failure while
+ * probing -- `file` not opening at all, or a write attempt failing because
+ * the file is corrupt -- is not a locking conflict and is deliberately left
+ * alone here: it is not this function's job to report, and the validation
+ * and preservation logic `restoreSnapshot` runs right after this check
+ * already handles a corrupt or unreadable target on its own, honestly. This
+ * check does one thing: tell an active conflicting connection, in either
+ * build, apart from every other reason `file` might be unusable.
+ *
+ * What this provably catches, now: another connection -- through EITHER
+ * `better-sqlite3` build live in this process -- that is genuinely
+ * mid-transaction against `file` at the moment this check runs, whether that
+ * transaction is reading or writing. An open write transaction on another
+ * connection already holds the RESERVED lock the matching-build probe needs,
+ * so its `BEGIN IMMEDIATE` itself fails immediately; an open read
+ * transaction holds a SHARED lock that is compatible with another connection
+ * also holding RESERVED, so `BEGIN IMMEDIATE` succeeds but the follow-up
+ * `COMMIT` -- which must escalate to EXCLUSIVE to finish -- fails instead.
+ * Either way this function throws, and the half-open probe transaction is
+ * rolled back before the probe connection is closed.
+ *
+ * What this does NOT catch, and structurally cannot, even with both builds
+ * probed: a connection that is open but idle -- constructed and never used
+ * yet, or simply between statements in autocommit mode -- holds no SQLite
+ * lock at all in `DELETE` journal mode, through either build, so no probe
+ * can see it and it will let the restore proceed. It also only checks at one
+ * instant, immediately before the restore begins; it does not hold the lock
+ * for the restore's duration, so a connection that opens and starts a
+ * transaction in the brief window between this check and `restoreSnapshot`'s
+ * final `renameSync` is not caught either. Neither gap is closable from
+ * user-space with SQLite's own locking primitives, through any number of
+ * builds -- they are exactly why `restoreSnapshot` also requires its caller
+ * to close its own connection to `file` first, as a required argument this
+ * function itself runs immediately before probing (see `restoreSnapshot`'s
+ * doc comment), rather than trusting a comment to be remembered.
+ */
+function assertExclusiveAccess(file: string): void {
+  const rootProbe = probeExclusiveAccess(Database, file)
+  if (rootProbe === 'busy') {
+    throw new Error(
+      `Refusing to restore over ${file}: another connection (the root better-sqlite3 build) is actively using it ` +
+        'right now. Close every open connection to this database before restoring.',
+    )
+  }
+
+  const adapterProbe = probeExclusiveAccess(loadAdapterBetterSqlite3Ctor(), file)
+  if (adapterProbe === 'busy') {
+    throw new Error(
+      `Refusing to restore over ${file}: another connection (the better-sqlite3 build bundled inside ` +
+        '@prisma/adapter-better-sqlite3, which is what LocalPrismaService actually runs queries on) is actively ' +
+        'using it right now. Close every open connection to this database before restoring.',
+    )
+  }
+}
+
+/**
+ * A caller-supplied action that closes every connection this process
+ * currently holds open to the restore target. `restoreSnapshot` calls this
+ * itself -- awaiting it fully -- immediately before its own lock probe (see
+ * `assertExclusiveAccess`), rather than trusting the caller to have closed
+ * it at some earlier point of their own choosing.
+ *
+ * **Why this exists, on top of the lock probe.** `assertExclusiveAccess`,
+ * even probing both `better-sqlite3` builds live in this process, has a gap
+ * it cannot close: a connection that is open but idle -- constructed and
+ * never used, or simply between statements in autocommit mode -- holds no
+ * SQLite lock at all, so no probe can see it. The actual guarantee a restore
+ * depends on is the application closing its own connection first. Task 3
+ * (`switchProfile`, `apps/desktop/src/main/local-api.ts`) already built and
+ * proved exactly that teardown, with a real OS-level lock, for profile
+ * switching. Requiring this callback -- and running it here, at the one
+ * moment that matters, rather than leaving the caller to remember to do it
+ * earlier -- turns "close your connection before calling this" from a
+ * paragraph in a comment into something the type checker refuses to compile
+ * without, and collapses the window between "closed" and "checked" to zero
+ * application code.
+ *
+ * **What this does NOT, and cannot, guarantee.** This is an attestation the
+ * caller runs, not a fact `restoreSnapshot` independently verifies: nothing
+ * stops a caller from passing a no-op, and nothing here can detect that.
+ * What changes is that skipping the close is now a visible, deliberate
+ * choice written at the call site, not an easy thing to simply forget --
+ * and, for a caller that wires up its real close function (as
+ * `LocalApiHandle.close` naturally is), the connection really is gone before
+ * the probe below ever runs.
+ */
+export type CloseExistingConnections = () => void | Promise<void>
 
 /**
  * Replaces `targetFile` with the contents of `snapshotPath`.
@@ -491,18 +725,15 @@ function assertExclusiveAccess(file: string): void {
  * restoring from a file that is not a valid SQLite database throws and
  * leaves `targetFile` untouched.
  *
- * If `targetFile` currently exists, this first requires exclusive access to
- * it (see `assertExclusiveAccess` for exactly what that does and does not
- * catch) and then preserves it (see `preserveTargetBeforeRestore`) into the
- * same directory as `snapshotPath`, under `databaseId`, so the restore is
- * itself undoable. If `targetFile` does not exist yet, there is no prior
- * state to protect or lock, so both steps are skipped rather than
- * fabricating an empty database to back up or check.
- *
- * **Callers must close their own connection to `targetFile` before calling
- * this.** The exclusive-access check above narrows the risk of overwriting a
- * database that is in use; it does not eliminate it -- see
- * `assertExclusiveAccess`'s doc comment for the gaps it cannot close.
+ * If `targetFile` currently exists, this first awaits `closeExistingConnections`
+ * (see that type's doc comment for what it does and does not guarantee),
+ * then requires exclusive access to it (see `assertExclusiveAccess` for
+ * exactly what that does and does not catch), then preserves it (see
+ * `preserveTargetBeforeRestore`) into the same directory as `snapshotPath`,
+ * under `databaseId`, so the restore is itself undoable. If `targetFile`
+ * does not exist yet, there is no prior state to protect, lock, or close a
+ * connection to, so all three steps are skipped rather than fabricating an
+ * empty database to back up or check.
  *
  * The replacement itself is atomic: `snapshotPath` is copied into a
  * temporary file in `targetFile`'s own directory (so the rename below stays
@@ -511,10 +742,17 @@ function assertExclusiveAccess(file: string): void {
  * temporary file is removed and `targetFile` is left exactly as it was --
  * a same-filesystem rename cannot leave `targetFile` half-old, half-new.
  */
-export function restoreSnapshot(snapshotPath: string, targetFile: string, databaseId: string, now: Date): void {
+export async function restoreSnapshot(
+  snapshotPath: string,
+  targetFile: string,
+  databaseId: string,
+  now: Date,
+  closeExistingConnections: CloseExistingConnections,
+): Promise<void> {
   assertValidDatabaseFile(snapshotPath, 'Cannot restore snapshot')
 
   if (existsSync(targetFile)) {
+    await closeExistingConnections()
     assertExclusiveAccess(targetFile)
     preserveTargetBeforeRestore(targetFile, dirname(snapshotPath), databaseId, now)
   }
