@@ -306,7 +306,7 @@ ${'note '.repeat(30)}
       expect(second.newCount).toBe(second.rows.length - 1)
     })
 
-    it('preview silently drops an unparsable CSV row without a warning (known gap, see report)', async () => {
+    it('preview surfaces a parser warning for an unparsable CSV row instead of silently dropping it', async () => {
       const bodyWithBadRow = [
         'Data;Descrição;Valor',
         '01/04/2026;Mercado Livre;-123,45',
@@ -320,12 +320,14 @@ ${'note '.repeat(30)}
         csvFile('extrato-com-erro.csv', bodyWithBadRow),
       )
 
-      // The malformed row is dropped, not surfaced as a warning -- unlike
+      // The malformed row is dropped but now surfaced as a warning, matching
       // the Banrisul/Cresol parsers, which report `line_parse_failed` /
-      // `block_parse_failed` for the equivalent case. See the coverage
-      // report for this as a defect found but deliberately not fixed here.
+      // `block_parse_failed` for the equivalent case.
       expect(r.rows).toHaveLength(2)
-      expect(r.parserWarnings).toEqual([])
+      const w = r.parserWarnings!.find((w) => w.code === 'invalid_amount')
+      expect(w).toBeDefined()
+      expect(w!.severity).toBe('warning')
+      expect(w!.rawLine).toContain('Linha Invalida')
     })
   })
 
@@ -440,7 +442,7 @@ ${'note '.repeat(30)}
       expect(second.newCount).toBe(second.rows.length - 1)
     })
 
-    it('preview silently drops an OFX transaction missing TRNAMT without a warning (known gap, see report)', async () => {
+    it('preview surfaces a parser warning for an OFX transaction missing TRNAMT instead of silently dropping it', async () => {
       const badBlock = [
         '<STMTTRN>',
         '<TRNTYPE>DEBIT',
@@ -458,10 +460,13 @@ ${'note '.repeat(30)}
         ofxFile('extrato-com-erro.ofx', bodyWithBadBlock),
       )
 
-      // Same shape of gap as CSV above: the block without <TRNAMT> is
-      // dropped silently instead of producing a parser warning.
+      // Same shape of fix as CSV above: the block without <TRNAMT> is
+      // dropped but now produces a parser warning.
       expect(r.rows).toHaveLength(2)
-      expect(r.parserWarnings).toEqual([])
+      const w = r.parserWarnings!.find((w) => w.code === 'missing_amount')
+      expect(w).toBeDefined()
+      expect(w!.severity).toBe('warning')
+      expect(w!.rawBlock).toContain('SEM VALOR')
     })
   })
 

@@ -15,7 +15,9 @@ import { BadRequestException } from '@nestjs/common'
 import { ImportBatchFormat, type ImportParserWarning } from '@wimm/shared'
 import type { ParsedLedgerRow } from './parsers/csv-parser'
 import { parseCsvBuffer } from './parsers/csv-parser'
+import { mapCsvWarningsForPreview } from './map-csv-parser-warnings'
 import { parseOfxBuffer } from './parsers/ofx-parser'
+import { mapOfxWarningsForPreview } from './map-ofx-parser-warnings'
 import { canParseBanrisulCreditCardPdf } from './parsers/banrisul-cc/banrisul-layout-guard'
 import { parseBanrisulStatementFromText } from './parsers/banrisul-cc/parse-statement-text'
 import { banrisulStatementToLedgerRows } from './parsers/banrisul-cc/to-ledger-rows'
@@ -90,20 +92,20 @@ const csvParser: ImportFormatParser = {
   format: ImportBatchFormat.CSV,
   extensions: ['csv'],
   canHandle: () => ({ ok: true }),
-  parse: (input) => ({
-    rows: parseCsvBuffer(input.buffer),
-    warnings: [],
-  }),
+  parse: (input) => {
+    const { rows, warnings } = parseCsvBuffer(input.buffer)
+    return { rows, warnings: mapCsvWarningsForPreview(warnings) }
+  },
 }
 
 const ofxParser: ImportFormatParser = {
   format: ImportBatchFormat.OFX,
   extensions: ['ofx', 'qfx'],
   canHandle: () => ({ ok: true }),
-  parse: (input) => ({
-    rows: parseOfxBuffer(input.buffer),
-    warnings: [],
-  }),
+  parse: (input) => {
+    const { rows, warnings } = parseOfxBuffer(input.buffer)
+    return { rows, warnings: mapOfxWarningsForPreview(warnings) }
+  },
 }
 
 const banrisulCreditCardParser: ImportFormatParser = {
