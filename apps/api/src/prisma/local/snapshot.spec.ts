@@ -1,6 +1,6 @@
 import * as fs from 'fs'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
-import { basename, join } from 'path'
+import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { basename, dirname, join } from 'path'
 // Same import form as open-local-database.ts: this package has
 // `allowSyntheticDefaultImports` but not `esModuleInterop`, so a default
 // import typechecks but is `undefined` at runtime for this CommonJS module.
@@ -504,6 +504,109 @@ describe('snapshotDatabase / listSnapshots / restoreSnapshot', () => {
     // No preservation copy either -- the failure happened before
     // assertExclusiveAccess or preserveTargetBeforeRestore ever ran.
     expect(listSnapshots(BACKUP_DIR, 'wimm.db')).toHaveLength(1)
+  })
+
+  // --- Stage 4 task 4.2: the atomic-write pattern itself, exercised for real ---
+  //
+  // Every restoreSnapshot test above that touches renameSync stubs it to
+  // THROW -- proving the pattern fails safely, on macOS. Nothing so far runs
+  // the genuine, unmocked renameSync and proves the pattern is what it
+  // claims to be: atomic. The two tests below do, and would fail if
+  // restoreSnapshot's final replacement were changed to write DB_FILE
+  // directly instead of temp-then-rename -- see the task report's mutation
+  // proof, which breaks the pattern this exact way and confirms these tests
+  // catch it (the stubbed-throw tests above do not: they never reach real
+  // rename semantics at all).
+  //
+  // What is deliberately NOT re-tested here: that a same-filesystem
+  // `rename()` is atomic in the first place -- POSIX guarantees that
+  // outright, and no unit test on this machine can prove or disprove it for
+  // Windows. See the module doc comment and the task report for what
+  // genuinely differs there (an open handle -- e.g. a virus scanner -- can
+  // make Windows' renameSync over an existing path fail in a way POSIX never
+  // does) and why only running this same suite on a real Windows machine in
+  // CI can answer that.
+
+  it('replaces the target only via a real renameSync from a fresh temp file in the target\'s own directory -- never by writing the target path directly', async () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+
+    const realCopyFileSync = fs.copyFileSync
+    const realRenameSync = fs.renameSync
+    const copyDestinations: string[] = []
+    const renameCalls: Array<{ from: string; to: string }> = []
+
+    const copySpy = jest
+      .spyOn(fs, 'copyFileSync')
+      .mockImplementation((src: fs.PathLike, dest: fs.PathLike, mode?: number) => {
+        copyDestinations.push(String(dest))
+        return realCopyFileSync(src, dest, mode)
+      })
+    const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      renameCalls.push({ from: String(from), to: String(to) })
+      return realRenameSync(from, to)
+    })
+
+    try {
+      await restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:20.000Z'), NO_OP_CLOSE)
+    } finally {
+      copySpy.mockRestore()
+      renameSpy.mockRestore()
+    }
+
+    // The live target is never a copy destination directly -- every copy in
+    // this path lands either in the backup directory or in a temp file.
+    expect(copyDestinations).not.toContain(DB_FILE)
+
+    // Exactly one renameSync call replaces the target, and its source is a
+    // temp file sitting in the SAME directory as the target (required for
+    // the rename to stay on one filesystem and be atomic at all). A "write
+    // directly over the target" mutation copies/writes straight into
+    // DB_FILE and never calls renameSync against it, so this assertion
+    // fails immediately under it.
+    const targetRenames = renameCalls.filter((call) => call.to === DB_FILE)
+    expect(targetRenames).toHaveLength(1)
+    expect(targetRenames[0].from).toContain('.restoring-')
+    expect(dirname(targetRenames[0].from)).toBe(dirname(DB_FILE))
+  })
+
+  it('keeps an already-open reader isolated from an in-flight restore (real renameSync, no mocking) -- the property that actually distinguishes an atomic rename from an in-place write', async () => {
+    createDatabase(DB_FILE, ['alpha'])
+    const snapshotPath = snapshotDatabase(DB_FILE, BACKUP_DIR, 'wimm.db', new Date('2026-01-01T00:00:00.000Z'))
+    insertRow(DB_FILE, 'beta')
+    const before = readFileSync(DB_FILE)
+
+    // A genuine second file descriptor to the live target, opened before the
+    // restore and held open throughout -- not a mock, and deliberately NOT a
+    // SQLite connection: assertExclusiveAccess's lock probe only detects a
+    // held SQLite lock (see that function's doc comment), so a plain
+    // OS-level open handle like this one is invisible to it, exactly the
+    // documented blind spot. That is also exactly the shape of the genuine
+    // Windows hazard this task names: another program -- a virus scanner, a
+    // backup tool, a leftover handle -- holding this same kind of plain read
+    // handle open. POSIX does not care; Windows' rename-over-an-open-target
+    // can refuse where POSIX would not. That difference cannot be produced
+    // on this machine -- running this exact test on windows-latest in CI is
+    // what answers it.
+    const fd = openSync(DB_FILE, 'r')
+
+    try {
+      await restoreSnapshot(snapshotPath, DB_FILE, 'wimm.db', new Date('2026-01-01T00:00:20.000Z'), NO_OP_CLOSE)
+
+      // The old descriptor still sees the OLD, complete bytes -- not
+      // truncated, not the restored content, not a mix of both. A "write
+      // directly over the target" mutation truncates and rewrites this same
+      // inode in place, so this same read would observe the new (restored)
+      // content instead and this assertion would fail.
+      const buffer = Buffer.alloc(before.length)
+      readSync(fd, buffer, 0, buffer.length, 0)
+      expect(buffer.equals(before)).toBe(true)
+    } finally {
+      closeSync(fd)
+    }
+
+    // A fresh open sees the restored (snapshot) content.
+    expect(readRows(DB_FILE)).toEqual(['alpha'])
   })
 
   // Item 3: assertValidDatabaseFile's logic must be reachable from outside

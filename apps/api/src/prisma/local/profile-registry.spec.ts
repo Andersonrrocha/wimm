@@ -1,6 +1,6 @@
 import * as fs from 'fs'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
 import {
   CURRENT_REGISTRY_VERSION,
   PROFILE_REGISTRY_WRITTEN_BY_NEWER_BUILD_CODE,
@@ -586,6 +586,105 @@ describe('profile registry (listProfiles / createProfile / touchProfile / profil
 
       const leftovers = readdirSync(ROOT).filter((name) => name.includes('.tmp'))
       expect(leftovers).toEqual([])
+    })
+
+    // The tests above stub `renameSync` to throw -- they prove the pattern
+    // fails safely, but nothing so far exercises the REAL `renameSync` and
+    // proves the pattern is what it claims to be: atomic. Everything below
+    // this comment runs the genuine, unmocked write path and would fail if
+    // `writeRegistry` were changed to write `REGISTRY_FILE` directly instead
+    // of temp-then-rename -- see the task report's mutation proof, which
+    // breaks the pattern this exact way and confirms these two tests catch
+    // it (the two above, which only stub failures, do not).
+    //
+    // What is deliberately NOT re-tested here: that a same-filesystem
+    // `rename()` is atomic in the first place. POSIX guarantees that
+    // outright, and no unit test on this machine can prove or disprove it
+    // for Windows -- see the module doc comment and the task report for what
+    // genuinely differs there (an open handle, e.g. a virus scanner, making
+    // `renameSync` over an existing path fail in a way POSIX never does) and
+    // why only running this same suite on a real Windows machine in CI can
+    // answer that.
+
+    it('replaces the registry only via a real renameSync from a fresh temp file in the same directory -- never by writing the target path directly', () => {
+      createProfile(ROOT, 'Alice', 'alice-id', new Date('2026-01-01T00:00:00.000Z'))
+
+      const realWriteFileSync = fs.writeFileSync
+      const realRenameSync = fs.renameSync
+      const writeDestinations: string[] = []
+      const renameCalls: Array<{ from: string; to: string }> = []
+
+      const writeSpy = jest
+        .spyOn(fs, 'writeFileSync')
+        .mockImplementation((...args: Parameters<typeof fs.writeFileSync>) => {
+          writeDestinations.push(String(args[0]))
+          return realWriteFileSync(...args)
+        })
+      const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        renameCalls.push({ from: String(from), to: String(to) })
+        return realRenameSync(from, to)
+      })
+
+      try {
+        touchProfile(ROOT, 'alice-id', new Date('2026-02-01T00:00:00.000Z'))
+      } finally {
+        writeSpy.mockRestore()
+        renameSpy.mockRestore()
+      }
+
+      // The new content lands in a temp file, never in REGISTRY_FILE itself.
+      expect(writeDestinations).toHaveLength(1)
+      expect(writeDestinations[0]).not.toBe(REGISTRY_FILE)
+      expect(writeDestinations[0]).toMatch(/\.profiles\.json\..*\.tmp$/)
+
+      // The temp file sits in the SAME directory as the target -- required
+      // for the following rename to be a same-filesystem, atomic swap.
+      expect(dirname(writeDestinations[0])).toBe(dirname(REGISTRY_FILE))
+
+      // Exactly one renameSync call moves that temp file onto the real
+      // target. A "write directly over the target" mutation calls
+      // writeFileSync(REGISTRY_FILE, ...) directly and never calls
+      // renameSync at all, so this assertion fails immediately under it.
+      expect(renameCalls).toEqual([{ from: writeDestinations[0], to: REGISTRY_FILE }])
+    })
+
+    it('keeps an already-open reader isolated from an in-flight write (real renameSync, no mocking) -- the property that actually distinguishes an atomic rename from an in-place write', () => {
+      createProfile(ROOT, 'Alice', 'alice-id', new Date('2026-01-01T00:00:00.000Z'))
+      const before = readFileSync(REGISTRY_FILE, 'utf8')
+
+      // A genuine second file descriptor, opened before the write and held
+      // open throughout it -- not a mock. On POSIX, renaming a new file
+      // over REGISTRY_FILE only swaps the directory entry: this descriptor
+      // keeps referencing the old (now-unlinked) inode's data, completely
+      // unaffected by whatever replaces the name. This is exactly the
+      // property an atomic rename buys and an in-place write does not; see
+      // the mutation proof below for why this test fails under the latter.
+      //
+      // It is also the shape of the genuine Windows hazard the task names:
+      // another program (a virus scanner, a backup tool, a leftover handle)
+      // holding this same kind of plain read handle open. POSIX does not
+      // care; Windows' rename-over-an-open-target can refuse where POSIX
+      // would not. That difference cannot be produced on this machine --
+      // running this exact test on windows-latest in CI is what answers it.
+      const fd = openSync(REGISTRY_FILE, 'r')
+
+      try {
+        touchProfile(ROOT, 'alice-id', new Date('2026-02-01T00:00:00.000Z'))
+
+        // The old descriptor still sees the OLD, complete content -- not
+        // truncated, not the new content, not a mix of both. A "write
+        // directly over the target" mutation truncates and rewrites this
+        // same inode in place, so this same read would observe the NEW
+        // content instead and this assertion would fail.
+        const buffer = Buffer.alloc(Buffer.byteLength(before, 'utf8'))
+        readSync(fd, buffer, 0, buffer.length, 0)
+        expect(buffer.toString('utf8')).toBe(before)
+      } finally {
+        closeSync(fd)
+      }
+
+      // A fresh open sees the new content.
+      expect(listProfiles(ROOT).find((p) => p.id === 'alice-id')!.lastOpenedAt).toBe('2026-02-01T00:00:00.000Z')
     })
   })
 })
