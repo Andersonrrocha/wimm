@@ -4,6 +4,7 @@ import {
   ImportBatchFormat,
   SourceType,
   TransactionKind,
+  toCents,
 } from '@wimm/shared'
 import { ImportsService } from './imports.service'
 import { PrismaService } from '../prisma/prisma.service'
@@ -242,6 +243,226 @@ ${'note '.repeat(30)}
     expect(spy).toHaveBeenCalledTimes(1)
     expect(spy).toHaveBeenCalledWith(text)
     spy.mockRestore()
+  })
+
+  describe('CSV end-to-end through preview', () => {
+    // pt-BR conventions -- `;` delimiter, `1.234,56` thousands-dot +
+    // decimal-comma, DD/MM/YYYY dates -- are more representative of this
+    // app's users than a synthetic `a,b,c` file. The heuristic in
+    // `parseFlexibleAmount`/`parseFlexibleDate` (Task 1, cbca8af) reads both
+    // rows correctly with no explicit `decimalSeparator`/`order`, matching
+    // what the CSV parser actually calls today.
+    const csvBody = [
+      'Data;Descrição;Valor',
+      '01/04/2026;Mercado Livre;-123,45',
+      '02/04/2026;Salário;1.234,56',
+    ].join('\n')
+
+    function csvFile(
+      name = 'extrato.csv',
+      body = csvBody,
+    ): Express.Multer.File {
+      return {
+        originalname: name,
+        buffer: Buffer.from(body, 'utf8'),
+      } as Express.Multer.File
+    }
+
+    it('preview parses a pt-BR CSV buffer into rows with cents-exact amounts', async () => {
+      const r = await service.preview('user-1', 'src-1', csvFile())
+
+      expect(r.format).toBe(ImportBatchFormat.CSV)
+      expect(r.rows).toHaveLength(2)
+
+      expect(r.rows[0].kind).toBe('EXPENSE')
+      expect(r.rows[0].description).toBe('Mercado Livre')
+      expect(r.rows[0].occurredAt).toMatch(/^2026-04-01/)
+      // Amounts asserted in integer cents, not floats: a `'123.45'` string
+      // comparison would still pass even if pt-BR decimal-comma parsing had
+      // silently produced a 1000x error that happened to render the same.
+      expect(toCents(r.rows[0].amount)).toBe(12345)
+
+      expect(r.rows[1].kind).toBe('INCOME')
+      expect(r.rows[1].description).toBe('Salário')
+      expect(r.rows[1].occurredAt).toMatch(/^2026-04-02/)
+      expect(toCents(r.rows[1].amount)).toBe(123456)
+
+      expect(r.parserWarnings).toEqual([])
+    })
+
+    it('preview marks a CSV row as a duplicate once its fingerprint already exists', async () => {
+      const first = await service.preview('user-1', 'src-1', csvFile())
+      expect(first.rows[0].isDuplicate).toBe(false)
+
+      const fp = first.rows[0].fingerprint
+      prismaMock.transaction.findMany.mockResolvedValueOnce([
+        { fingerprint: fp },
+      ])
+
+      const second = await service.preview('user-1', 'src-1', csvFile())
+
+      expect(second.rows[0].isDuplicate).toBe(true)
+      expect(second.duplicateCount).toBe(1)
+      expect(second.newCount).toBe(second.rows.length - 1)
+    })
+
+    it('preview silently drops an unparsable CSV row without a warning (known gap, see report)', async () => {
+      const bodyWithBadRow = [
+        'Data;Descrição;Valor',
+        '01/04/2026;Mercado Livre;-123,45',
+        '03/04/2026;Linha Invalida;abc',
+        '02/04/2026;Salário;1.234,56',
+      ].join('\n')
+
+      const r = await service.preview(
+        'user-1',
+        'src-1',
+        csvFile('extrato-com-erro.csv', bodyWithBadRow),
+      )
+
+      // The malformed row is dropped, not surfaced as a warning -- unlike
+      // the Banrisul/Cresol parsers, which report `line_parse_failed` /
+      // `block_parse_failed` for the equivalent case. See the coverage
+      // report for this as a defect found but deliberately not fixed here.
+      expect(r.rows).toHaveLength(2)
+      expect(r.parserWarnings).toEqual([])
+    })
+  })
+
+  describe('OFX end-to-end through preview', () => {
+    // A minimal but realistic OFX 1.02 SGML export -- header block, SONRS
+    // sign-on, and a BANKTRANLIST with two STMTTRN blocks -- matching the
+    // structure `parseOfxBuffer` actually reads (DTPOSTED/TRNAMT/MEMO/NAME),
+    // rather than a bare `<STMTTRN>` fragment.
+    const ofxBody = [
+      'OFXHEADER:100',
+      'DATA:OFXSGML',
+      'VERSION:102',
+      'SECURITY:NONE',
+      'ENCODING:USASCII',
+      'CHARSET:1252',
+      'COMPRESSION:NONE',
+      'OLDFILEUID:NONE',
+      'NEWFILEUID:NONE',
+      '',
+      '<OFX>',
+      '<SIGNONMSGSRSV1>',
+      '<SONRS>',
+      '<STATUS>',
+      '<CODE>0',
+      '<SEVERITY>INFO',
+      '</STATUS>',
+      '<DTSERVER>20260402120000',
+      '<LANGUAGE>POR',
+      '</SONRS>',
+      '</SIGNONMSGSRSV1>',
+      '<BANKMSGSRSV1>',
+      '<STMTTRNRS>',
+      '<TRNUID>1',
+      '<STATUS>',
+      '<CODE>0',
+      '<SEVERITY>INFO',
+      '</STATUS>',
+      '<STMTRS>',
+      '<CURDEF>BRL',
+      '<BANKACCTFROM>',
+      '<BANKID>0001',
+      '<ACCTID>1234567',
+      '<ACCTTYPE>CHECKING',
+      '</BANKACCTFROM>',
+      '<BANKTRANLIST>',
+      '<DTSTART>20260401120000',
+      '<DTEND>20260402120000',
+      '<STMTTRN>',
+      '<TRNTYPE>DEBIT',
+      '<DTPOSTED>20260401120000',
+      '<TRNAMT>-123.45',
+      '<FITID>2026040100001',
+      '<MEMO>PIX DEBITO PARA FULANO',
+      '</STMTTRN>',
+      '<STMTTRN>',
+      '<TRNTYPE>CREDIT',
+      '<DTPOSTED>20260402120000',
+      '<TRNAMT>1234.56',
+      '<FITID>2026040200002',
+      '<MEMO>SALARIO',
+      '</STMTTRN>',
+      '</BANKTRANLIST>',
+      '</STMTRS>',
+      '</STMTTRNRS>',
+      '</BANKMSGSRSV1>',
+      '</OFX>',
+      '',
+    ].join('\n')
+
+    function ofxFile(
+      name = 'extrato.ofx',
+      body = ofxBody,
+    ): Express.Multer.File {
+      return {
+        originalname: name,
+        buffer: Buffer.from(body, 'utf8'),
+      } as Express.Multer.File
+    }
+
+    it('preview parses a real OFX buffer into rows with cents-exact amounts', async () => {
+      const r = await service.preview('user-1', 'src-1', ofxFile())
+
+      expect(r.format).toBe(ImportBatchFormat.OFX)
+      expect(r.rows).toHaveLength(2)
+
+      expect(r.rows[0].kind).toBe('EXPENSE')
+      expect(r.rows[0].description).toBe('PIX DEBITO PARA FULANO')
+      expect(r.rows[0].occurredAt).toMatch(/^2026-04-01/)
+      expect(toCents(r.rows[0].amount)).toBe(12345)
+
+      expect(r.rows[1].kind).toBe('INCOME')
+      expect(r.rows[1].description).toBe('SALARIO')
+      expect(r.rows[1].occurredAt).toMatch(/^2026-04-02/)
+      expect(toCents(r.rows[1].amount)).toBe(123456)
+
+      expect(r.parserWarnings).toEqual([])
+    })
+
+    it('preview marks an OFX row as a duplicate once its fingerprint already exists', async () => {
+      const first = await service.preview('user-1', 'src-1', ofxFile())
+      expect(first.rows[0].isDuplicate).toBe(false)
+
+      const fp = first.rows[0].fingerprint
+      prismaMock.transaction.findMany.mockResolvedValueOnce([
+        { fingerprint: fp },
+      ])
+
+      const second = await service.preview('user-1', 'src-1', ofxFile())
+
+      expect(second.rows[0].isDuplicate).toBe(true)
+      expect(second.duplicateCount).toBe(1)
+      expect(second.newCount).toBe(second.rows.length - 1)
+    })
+
+    it('preview silently drops an OFX transaction missing TRNAMT without a warning (known gap, see report)', async () => {
+      const badBlock = [
+        '<STMTTRN>',
+        '<TRNTYPE>DEBIT',
+        '<DTPOSTED>20260403120000',
+        '<FITID>2026040300003',
+        '<MEMO>SEM VALOR',
+        '</STMTTRN>',
+        '</BANKTRANLIST>',
+      ].join('\n')
+      const bodyWithBadBlock = ofxBody.replace('</BANKTRANLIST>', badBlock)
+
+      const r = await service.preview(
+        'user-1',
+        'src-1',
+        ofxFile('extrato-com-erro.ofx', bodyWithBadBlock),
+      )
+
+      // Same shape of gap as CSV above: the block without <TRNAMT> is
+      // dropped silently instead of producing a parser warning.
+      expect(r.rows).toHaveLength(2)
+      expect(r.parserWarnings).toEqual([])
+    })
   })
 
   describe('commit', () => {
@@ -1050,6 +1271,136 @@ ${'note '.repeat(30)}
       })
 
       expect(r2.skippedDuplicates).toBe(1)
+    })
+
+    it('links the created transaction to the ImportBatch and skips a duplicate re-commit for CSV', async () => {
+      const fpSeen = new Set<string>()
+      let createdData: Record<string, unknown> | undefined
+      prismaMock.$transaction.mockImplementation(
+        async (fn: (tx: object) => Promise<unknown>) => {
+          const tx = {
+            importBatch: {
+              create: jest.fn().mockResolvedValue({ id: 'batch-csv-1' }),
+            },
+            transaction: {
+              findFirst: jest.fn().mockImplementation((args: { where: { fingerprint?: string } }) => {
+                const fp = args.where.fingerprint
+                return fp && fpSeen.has(fp) ? { id: 'exists' } : null
+              }),
+              findMany: jest.fn().mockResolvedValue([]),
+              create: jest.fn().mockImplementation((args: { data: Record<string, unknown> }) => {
+                createdData = args.data
+                const fp = args.data.fingerprint as string | undefined
+                if (fp) fpSeen.add(fp)
+                return {}
+              }),
+            },
+            source: {
+              findFirst: jest.fn().mockResolvedValue({
+                type: SourceType.BANK_ACCOUNT,
+                closingDay: null,
+                dueDay: null,
+              }),
+            },
+            category: { findFirst: jest.fn() },
+          }
+          return fn(tx)
+        },
+      )
+
+      const dto = {
+        sourceId: 'src-1',
+        fileName: 'extrato.csv',
+        format: ImportBatchFormat.CSV,
+        rows: [
+          {
+            occurredAt: '2026-04-01T00:00:00.000Z',
+            kind: TransactionKind.EXPENSE,
+            amount: 123.45,
+            description: 'Mercado Livre',
+          },
+        ],
+      }
+
+      const first = await service.commit('user-1', dto)
+      expect(first.importBatchId).toBe('batch-csv-1')
+      expect(first.created).toBe(1)
+      expect(createdData).toMatchObject({
+        importBatchId: 'batch-csv-1',
+        amountCents: 12345,
+      })
+
+      const second = await service.commit('user-1', {
+        ...dto,
+        fileName: 'extrato-again.csv',
+      })
+      expect(second.skippedDuplicates).toBe(1)
+      expect(second.created).toBe(0)
+    })
+
+    it('links the created transaction to the ImportBatch and skips a duplicate re-commit for OFX', async () => {
+      const fpSeen = new Set<string>()
+      let createdData: Record<string, unknown> | undefined
+      prismaMock.$transaction.mockImplementation(
+        async (fn: (tx: object) => Promise<unknown>) => {
+          const tx = {
+            importBatch: {
+              create: jest.fn().mockResolvedValue({ id: 'batch-ofx-1' }),
+            },
+            transaction: {
+              findFirst: jest.fn().mockImplementation((args: { where: { fingerprint?: string } }) => {
+                const fp = args.where.fingerprint
+                return fp && fpSeen.has(fp) ? { id: 'exists' } : null
+              }),
+              findMany: jest.fn().mockResolvedValue([]),
+              create: jest.fn().mockImplementation((args: { data: Record<string, unknown> }) => {
+                createdData = args.data
+                const fp = args.data.fingerprint as string | undefined
+                if (fp) fpSeen.add(fp)
+                return {}
+              }),
+            },
+            source: {
+              findFirst: jest.fn().mockResolvedValue({
+                type: SourceType.BANK_ACCOUNT,
+                closingDay: null,
+                dueDay: null,
+              }),
+            },
+            category: { findFirst: jest.fn() },
+          }
+          return fn(tx)
+        },
+      )
+
+      const dto = {
+        sourceId: 'src-1',
+        fileName: 'extrato.ofx',
+        format: ImportBatchFormat.OFX,
+        rows: [
+          {
+            occurredAt: '2026-04-01T00:00:00.000Z',
+            kind: TransactionKind.EXPENSE,
+            amount: 123.45,
+            description: 'PIX DEBITO PARA FULANO',
+          },
+        ],
+      }
+
+      const first = await service.commit('user-1', dto)
+      expect(first.importBatchId).toBe('batch-ofx-1')
+      expect(first.created).toBe(1)
+      expect(createdData).toMatchObject({
+        importBatchId: 'batch-ofx-1',
+        amountCents: 12345,
+      })
+
+      const second = await service.commit('user-1', {
+        ...dto,
+        fileName: 'extrato-again.ofx',
+      })
+      expect(second.skippedDuplicates).toBe(1)
+      expect(second.created).toBe(0)
     })
   })
 
