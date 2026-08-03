@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { Injectable, Logger } from '@nestjs/common'
+import type { AiProvider } from './ai-provider.interface'
 import type {
   AiCategorizeCandidate,
   AiCategorizeInput,
@@ -21,10 +22,18 @@ const MIN_CONFIDENCE = 0.6
  *
  * Failure mode: callers wrap in try/catch — anything thrown here means the
  * row stays unmatched, no badge in the UI, no error to the user.
+ *
+ * `implements AiProvider` (Stage 3 of the desktop completion program) is the
+ * only change this class carries for the contract: `categorizeBatch`'s
+ * signature already matched `AiProvider` exactly, so nothing about its
+ * behavior moved -- `id` is new, but it is a plain constant nothing reads
+ * except `AiProviderRegistry` (`ai-provider.registry.ts`).
  */
 @Injectable()
-export class AnthropicCategorizerService {
+export class AnthropicCategorizerService implements AiProvider {
   private readonly logger = new Logger(AnthropicCategorizerService.name)
+
+  readonly id = 'anthropic' as const
 
   async categorizeBatch(args: {
     apiKey: string

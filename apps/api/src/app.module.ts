@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config'
 import { APP_GUARD } from '@nestjs/core'
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler'
 import { AiModule } from './ai/ai.module'
+import { HostedAiModule } from './ai/hosted/hosted-ai.module'
 import { AppController } from './app.controller'
 import { AppService } from './app.service'
 import { AuthModule } from './auth/auth.module'
@@ -35,6 +36,11 @@ import { UsersModule } from './users/users.module'
     RecurrencesModule,
     ReportsModule,
     AiModule,
+    // Hosted-only: see `HostedAiModule`'s doc comment. Never imported by
+    // `app.local.module.ts` -- that is the composition choice Stage 3 of the
+    // desktop completion program builds, checked at build level by
+    // `scripts/verify-ai-local-composition.ts`.
+    HostedAiModule,
   ],
   controllers: [AppController],
   providers: [
