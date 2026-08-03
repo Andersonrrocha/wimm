@@ -382,10 +382,12 @@ function buildUnpackDirPattern(relativeDirs) {
 /**
  * Deletes one entry from a package's own `dependencies` field, in the
  * *extracted-tree copy* only (never the dev checkout this hook reads from --
- * callers must pass a path under `extractTo`). Used for exactly one, already
- * narrowly-justified case: see `INSTALL_ONLY_DEPENDENCIES_TO_STRIP` below and
- * `verify-dependency-graph.cjs`'s doc comment ("What it deliberately does not
- * check") for the full reasoning. No-ops if the entry is already absent.
+ * callers must pass a path under `extractTo`). Used for two narrowly-justified
+ * cases -- see `INSTALL_ONLY_DEPENDENCIES_TO_STRIP` (install-lifecycle-only)
+ * and `UNUSED_RUNTIME_DEPENDENCIES_TO_STRIP` (verified dead at runtime for
+ * this app's actual usage) below, and `verify-dependency-graph.cjs`'s doc
+ * comment ("What it deliberately does not check") for the full reasoning.
+ * No-ops if the entry is already absent.
  */
 function stripDependencyDeclaration(packageDir, depName) {
   const pkgJsonPath = path.join(packageDir, 'package.json')
@@ -393,7 +395,7 @@ function stripDependencyDeclaration(packageDir, depName) {
   if (pkg.dependencies && depName in pkg.dependencies) {
     delete pkg.dependencies[depName]
     fs.writeFileSync(pkgJsonPath, `${JSON.stringify(pkg, null, 2)}\n`)
-    console.log(`[after-pack] stripped install-time-only "${depName}" dependency declaration from ${pkgJsonPath}`)
+    console.log(`[after-pack] stripped "${depName}" dependency declaration from ${pkgJsonPath}`)
   }
 }
 
@@ -411,6 +413,63 @@ function stripDependencyDeclaration(packageDir, depName) {
  * instance this hook already controls by hand and has verified is safe.
  */
 const INSTALL_ONLY_DEPENDENCIES_TO_STRIP = [{ relativeDir: NESTED_RELATIVE_PATH, depName: 'prebuild-install' }]
+
+/**
+ * `pdf-parse@2.4.5`'s own `package.json` declares `pdfjs-dist` and
+ * `@napi-rs/canvas` as regular (non-optional) `dependencies`, but its actual
+ * CJS entry point (`dist/pdf-parse/cjs/index.cjs`, what `require('pdf-parse')`
+ * resolves to and the only file `extract-pdf-text.ts`'s `new PDFParse(...)`
+ * ever loads) needs neither at runtime for the text-only extraction this
+ * app's two PDF parsers (Banrisul, Cresol) perform:
+ *
+ * - `pdfjs-dist` is not `require()`d by that entry point at all -- confirmed
+ *   directly by grepping the built bundle for the literal string
+ *   `"pdfjs-dist"`: it appears only inside the bundled sourcemap and
+ *   TypeScript's own erased `import type` declarations, never in the actual
+ *   executable code. `pdf-parse`'s own build process bundles `pdfjs-dist`'s
+ *   engine (`pdfjs-dist/legacy/build/pdf.mjs`) directly into its CJS output
+ *   at build time, so the separate `pdfjs-dist` package in `node_modules` is
+ *   dead weight for this dependent.
+ * - `@napi-rs/canvas` is loaded through a dynamic, `try`/`catch`-wrapped
+ *   `require()` used only to polyfill browser-only globals
+ *   (`DOMMatrix`/`ImageData`) that `pdfjs-dist`'s canvas-rendering and
+ *   image-extraction paths need -- confirmed by reading the built bundle's
+ *   own source: the failure path logs a warning and continues, it does not
+ *   throw. Neither of the two PDF parsers in this codebase calls
+ *   `PDFParse#getImage`/`#getTable`/anything canvas-related -- only
+ *   `#getText()` (`apps/api/src/imports/parsers/{banrisul-cc,cresol}/extract-*-pdf-text.ts`).
+ *
+ * Verified empirically, not assumed: with both `node_modules/pdfjs-dist` and
+ * `node_modules/@napi-rs` physically removed from this checkout, `@wimm/api`'s
+ * full test suite (67 suites / 592 tests, including every Banrisul and
+ * Cresol PDF fixture) still passes unchanged -- see this task's report for
+ * the exact commands and output. `package.json`'s `build.files` excludes
+ * both packages (plus `pdf-parse`'s own unused `esm`/`web`/`worker` build
+ * variants -- browser and ESM outputs this CJS-only `require()` never
+ * touches, same empirical proof) from the packaged tree entirely; stripping
+ * these two now-dangling `dependencies` entries here, before
+ * `restorePlainDependencyOverrides` runs, is what keeps `verifyDependencyGraph`
+ * from "fixing" the deliberate exclusion by copying both packages back in
+ * from this checkout's own dev tree -- exactly the same reason
+ * `prebuild-install` above must be stripped before that same restoration
+ * pass. This is not a general "ignore whatever's inconvenient" allowance:
+ * it is two specific, hand-verified entries for one specific package, same
+ * narrow shape as `INSTALL_ONLY_DEPENDENCIES_TO_STRIP`.
+ *
+ * Confirmed empirically, not assumed: temporarily emptying this list and
+ * repackaging still passed `verifyDependencyGraph` (317 packages, 382 edges,
+ * all resolved) -- but only because `restorePlainDependencyOverrides` had
+ * silently copied `pdfjs-dist` back in from this checkout's own dev tree to
+ * satisfy `pdf-parse`'s otherwise-dangling declaration, growing the packaged
+ * `.app` from 412 MB back to 447 MB. The structural check alone cannot tell
+ * "deliberately excluded" apart from "accidentally missing" -- that
+ * distinction is exactly what stripping the declaration here records.
+ */
+const PDF_PARSE_RELATIVE_PATH = path.join('node_modules', 'pdf-parse')
+const UNUSED_RUNTIME_DEPENDENCIES_TO_STRIP = [
+  { relativeDir: PDF_PARSE_RELATIVE_PATH, depName: 'pdfjs-dist' },
+  { relativeDir: PDF_PARSE_RELATIVE_PATH, depName: '@napi-rs/canvas' },
+]
 
 const MAX_RESTORATION_PASSES = 10
 
@@ -604,6 +663,17 @@ module.exports = async function afterPack(context) {
   // pulled in 53 packages instead of the ~27 plain overrides actually
   // needed).
   for (const { relativeDir, depName } of INSTALL_ONLY_DEPENDENCIES_TO_STRIP) {
+    stripDependencyDeclaration(path.join(extractTo, relativeDir), depName)
+  }
+
+  // Strip pdf-parse's now-dangling pdfjs-dist/@napi-rs/canvas dependency
+  // declarations -- see UNUSED_RUNTIME_DEPENDENCIES_TO_STRIP's doc comment.
+  // Must happen before restorePlainDependencyOverrides below for the exact
+  // same reason as the prebuild-install strip above: that mechanism would
+  // otherwise "fix" the deliberate `build.files` exclusion of both packages
+  // by copying them straight back in from this checkout's own dev tree,
+  // undoing the whole point of excluding them.
+  for (const { relativeDir, depName } of UNUSED_RUNTIME_DEPENDENCIES_TO_STRIP) {
     stripDependencyDeclaration(path.join(extractTo, relativeDir), depName)
   }
 
