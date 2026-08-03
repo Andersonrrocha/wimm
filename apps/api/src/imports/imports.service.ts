@@ -23,22 +23,9 @@ import {
   type ImportStatementBillingBaseline,
 } from './installment-projection.util'
 import { billingFieldsFromStatementBilling } from './import-statement-billing.util'
-import {
-  detectImportFormat,
-  isBanrisulPdfFormat,
-  isCresolPdfFormat,
-} from './import-format'
-import { canParseBanrisulCreditCardPdf } from './parsers/banrisul-cc/banrisul-layout-guard'
-import { canParseCresolStatementPdf } from './parsers/cresol/cresol-layout-guard'
+import { detectImportFormat } from './import-format'
+import { getImportParser } from './import-parser-registry'
 import type { ParsedLedgerRow } from './parsers/csv-parser'
-import { parseCsvBuffer } from './parsers/csv-parser'
-import { parseOfxBuffer } from './parsers/ofx-parser'
-import { banrisulStatementToLedgerRows } from './parsers/banrisul-cc/to-ledger-rows'
-import { parseBanrisulStatementFromText } from './parsers/banrisul-cc/parse-statement-text'
-import { mapBanrisulWarningsForPreview } from './map-banrisul-parser-warnings'
-import { mapCresolWarningsForPreview } from './map-cresol-parser-warnings'
-import { parseCresolStatementFromExtractedText } from './parsers/cresol/parse-cresol-statement-extracted-text'
-import { cresolStatementToLedgerRows } from './parsers/cresol/to-ledger-rows'
 import type { CommitImportDto } from './dto/commit-import.dto'
 import { sanitizePersistedInstallment } from './import-installment.util'
 import {
@@ -107,65 +94,25 @@ export class ImportsService {
     }
 
     const detected = await detectImportFormat(file.originalname, file.buffer)
-    let format: ImportBatchFormat
-    let parsed: ParsedLedgerRow[]
-    /** Set for bank-specific PDF formats (always, including empty array). */
-    let parserWarnings: ImportParserWarning[] | undefined
-    let statementBillingPreview:
+    const format = detected.format
+    const parser = getImportParser(format)
+    const parseResult = parser.parse({
+      buffer: file.buffer,
+      ...('extractedText' in detected
+        ? { extractedText: detected.extractedText }
+        : {}),
+    })
+    const parsed: ParsedLedgerRow[] = parseResult.rows
+    // Every registered parser reports warnings through the same shape (an
+    // array, possibly empty), so the service no longer needs a per-format
+    // branch to decide whether warnings apply.
+    const parserWarnings: ImportParserWarning[] = parseResult.warnings
+    const statementBillingPreview:
       | { paymentDueDate: string; statementClosingDate?: string }
-      | undefined
-
-    if (detected.format === ImportBatchFormat.CSV) {
-      format = ImportBatchFormat.CSV
-      parsed = parseCsvBuffer(file.buffer)
-    } else if (detected.format === ImportBatchFormat.OFX) {
-      format = ImportBatchFormat.OFX
-      parsed = parseOfxBuffer(file.buffer)
-    } else if (isBanrisulPdfFormat(detected)) {
-      format = ImportBatchFormat.PDF_BANRISUL_CC
-      const layout = canParseBanrisulCreditCardPdf(detected.extractedText)
-      if (!layout.ok) {
-        throw new BadRequestException(layout.message)
-      }
-      let banrisul
-      try {
-        banrisul = parseBanrisulStatementFromText(detected.extractedText)
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e)
-        throw new BadRequestException(
-          `Could not parse this Banrisul credit card statement PDF: ${msg}`,
-        )
-      }
-      parserWarnings = mapBanrisulWarningsForPreview(banrisul.warnings)
-      parsed = banrisulStatementToLedgerRows(banrisul)
-      if (
-        previewSource.type === SourceType.CREDIT_CARD &&
-        banrisul.statementBilling
-      ) {
-        const b = banrisul.statementBilling
-        statementBillingPreview = {
-          paymentDueDate: b.paymentDueDate.toISOString().slice(0, 10),
-          ...(b.statementClosingDate !== undefined
-            ? {
-                statementClosingDate: b.statementClosingDate
-                  .toISOString()
-                  .slice(0, 10),
-              }
-            : {}),
-        }
-      }
-    } else if (isCresolPdfFormat(detected)) {
-      format = ImportBatchFormat.PDF_CRESOL_STATEMENT
-      const layout = canParseCresolStatementPdf(detected.extractedText)
-      if (!layout.ok) {
-        throw new BadRequestException(layout.message)
-      }
-      const cresol = parseCresolStatementFromExtractedText(detected.extractedText)
-      parserWarnings = mapCresolWarningsForPreview(cresol.warnings)
-      parsed = cresolStatementToLedgerRows(cresol)
-    } else {
-      throw new BadRequestException('Unsupported import format')
-    }
+      | undefined =
+      previewSource.type === SourceType.CREDIT_CARD
+        ? parseResult.statementBillingPreview
+        : undefined
 
     if (parsed.length > MAX_IMPORT_ROWS) {
       throw new BadRequestException(
@@ -259,7 +206,7 @@ export class ImportsService {
         ? { statementBilling: statementBillingPreview }
         : {}),
       // Warnings are preview-only; ImportBatch does not persist them yet.
-      ...(parserWarnings !== undefined ? { parserWarnings } : {}),
+      parserWarnings,
     }
   }
 

@@ -1,12 +1,17 @@
 /**
  * Import file format detection (CSV, OFX, bank-specific PDFs).
+ *
+ * Selection is delegated to the parser registry (`./import-parser-registry`):
+ * this module's own job is narrowed to the one-time PDF text extraction
+ * (shared across every content-sniffing PDF parser) and translating a
+ * registry match into the `DetectedImportFormat` shape callers already
+ * depend on.
  */
 
 import { BadRequestException } from '@nestjs/common'
 import { ImportBatchFormat } from '@wimm/shared'
 import { extractTextFromPdfBuffer } from './parsers/banrisul-cc/extract-pdf-text'
-import { canParseBanrisulCreditCardPdf } from './parsers/banrisul-cc/banrisul-layout-guard'
-import { canParseCresolStatementPdf } from './parsers/cresol/cresol-layout-guard'
+import { findParsersForFileName } from './import-parser-registry'
 
 export type DetectedImportFormat =
   | {
@@ -46,14 +51,15 @@ export async function detectImportFormat(
   fileName: string,
   buffer: Buffer,
 ): Promise<DetectedImportFormat> {
-  const lower = fileName.toLowerCase()
-  if (lower.endsWith('.csv')) {
-    return { format: ImportBatchFormat.CSV }
+  const candidates = findParsersForFileName(fileName)
+
+  const directMatch = candidates.find((p) => !p.needsExtractedText)
+  if (directMatch) {
+    return { format: directMatch.format } as DetectedImportFormat
   }
-  if (lower.endsWith('.ofx') || lower.endsWith('.qfx')) {
-    return { format: ImportBatchFormat.OFX }
-  }
-  if (lower.endsWith('.pdf')) {
+
+  const sniffedCandidates = candidates.filter((p) => p.needsExtractedText)
+  if (sniffedCandidates.length > 0) {
     let text: string
     try {
       ;({ text } = await extractTextFromPdfBuffer(buffer, {
@@ -74,19 +80,13 @@ export async function detectImportFormat(
       throw new BadRequestException(`Could not read this PDF: ${raw}`)
     }
 
-    const banrisulLayout = canParseBanrisulCreditCardPdf(text)
-    if (banrisulLayout.ok) {
-      return {
-        format: ImportBatchFormat.PDF_BANRISUL_CC,
-        extractedText: text,
-      }
-    }
-
-    const cresolLayout = canParseCresolStatementPdf(text)
-    if (cresolLayout.ok) {
-      return {
-        format: ImportBatchFormat.PDF_CRESOL_STATEMENT,
-        extractedText: text,
+    for (const parser of sniffedCandidates) {
+      const match = parser.canHandle({ buffer, extractedText: text })
+      if (match.ok) {
+        return {
+          format: parser.format,
+          extractedText: text,
+        } as DetectedImportFormat
       }
     }
 
@@ -96,6 +96,7 @@ export async function detectImportFormat(
         'Use CSV or OFX for other banks.',
     )
   }
+
   throw new BadRequestException(
     'Unsupported file type. Use .csv, .ofx, .qfx, or a supported bank statement .pdf.',
   )
