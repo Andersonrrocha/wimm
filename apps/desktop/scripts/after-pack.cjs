@@ -179,6 +179,7 @@ const {
   findDependencyGraphProblems,
   verifyDependencyGraph,
 } = require('./verify-dependency-graph.cjs')
+const { assertNoHostedOnlyCodeInPackage } = require('./verify-no-hosted-code-in-package.cjs')
 
 function archName(arch) {
   return Arch[arch]
@@ -719,6 +720,17 @@ module.exports = async function afterPack(context) {
     `[after-pack] verifyDependencyGraph: OK -- ${graphSummary.packagesChecked} package(s), ` +
       `${graphSummary.edgesChecked} declared dependency edge(s), all resolved and in range.`,
   )
+
+  // Second structural check, same "throw on any real problem" contract --
+  // see verify-no-hosted-code-in-package.cjs's own doc comment. Proves the
+  // *shipped bytes* of this specific repacked archive contain no compiled
+  // hosted-only AI provider module (the owner's standing constraint: ChatGPT
+  // OAuth stays in the personally-hosted build only), on top of
+  // apps/api/scripts/verify-ai-local-composition.ts's separate, source-level
+  // proof that the local composition root's own import graph never reaches
+  // one.
+  assertNoHostedOnlyCodeInPackage(asarPath)
+  console.log('[after-pack] assertNoHostedOnlyCodeInPackage: OK -- no compiled hosted-only AI provider file shipped.')
 
   console.log('[after-pack] done')
 }

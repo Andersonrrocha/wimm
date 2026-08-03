@@ -75,6 +75,7 @@
       "!node_modules/@wimm/api/test/**/*",
       "!node_modules/@wimm/api/prisma/migrations/**/*",
       "!node_modules/@wimm/api/*.tsbuildinfo",
+      "!node_modules/@wimm/api/dist/ai/hosted/**/*",
       "!node_modules/react/**/*",
       "!node_modules/react-dom/**/*",
       "!node_modules/react-router-dom/**/*",
