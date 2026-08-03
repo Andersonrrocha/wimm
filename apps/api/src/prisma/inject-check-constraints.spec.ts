@@ -127,9 +127,9 @@ describe('injectCheckConstraints', () => {
     expect(checkCount).toBe(4)
   })
 
-  it('injects all 14 constraints when every table from schema.sqlite.prisma is present', () => {
+  it('injects all 18 constraints when every table from schema.sqlite.prisma is present', () => {
     // Hand-written rather than generated via `prisma migrate diff`: this fixture only
-    // needs to be structurally accurate (10 CREATE TABLE blocks, real column names),
+    // needs to be structurally accurate (11 CREATE TABLE blocks, real column names),
     // and hand-writing keeps the test fast, hermetic, and independent of the Prisma
     // engine binary being available in the test environment. `apps/api/prisma/
     // migrations-sqlite/` doesn't exist yet (it's produced by a later task), so there
@@ -149,6 +149,18 @@ CREATE TABLE "Source" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "userId" TEXT NOT NULL,
     "type" TEXT NOT NULL
+);
+
+-- CreateTable
+CREATE TABLE "CsvSourceMapping" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "sourceId" TEXT NOT NULL,
+    "delimiter" TEXT NOT NULL,
+    "encoding" TEXT NOT NULL,
+    "decimalSeparator" TEXT NOT NULL,
+    "dateOrder" TEXT NOT NULL,
+    "signConfig" TEXT NOT NULL,
+    "columnCount" INTEGER NOT NULL
 );
 
 -- CreateTable
@@ -210,7 +222,7 @@ CREATE TABLE "RefreshToken" (
     "tokenHash" TEXT NOT NULL
 );
 `
-    expect(CHECK_CONSTRAINTS).toHaveLength(14)
+    expect(CHECK_CONSTRAINTS).toHaveLength(18)
 
     const out = injectCheckConstraints(fullDdl)
 
@@ -223,6 +235,7 @@ CREATE TABLE "RefreshToken" (
     for (const table of [
       'User',
       'Source',
+      'CsvSourceMapping',
       'Category',
       'SystemCategorizationRule',
       'CategorizationRule',
@@ -236,7 +249,7 @@ CREATE TABLE "RefreshToken" (
     }
 
     const checkCount = (out.match(/CHECK \(/g) ?? []).length
-    expect(checkCount).toBe(14)
+    expect(checkCount).toBe(18)
   })
 })
 

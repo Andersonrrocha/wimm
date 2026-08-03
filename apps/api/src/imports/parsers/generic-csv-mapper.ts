@@ -101,8 +101,13 @@ function isNonNegativeInt(n: number): boolean {
  * later, an HTTP payload (Task 5) -- both bypass the compiler, so a mapping
  * that is malformed at runtime fails loudly here rather than degrading into
  * silently-wrong output further down.
+ *
+ * Exported (not just used internally by `applyGenericCsvMapping`) so
+ * `csv-source-mapping.service.ts` (Task 4) can run the exact same check
+ * before persisting a mapping, instead of re-implementing sign-shape
+ * validation a second time.
  */
-function validateMapping(mapping: GenericCsvMapping): void {
+export function validateMapping(mapping: GenericCsvMapping): void {
   if (mapping.delimiter !== ',' && mapping.delimiter !== ';') {
     throw new BadRequestException(
       `Invalid CSV mapping: unsupported delimiter ${JSON.stringify(mapping.delimiter)}`,
@@ -190,6 +195,45 @@ function decodeGenericCsvBuffer(buffer: Buffer, encoding: GenericCsvEncoding): s
   // means for a Brazilian bank export. There is no BOM convention for
   // Latin-1 text, so none is stripped here.
   return buffer.toString('latin1')
+}
+
+/**
+ * Counts the widest data row in a CSV buffer, decoded and split using only
+ * the mapping's `delimiter`/`encoding`/`hasHeader` -- the fields that decide
+ * how many columns a row has, independent of what any of them are said to
+ * mean.
+ *
+ * Used by `csv-source-mapping.service.ts` (Task 4) to compare a file's
+ * actual shape against the column count recorded when a mapping was saved.
+ * A saved mapping's column *indices* stay syntactically valid as long as
+ * they are within range, but a bank export changing its column count is the
+ * cheapest honest signal that positions may have shifted meaning -- so this
+ * is a sniff for that signal, not a validation of the mapping itself.
+ * Deliberately tolerant: a delimiter/encoding mismatch or malformed CSV is
+ * not this function's concern, and is instead surfaced by
+ * `applyGenericCsvMapping` when it actually parses the file; on a papaparse
+ * error here, `0` is returned so the caller's mismatch check still fires
+ * (real column count 0 can never equal a saved `columnCount`, which is
+ * always >= 1) rather than throwing before the real parse gets a chance to
+ * produce its own, more specific diagnostics.
+ */
+export function countGenericCsvColumns(
+  buffer: Buffer,
+  mapping: Pick<GenericCsvMapping, 'delimiter' | 'encoding' | 'hasHeader'>,
+): number {
+  const text = decodeGenericCsvBuffer(buffer, mapping.encoding)
+  const parsed = Papa.parse<string[]>(text, {
+    delimiter: mapping.delimiter,
+    header: false,
+    skipEmptyLines: 'greedy',
+  })
+  if (parsed.errors.length > 0) return 0
+
+  let rows = parsed.data
+  if (mapping.hasHeader) {
+    rows = rows.slice(1)
+  }
+  return rows.reduce((max, r) => Math.max(max, r.length), 0)
 }
 
 /** Renders a row as `col0=value; col1=value; ...` -- every column, not just the ones this mapping reads. */

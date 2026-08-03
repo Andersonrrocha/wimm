@@ -31,6 +31,24 @@ CREATE TABLE "Source" (
 );
 
 -- CreateTable
+CREATE TABLE "CsvSourceMapping" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "sourceId" TEXT NOT NULL,
+    "delimiter" TEXT NOT NULL CHECK ("delimiter" IN (',', ';')),
+    "hasHeader" BOOLEAN NOT NULL,
+    "encoding" TEXT NOT NULL CHECK ("encoding" IN ('utf8', 'latin1')),
+    "dateColumn" INTEGER NOT NULL,
+    "descriptionColumn" INTEGER NOT NULL,
+    "decimalSeparator" TEXT NOT NULL CHECK ("decimalSeparator" IN ('.', ',')),
+    "dateOrder" TEXT NOT NULL CHECK ("dateOrder" IN ('DMY', 'MDY', 'YMD')),
+    "signConfig" TEXT NOT NULL,
+    "columnCount" INTEGER NOT NULL,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "CsvSourceMapping_sourceId_fkey" FOREIGN KEY ("sourceId") REFERENCES "Source" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+-- CreateTable
 CREATE TABLE "Category" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "userId" TEXT NOT NULL,
@@ -176,6 +194,9 @@ CREATE INDEX "Source_userId_idx" ON "Source"("userId");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Source_userId_name_key" ON "Source"("userId", "name");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "CsvSourceMapping_sourceId_key" ON "CsvSourceMapping"("sourceId");
 
 -- CreateIndex
 CREATE INDEX "Category_userId_idx" ON "Category"("userId");

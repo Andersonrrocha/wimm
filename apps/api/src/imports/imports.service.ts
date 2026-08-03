@@ -24,7 +24,12 @@ import {
 } from './installment-projection.util'
 import { billingFieldsFromStatementBilling } from './import-statement-billing.util'
 import { detectImportFormat } from './import-format'
-import { getImportParser } from './import-parser-registry'
+import {
+  createGenericCsvMapperParser,
+  getImportParser,
+} from './import-parser-registry'
+import { CsvSourceMappingService } from './csv-source-mapping.service'
+import { countGenericCsvColumns } from './parsers/generic-csv-mapper'
 import type { ParsedLedgerRow } from './parsers/csv-parser'
 import type { CommitImportDto } from './dto/commit-import.dto'
 import { sanitizePersistedInstallment } from './import-installment.util'
@@ -74,6 +79,7 @@ export class ImportsService {
     private readonly defaultCategories: DefaultCategoriesService,
     private readonly aiKeyResolver: AiKeyResolverService,
     private readonly aiCategorizer: AnthropicCategorizerService,
+    private readonly csvSourceMappings: CsvSourceMappingService,
   ) {}
 
   async preview(
@@ -95,7 +101,36 @@ export class ImportsService {
 
     const detected = await detectImportFormat(file.originalname, file.buffer)
     const format = detected.format
-    const parser = getImportParser(format)
+
+    // A saved generic CSV mapping (Stage 2, Task 4) takes over CSV parsing
+    // entirely -- the user already stated how to read this source's export,
+    // so the header-name heuristic in `csv-parser.ts` never gets a turn.
+    // `columnCountWarning` is populated up front (before parsing) so it is
+    // never dependent on -- or lost among -- the per-row warnings the parse
+    // itself may also produce.
+    let parser = getImportParser(format)
+    const preParseWarnings: ImportParserWarning[] = []
+    if (format === ImportBatchFormat.CSV) {
+      const saved = await this.csvSourceMappings.findForSource(userId, sourceId)
+      if (saved) {
+        const actualColumnCount = countGenericCsvColumns(
+          file.buffer,
+          saved.mapping,
+        )
+        if (actualColumnCount !== saved.columnCount) {
+          preParseWarnings.push({
+            code: 'csv_mapping_column_count_mismatch',
+            message:
+              `The saved column mapping for this source was confirmed against a file with ${saved.columnCount} column(s), ` +
+              `but this file has ${actualColumnCount}. The saved mapping was still applied -- check the preview rows ` +
+              'carefully before importing, and re-save the mapping if the columns have changed.',
+            severity: 'warning',
+          })
+        }
+        parser = createGenericCsvMapperParser(saved.mapping)
+      }
+    }
+
     const parseResult = parser.parse({
       buffer: file.buffer,
       ...('extractedText' in detected
@@ -106,7 +141,10 @@ export class ImportsService {
     // Every registered parser reports warnings through the same shape (an
     // array, possibly empty), so the service no longer needs a per-format
     // branch to decide whether warnings apply.
-    const parserWarnings: ImportParserWarning[] = parseResult.warnings
+    const parserWarnings: ImportParserWarning[] = [
+      ...preParseWarnings,
+      ...parseResult.warnings,
+    ]
     const statementBillingPreview:
       | { paymentDueDate: string; statementClosingDate?: string }
       | undefined =

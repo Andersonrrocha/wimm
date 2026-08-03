@@ -12,6 +12,8 @@ import { DefaultCategoriesService } from '../categories/default-categories.servi
 import { CategorizationRulesService } from '../categorization-rules/categorization-rules.service'
 import { AiKeyResolverService } from '../ai/ai-key-resolver.service'
 import { AnthropicCategorizerService } from '../ai/anthropic-categorizer.service'
+import { CsvSourceMappingService } from './csv-source-mapping.service'
+import type { GenericCsvMapping } from './parsers/generic-csv-mapper'
 import { buildPdfBufferFromPlainText } from './parsers/banrisul-cc/build-pdf-fixture'
 import { extractTextFromPdfBuffer } from './parsers/banrisul-cc/extract-pdf-text'
 import * as CresolExtracted from './parsers/cresol/parse-cresol-statement-extracted-text'
@@ -31,11 +33,20 @@ describe('ImportsService', () => {
     resolveCategoryIdWithSystem: jest.fn().mockReturnValue(null),
   }
 
+  // No saved mapping by default -- every pre-existing CSV/OFX/PDF test below
+  // relies on this to keep exercising the original header-name-heuristic /
+  // registry path untouched by Task 4. Individual tests in the "saved CSV
+  // mapping" describe block override this per-call.
+  const csvSourceMappingsMock = {
+    findForSource: jest.fn().mockResolvedValue(null),
+  }
+
   beforeEach(async () => {
     jest.clearAllMocks()
     categorizationRulesMock.loadActiveRulesWithCategories.mockResolvedValue([])
     categorizationRulesMock.loadSystemResolutionContext.mockResolvedValue({})
     categorizationRulesMock.resolveCategoryIdWithSystem.mockReturnValue(null)
+    csvSourceMappingsMock.findForSource.mockResolvedValue(null)
     prismaMock.source.findFirst.mockResolvedValue({
       id: 'src-1',
       type: SourceType.CREDIT_CARD,
@@ -63,6 +74,10 @@ describe('ImportsService', () => {
         {
           provide: AnthropicCategorizerService,
           useValue: { categorizeBatch: jest.fn().mockResolvedValue([]) },
+        },
+        {
+          provide: CsvSourceMappingService,
+          useValue: csvSourceMappingsMock,
         },
       ],
     }).compile()
@@ -328,6 +343,110 @@ ${'note '.repeat(30)}
       expect(w).toBeDefined()
       expect(w!.severity).toBe('warning')
       expect(w!.rawLine).toContain('Linha Invalida')
+    })
+  })
+
+  describe('saved CSV mapping (Stage 2, Task 4)', () => {
+    // A debit/credit-column layout with a non-recognized header ("Ref",
+    // "Debito", "Credito") -- the header-name heuristic in `csv-parser.ts`
+    // cannot represent two separate amount columns at all (`AMOUNT_KEYS`
+    // only ever names one column), so it would fall back to its positional
+    // guess and read "Data" as an amount. Only a saved mapping that states
+    // `sign: { kind: 'debit_credit', ... }` reads this file correctly --
+    // which is what makes this fixture a real proof of "the saved mapping is
+    // applied", not just "some mapping is applied".
+    const savedMapping: GenericCsvMapping = {
+      delimiter: ';',
+      hasHeader: true,
+      encoding: 'utf8',
+      dateColumn: 1,
+      descriptionColumn: 2,
+      decimalSeparator: ',',
+      dateOrder: 'DMY',
+      sign: { kind: 'debit_credit', debitColumn: 3, creditColumn: 4 },
+    }
+    const SAVED_COLUMN_COUNT = 5
+
+    function debitCreditCsvFile(name: string, body: string): Express.Multer.File {
+      return { originalname: name, buffer: Buffer.from(body, 'utf8') } as Express.Multer.File
+    }
+
+    it('reuses the saved mapping on the next import from the same source, without re-asking', async () => {
+      csvSourceMappingsMock.findForSource.mockResolvedValue({
+        mapping: savedMapping,
+        columnCount: SAVED_COLUMN_COUNT,
+      })
+
+      const body = [
+        'Ref;Data;Descricao;Debito;Credito',
+        '1;05/04/2026;Mercado;123,45;',
+        '2;06/04/2026;Salario;;1.234,56',
+      ].join('\n')
+
+      const r = await service.preview(
+        'user-1',
+        'src-1',
+        debitCreditCsvFile('nubank.csv', body),
+      )
+
+      expect(csvSourceMappingsMock.findForSource).toHaveBeenCalledWith(
+        'user-1',
+        'src-1',
+      )
+      expect(r.rows).toHaveLength(2)
+      expect(r.rows[0].kind).toBe('EXPENSE')
+      expect(r.rows[0].description).toBe('Mercado')
+      // Cents, not a string comparison -- a silent parse error here (e.g.
+      // falling back to the positional heuristic, which would try to read
+      // "05/04/2026" as an amount) would either throw or produce a wildly
+      // different number, never a coincidentally-matching one.
+      expect(toCents(r.rows[0].amount)).toBe(12345)
+      expect(r.rows[1].kind).toBe('INCOME')
+      expect(r.rows[1].description).toBe('Salario')
+      expect(toCents(r.rows[1].amount)).toBe(123456)
+      // File matches the saved shape -- no column-count-mismatch warning.
+      expect(
+        r.parserWarnings!.some(
+          (w) => w.code === 'csv_mapping_column_count_mismatch',
+        ),
+      ).toBe(false)
+    })
+
+    it('warns (but still applies the mapping) when the file no longer has the saved column count', async () => {
+      csvSourceMappingsMock.findForSource.mockResolvedValue({
+        mapping: savedMapping,
+        columnCount: SAVED_COLUMN_COUNT,
+      })
+
+      // The bank added a trailing "Saldo" (balance) column: 6 columns
+      // instead of the 5 this mapping was confirmed against. The mapping's
+      // column *indices* (1/2/3/4) are all still in range, so this is
+      // exactly the case that could silently "look fine" without an
+      // explicit check.
+      const body = [
+        'Ref;Data;Descricao;Debito;Credito;Saldo',
+        '1;05/04/2026;Mercado;123,45;;1000,00',
+      ].join('\n')
+
+      const r = await service.preview(
+        'user-1',
+        'src-1',
+        debitCreditCsvFile('nubank-novo-layout.csv', body),
+      )
+
+      const w = r.parserWarnings!.find(
+        (w) => w.code === 'csv_mapping_column_count_mismatch',
+      )
+      expect(w).toBeDefined()
+      expect(w!.severity).toBe('warning')
+      expect(w!.message).toContain('5')
+      expect(w!.message).toContain('6')
+
+      // Never a silent misparse: the mapping is still applied and the
+      // (correct, in-range) row is still returned -- the user sees both the
+      // warning and the resulting preview row, and decides.
+      expect(r.rows).toHaveLength(1)
+      expect(toCents(r.rows[0].amount)).toBe(12345)
     })
   })
 

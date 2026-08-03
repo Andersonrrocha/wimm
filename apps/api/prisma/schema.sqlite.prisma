@@ -63,9 +63,56 @@ model Source {
   importBatches      ImportBatch[]
   recurrences        Recurrence[]
   installmentPlans   InstallmentPlan[]
+  csvMapping         CsvSourceMapping?
 
   @@unique([userId, name])
   @@index([userId])
+}
+
+/// Persists a confirmed `GenericCsvMapping` (see
+/// `apps/api/src/imports/parsers/generic-csv-mapper.ts`) so a user maps a
+/// bank's CSV export once and every later import from that `Source` reuses
+/// it, editable in place -- one row per source (`sourceId` is unique).
+///
+/// `delimiter`/`hasHeader`/`encoding`/`dateColumn`/`descriptionColumn`/
+/// `decimalSeparator`/`dateOrder` are the mapping's always-present scalar
+/// fields. The enum-shaped ones among them are stored as TEXT + CHECK, like
+/// every other former-enum column in this schema (see check-constraints.ts).
+///
+/// `signConfig` is different on purpose: it is the JSON-encoded
+/// `GenericCsvSignConvention` discriminated union (signed_amount /
+/// debit_credit / amount_and_type), kept as one opaque blob rather than
+/// decomposed into per-variant nullable columns (an `amountColumn`, a
+/// `debitColumn`, a `creditColumn`, a `typeColumn`, ...). Decomposing it
+/// would make an invalid combination -- e.g. a `debit_credit` mapping that
+/// also carries an `amountColumn` -- representable at the database layer
+/// even though `GenericCsvMapping`'s TypeScript union makes that combination
+/// unrepresentable in code. `signConfig` is re-validated by the mapper's own
+/// `validateMapping` (invoked through `applyGenericCsvMapping`) every time it
+/// is read back and applied, so a corrupted blob fails loudly instead of
+/// silently parsing as a wrong mapping.
+///
+/// `columnCount` records how many columns the file had when this mapping was
+/// confirmed. A later file with a different column count does not
+/// necessarily mean the stored indices are out of range, but it is the
+/// cheapest honest signal that the file's shape may have changed -- so
+/// `CsvSourceMappingService` compares against it and surfaces a warning
+/// rather than silently trusting stale column positions.
+model CsvSourceMapping {
+  id                String   @id @default(uuid())
+  sourceId          String   @unique
+  source            Source   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  delimiter         String
+  hasHeader         Boolean
+  encoding          String
+  dateColumn        Int
+  descriptionColumn Int
+  decimalSeparator  String
+  dateOrder         String
+  signConfig        String
+  columnCount       Int
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 }
 
 model Category {

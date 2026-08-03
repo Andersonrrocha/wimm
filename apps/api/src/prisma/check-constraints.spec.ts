@@ -1,8 +1,8 @@
 import { CHECK_CONSTRAINTS, checkConstraintNames } from './check-constraints'
 
 describe('CHECK constraint definitions', () => {
-  it('declares exactly 14', () => {
-    expect(CHECK_CONSTRAINTS).toHaveLength(14)
+  it('declares exactly 18', () => {
+    expect(CHECK_CONSTRAINTS).toHaveLength(18)
   })
 
   it('has one nullable constraint, on User.subscriptionPlan', () => {
@@ -13,7 +13,7 @@ describe('CHECK constraint definitions', () => {
   it('exposes names sorted and unique', () => {
     const names = checkConstraintNames()
     expect(names).toEqual([...new Set(names)].sort())
-    expect(names).toHaveLength(14)
+    expect(names).toHaveLength(18)
   })
 
   // Value correctness (table, column, values, nullable) is NOT checked here

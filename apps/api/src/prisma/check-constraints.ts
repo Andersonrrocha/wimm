@@ -32,6 +32,10 @@ export const CHECK_CONSTRAINTS: readonly CheckConstraint[] = [
   { name: 'Recurrence_frequency_check', table: 'Recurrence', column: 'frequency', values: ['WEEKLY', 'MONTHLY', 'YEARLY'], nullable: false },
   { name: 'Recurrence_endMode_check', table: 'Recurrence', column: 'endMode', values: ['INDEFINITE', 'UNTIL_DATE'], nullable: false },
   { name: 'Transaction_kind_check', table: 'Transaction', column: 'kind', values: ['INCOME', 'EXPENSE'], nullable: false },
+  { name: 'CsvSourceMapping_delimiter_check', table: 'CsvSourceMapping', column: 'delimiter', values: [',', ';'], nullable: false },
+  { name: 'CsvSourceMapping_encoding_check', table: 'CsvSourceMapping', column: 'encoding', values: ['utf8', 'latin1'], nullable: false },
+  { name: 'CsvSourceMapping_decimalSeparator_check', table: 'CsvSourceMapping', column: 'decimalSeparator', values: ['.', ','], nullable: false },
+  { name: 'CsvSourceMapping_dateOrder_check', table: 'CsvSourceMapping', column: 'dateOrder', values: ['DMY', 'MDY', 'YMD'], nullable: false },
 ] as const
 
 export function checkConstraintNames(): string[] {

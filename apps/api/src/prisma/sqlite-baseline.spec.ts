@@ -20,6 +20,7 @@ const BASELINE = join(__dirname, '../../prisma/migrations-sqlite/0000_baseline/m
 const ALL_TABLES = [
   'User',
   'Source',
+  'CsvSourceMapping',
   'Category',
   'SystemCategorizationRule',
   'CategorizationRule',

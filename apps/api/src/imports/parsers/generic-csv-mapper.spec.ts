@@ -1,6 +1,7 @@
 import { toCents } from '@wimm/shared'
 import {
   applyGenericCsvMapping,
+  countGenericCsvColumns,
   type GenericCsvMapping,
 } from './generic-csv-mapper'
 
@@ -385,5 +386,55 @@ describe('applyGenericCsvMapping', () => {
         /could not parse any csv rows/i,
       )
     })
+  })
+})
+
+describe('countGenericCsvColumns', () => {
+  it('counts columns using the mapping delimiter, ignoring a header row when hasHeader is true', () => {
+    const buf = csv(['Data;Descricao;Valor', '01/04/2026;Mercado;-123,45'])
+    expect(
+      countGenericCsvColumns(buf, {
+        delimiter: ';',
+        encoding: 'utf8',
+        hasHeader: true,
+      }),
+    ).toBe(3)
+  })
+
+  it('counts the header row too when hasHeader is false', () => {
+    const buf = csv(['a,b,c,d'])
+    expect(
+      countGenericCsvColumns(buf, {
+        delimiter: ',',
+        encoding: 'utf8',
+        hasHeader: false,
+      }),
+    ).toBe(4)
+  })
+
+  it('reports the widest row when rows have uneven widths', () => {
+    const buf = csv(['a;b;c', 'd;e;f;g;h'])
+    expect(
+      countGenericCsvColumns(buf, {
+        delimiter: ';',
+        encoding: 'utf8',
+        hasHeader: false,
+      }),
+    ).toBe(5)
+  })
+
+  it('respects the stated encoding (latin1) when counting columns', () => {
+    // A Latin-1-encoded accented description in its own column -- decoding
+    // as UTF-8 would not change the column count here, but this pins that
+    // the mapping's encoding is actually threaded through to the decode
+    // step, not silently defaulted.
+    const buf = Buffer.from('01/04/2026;Descri\xe7\xe3o;-1,00', 'latin1')
+    expect(
+      countGenericCsvColumns(buf, {
+        delimiter: ';',
+        encoding: 'latin1',
+        hasHeader: false,
+      }),
+    ).toBe(3)
   })
 })
