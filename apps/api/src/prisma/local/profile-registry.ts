@@ -405,6 +405,17 @@ function readRegistry(dir: string): StoredProfile[] {
  * declares the CURRENT version -- there is no code path that writes an
  * older version's envelope, including the migrate-on-read path in
  * `readRegistry`, which passes already-migrated entries here.
+ *
+ * **There is deliberately no file lock, and that was checked rather than
+ * assumed.** Every writer of this file lives in the Electron main process --
+ * `apps/desktop/src/main/local-api.ts` holds all three call sites
+ * (`createProfile` once, `touchProfile` twice); the embedded API never
+ * writes it. Electron enforces a single instance, so only one WIMM process
+ * runs at a time, and within that process JavaScript is single-threaded and
+ * these writes are synchronous, so two of them cannot interleave. A crash
+ * partway through is already covered by the rename above. That leaves only a
+ * human editing the file by hand in another program, which a lock would not
+ * prevent either. Adding one would guard nothing.
  */
 function writeRegistry(dir: string, profiles: readonly Profile[]): void {
   mkdirSync(dir, { recursive: true })

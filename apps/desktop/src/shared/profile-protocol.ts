@@ -19,7 +19,7 @@
  * for where the actual zero/one/several/corrupt distinction is guarded.
  *
  * `ProfileSummary` is a slimmed-down `Profile` (`@wimm/api`'s
- * `profile-registry.ts`): no `dbFileName`. The renderer never needs to know
+ * `profile-registry.ts`): no `databaseFileName`. The renderer never needs to know
  * how a profile's database file is named on disk, so this boundary does
  * not hand it that detail even though it is not itself sensitive.
  */
