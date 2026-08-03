@@ -1,9 +1,11 @@
 import { ImportBatchFormat } from '@wimm/shared'
 import {
   IMPORT_PARSERS,
+  createGenericCsvMapperParser,
   findParsersForFileName,
   getImportParser,
 } from './import-parser-registry'
+import type { GenericCsvMapping } from './parsers/generic-csv-mapper'
 
 const BANRISUL_FIXTURE = `
 FATURA CARTÃO BANRISUL
@@ -199,6 +201,75 @@ describe('import parser registry', () => {
       expect(() => parser.parse({ buffer: Buffer.alloc(0) })).toThrow(
         /pre-extracted PDF text/i,
       )
+    })
+  })
+
+  describe('createGenericCsvMapperParser', () => {
+    const mapping: GenericCsvMapping = {
+      delimiter: ';',
+      hasHeader: true,
+      encoding: 'utf8',
+      dateColumn: 0,
+      descriptionColumn: 1,
+      decimalSeparator: ',',
+      dateOrder: 'DMY',
+      sign: { kind: 'signed_amount', amountColumn: 2 },
+    }
+
+    it('is not part of the auto-detected registry -- a generic mapping cannot be decided from a file name or content sniff alone', () => {
+      expect(IMPORT_PARSERS).toHaveLength(4)
+      expect(IMPORT_PARSERS.map((p) => p.format)).toEqual([
+        ImportBatchFormat.CSV,
+        ImportBatchFormat.OFX,
+        ImportBatchFormat.PDF_BANRISUL_CC,
+        ImportBatchFormat.PDF_CRESOL_STATEMENT,
+      ])
+    })
+
+    it('conforms to the same ImportFormatParser contract as every registered parser', () => {
+      const parser = createGenericCsvMapperParser(mapping)
+      expect(parser.format).toBe(ImportBatchFormat.CSV)
+      expect(parser.extensions).toEqual(['csv'])
+      expect(parser.needsExtractedText).toBeUndefined()
+      expect(parser.canHandle({ buffer: Buffer.alloc(0) })).toEqual({ ok: true })
+    })
+
+    it('parses a buffer through the stated mapping', () => {
+      const parser = createGenericCsvMapperParser(mapping)
+      const buf = Buffer.from(
+        'Data;Descricao;Valor\n01/04/2026;Mercado;-123,45\n',
+        'utf8',
+      )
+      const result = parser.parse({ buffer: buf })
+      expect(result.rows).toHaveLength(1)
+      expect(result.rows[0].description).toBe('Mercado')
+      expect(result.warnings).toEqual([])
+      expect(result.statementBillingPreview).toBeUndefined()
+    })
+
+    it('maps warnings through the same preview shape as the header-driven CSV parser, including info-level zero_amount', () => {
+      const parser = createGenericCsvMapperParser(mapping)
+      const buf = Buffer.from(
+        'Data;Descricao;Valor\n01/04/2026;Estorno;0,00\n',
+        'utf8',
+      )
+      const result = parser.parse({ buffer: buf })
+      expect(result.rows).toHaveLength(1)
+      const w = result.warnings.find((w) => w.code === 'zero_amount')
+      expect(w).toBeDefined()
+      expect(w!.severity).toBe('info')
+    })
+
+    it('a different mapping instance behaves independently (no shared state between calls)', () => {
+      const commaParser = createGenericCsvMapperParser({
+        ...mapping,
+        delimiter: ',',
+        decimalSeparator: '.',
+      })
+      const buf = Buffer.from('date,description,amount\n2026-04-01,Rent,-1000.00\n', 'utf8')
+      const result = commaParser.parse({ buffer: buf })
+      expect(result.rows).toHaveLength(1)
+      expect(result.rows[0].signedAmount).toBe(-1000)
     })
   })
 })

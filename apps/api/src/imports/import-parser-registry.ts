@@ -26,6 +26,10 @@ import { canParseCresolStatementPdf } from './parsers/cresol/cresol-layout-guard
 import { parseCresolStatementFromExtractedText } from './parsers/cresol/parse-cresol-statement-extracted-text'
 import { cresolStatementToLedgerRows } from './parsers/cresol/to-ledger-rows'
 import { mapCresolWarningsForPreview } from './map-cresol-parser-warnings'
+import {
+  applyGenericCsvMapping,
+  type GenericCsvMapping,
+} from './parsers/generic-csv-mapper'
 
 /** Result of a parser confirming (or rejecting) that it can handle a candidate file. */
 export type ImportParserMatch = { ok: true } | { ok: false; message: string }
@@ -203,4 +207,39 @@ export function getImportParser(
     throw new BadRequestException('Unsupported import format')
   }
   return parser
+}
+
+/**
+ * Builds a one-off `ImportFormatParser` from a caller-supplied generic CSV
+ * mapping (`parsers/generic-csv-mapper.ts`).
+ *
+ * Deliberately **not** part of `IMPORT_PARSERS`/`findParsersForFileName`.
+ * Every other registered parser can decide it applies from a file name plus,
+ * at most, a content sniff over the bytes themselves -- that is what
+ * `detectImportFormat` is for. A generic CSV mapping cannot be decided that
+ * way: whether column 2 is a signed amount or a debit column, whether `,` or
+ * `.` is the decimal separator, is exactly the ambiguity this mapper exists
+ * to have the caller state instead of guess (see the module doc on
+ * `generic-csv-mapper.ts`). So a mapping has to already be in hand -- Task 4
+ * persists one per source and Task 5 lets the user create and edit it --
+ * before this factory can produce anything.
+ *
+ * The parser it returns conforms to the exact same contract as every
+ * registered one (`canHandle`/`parse`), so a caller that does have a mapping
+ * plugs it into the same preview/commit path with no special case, and
+ * `format`/`extensions` stay meaningful if this is ever promoted into
+ * `IMPORT_PARSERS` once that mapping is available earlier in the flow.
+ */
+export function createGenericCsvMapperParser(
+  mapping: GenericCsvMapping,
+): ImportFormatParser {
+  return {
+    format: ImportBatchFormat.CSV,
+    extensions: ['csv'],
+    canHandle: () => ({ ok: true }),
+    parse: (input) => {
+      const { rows, warnings } = applyGenericCsvMapping(input.buffer, mapping)
+      return { rows, warnings: mapCsvWarningsForPreview(warnings) }
+    },
+  }
 }
