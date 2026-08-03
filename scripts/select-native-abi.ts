@@ -136,19 +136,37 @@ function installedElectronVersion(repoRoot: string): string {
  * (real or, in tests, fake) returns, so every `BuildFn` only has one
  * obligation to satisfy.
  */
+/**
+ * `npx` is `npx.cmd` on Windows, and `execFileSync` without `shell: true`
+ * cannot execute a `.cmd` -- it fails with ENOENT. The arguments below are all
+ * hardcoded literals, never user input, so a shell adds no injection surface
+ * here; it is only how Windows reaches a batch wrapper at all.
+ *
+ * This matters because the cross-platform CI job runs this script on Windows,
+ * and a fresh runner has an empty artifact cache, so it takes the build path
+ * rather than the fast copy. Without this the Windows job would fail during
+ * setup and never reach the question it was added to answer.
+ */
+export function needsShellForNpx(platform: string): boolean {
+  return platform === 'win32'
+}
+
+function runNpx(args: string[], cwd: string): void {
+  execFileSync('npx', args, { cwd, stdio: 'inherit', shell: needsShellForNpx(process.platform) })
+}
+
 export function buildForTarget(paths: NativeAbiPaths, target: NativeAbiTarget): void {
   console.log(`[select-native-abi] No cached '${target}' build yet -- compiling it once (this can take a while)...`)
 
   const before = fileHash(paths.liveBinary)
 
   if (target === 'node') {
-    execFileSync('npx', ['node-gyp', 'rebuild'], { cwd: paths.adapterDir, stdio: 'inherit' })
+    runNpx(['node-gyp', 'rebuild'], paths.adapterDir)
   } else {
     const electronVersion = installedElectronVersion(paths.repoRoot)
-    execFileSync(
-      'npx',
+    runNpx(
       ['@electron/rebuild', '-v', electronVersion, '-m', 'apps/api', '-o', 'better-sqlite3', '-f'],
-      { cwd: paths.repoRoot, stdio: 'inherit' },
+      paths.repoRoot,
     )
   }
 

@@ -6,6 +6,7 @@ import {
   buildForTarget,
   type BuildFn,
   type NativeAbiPaths,
+  needsShellForNpx,
   readNativeAbiMarker,
   resolveNativeAbiPaths,
   selectNativeAbiAt,
@@ -156,6 +157,10 @@ describe('buildForTarget', () => {
     expect(mockedExecFileSync).toHaveBeenCalledWith('npx', ['node-gyp', 'rebuild'], {
       cwd: paths.adapterDir,
       stdio: 'inherit',
+      // Windows needs a shell to reach `npx.cmd` at all; every other platform
+      // must not get one, since a shell is pure added surface there. See
+      // `runNpx` in select-native-abi.ts.
+      shell: process.platform === 'win32',
     })
   })
 
@@ -175,7 +180,7 @@ describe('buildForTarget', () => {
     expect(mockedExecFileSync).toHaveBeenCalledWith(
       'npx',
       ['@electron/rebuild', '-v', '43.2.0', '-m', 'apps/api', '-o', 'better-sqlite3', '-f'],
-      { cwd: paths.repoRoot, stdio: 'inherit' },
+      { cwd: paths.repoRoot, stdio: 'inherit', shell: process.platform === 'win32' },
     )
   })
 
@@ -196,5 +201,23 @@ describe('buildForTarget', () => {
     // No node_modules/electron/package.json seeded.
     expect(() => buildForTarget(paths, 'electron')).toThrow(/cannot determine the installed Electron version/)
     expect(mockedExecFileSync).not.toHaveBeenCalled()
+  })
+})
+
+describe('needsShellForNpx', () => {
+  /**
+   * Pinned as a rule rather than by repeating `process.platform === 'win32'`
+   * in the assertion. A spec that mirrors the implementation's own expression
+   * agrees with it on whatever machine happens to run, so it would pass even
+   * if the rule were inverted -- which is exactly what happened when this was
+   * first written on macOS.
+   */
+  it('asks for a shell on Windows, where npx is npx.cmd and execFileSync cannot run a .cmd', () => {
+    expect(needsShellForNpx('win32')).toBe(true)
+  })
+
+  it('does not ask for a shell anywhere else, since a shell is pure added surface there', () => {
+    expect(needsShellForNpx('darwin')).toBe(false)
+    expect(needsShellForNpx('linux')).toBe(false)
   })
 })
