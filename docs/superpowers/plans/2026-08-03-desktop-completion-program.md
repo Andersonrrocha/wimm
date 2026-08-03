@@ -134,17 +134,24 @@ When the account exists:
 
 ---
 
-## Running item — hosted database reconciliation (needs your input, not code)
+## Running item — hosted database reconciliation — RESOLVED, and it is not a problem
 
-This branch converts Postgres enums to `TEXT` + `CHECK` constraints (Phase 0) and keeps the 3-value `AiCategorizationMode` with `aiApiKeyEncrypted`. The hosted database follows `develop`'s lineage: native enums, BYOK dropped, 2-value enum.
+**Answered 2026-08-03 by reading the real database directly, once Docker was available again.** This section previously said the hosted database and this branch were "incompatible states of the same table" and that merging would be a migration-planning exercise. That was wrong: it assumed the hosted database followed `develop`'s lineage. It does not.
 
-Those two are not merely different, they are incompatible states of the same table. Merging this branch is a migration-planning exercise in its own right, independent of everything above.
+The real `wimm` database:
 
-Two things are needed and only you can supply them:
-1. **Was `20260504150000_simplify_ai_mode_to_toggle` ever applied to the hosted database?** Docker was unavailable here, so `_prisma_migrations` could not be read. If it was, Prisma will report an applied migration with no matching folder and needs `migrate resolve` out of band.
-2. **Does the hosted instance carry real data you need to keep?** That decides whether reconciliation is a migration or a rebuild.
+| | |
+|---|---|
+| `aiApiKeyEncrypted` | present (`text`) |
+| `AiCategorizationMode` | native enum, three values — `OFF`, `SERVER`, `BYOK` |
+| Migrations applied | 30, latest `20260714120000_system_rules_shell_diagnostica` |
+| `20260504150000_simplify_ai_mode_to_toggle` | **never applied** |
 
-**Do not discover this during a deploy.**
+So the BYOK removal was never deployed, the `merge -s ours` resolution is exactly right, and **no out-of-band `prisma migrate resolve` is needed**.
+
+The hosted database is a **clean ancestor** of this branch's chain: it stops at `20260714120000`, and this branch adds exactly three migrations after it (`enums_to_text`, `add_amount_cents`, `drop_amount_decimal`). Phase 0's `enums_to_text` was written against precisely this state — native enums present — so it applies cleanly. Deploying is an ordinary forward migration, not a reconciliation.
+
+Still worth doing before any real deploy, as ordinary care rather than as a blocker: take a backup, and run the migration against a copy first.
 
 ---
 
