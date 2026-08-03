@@ -21,6 +21,7 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Field } from '../components/ui/field'
 import { Panel } from '../components/ui/panel'
+import { CsvMappingModal } from '../components/csv-mapping-modal'
 import {
   SaveAsRuleModal,
   suggestPatternFromDescription,
@@ -60,6 +61,7 @@ export function ImportsPage(): JSX.Element {
     Record<string, string>
   >({})
   const [lastCommit, setLastCommit] = useState<CommitImportResponse | null>(null)
+  const [mappingModalOpen, setMappingModalOpen] = useState(false)
 
   const { data: sources = [] } = useQuery({
     queryKey: ['sources'],
@@ -135,6 +137,20 @@ export function ImportsPage(): JSX.Element {
     [sources, sourceId],
   )
   const showCreditCardImportNote = selectedSource?.type === 'CREDIT_CARD'
+  const isCsvFile = !!file && /\.csv$/i.test(file.name)
+
+  // Reads the same key `CsvMappingModal` itself queries -- react-query
+  // dedupes the two into a single request, and this is purely so the button
+  // below can say "Edit column mapping" once a mapping already exists for
+  // this source, instead of always saying "Map columns".
+  const { data: savedCsvMapping } = useQuery({
+    queryKey: ['csvSourceMapping', sourceId],
+    queryFn: async () => {
+      const { data } = await apiClient.get(`/imports/csv-mapping/${sourceId}`)
+      return data as { mapping: unknown; columnCount: number } | null
+    },
+    enabled: isCsvFile && !!sourceId,
+  })
 
   const previewMut = useMutation({
     mutationFn: async (payload: { file: File; sourceId: string }) => {
@@ -345,6 +361,20 @@ export function ImportsPage(): JSX.Element {
               </Button>
             </div>
           </div>
+          {isCsvFile && sourceId ? (
+            <div>
+              <Button
+                type="button"
+                variant="subtle"
+                size="sm"
+                onClick={() => setMappingModalOpen(true)}
+              >
+                {savedCsvMapping
+                  ? t('imports.mapping.editButton')
+                  : t('imports.mapping.mapButton')}
+              </Button>
+            </div>
+          ) : null}
           {showCreditCardImportNote ? (
             <p className="max-w-2xl text-wm-sm leading-relaxed text-fg-muted">
               {t('imports.creditCardImportDisclaimer')}
@@ -576,6 +606,19 @@ export function ImportsPage(): JSX.Element {
           )}
         </Panel>
       )}
+
+      {file && isCsvFile ? (
+        <CsvMappingModal
+          open={mappingModalOpen}
+          onClose={() => setMappingModalOpen(false)}
+          sourceId={sourceId}
+          sourceName={selectedSource?.name ?? ''}
+          file={file}
+          onSaved={() => {
+            void qc.invalidateQueries({ queryKey: ['csvSourceMapping', sourceId] })
+          }}
+        />
+      ) : null}
 
       <SaveAsRuleModal
         open={saveAsRuleTarget !== null}

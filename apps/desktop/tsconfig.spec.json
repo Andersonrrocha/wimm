@@ -14,7 +14,9 @@
     "src/renderer/lib/api-mode.ts",
     "src/renderer/lib/api-mode.spec.ts",
     "src/renderer/lib/local-api-adapter.ts",
-    "src/renderer/lib/local-api-adapter.spec.ts"
+    "src/renderer/lib/local-api-adapter.spec.ts",
+    "src/renderer/lib/csv-mapping-format.ts",
+    "src/renderer/lib/csv-mapping-format.spec.ts"
   ],
   "exclude": ["node_modules"]
 }

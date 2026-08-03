@@ -1,4 +1,4 @@
-import { AxiosHeaders, type InternalAxiosRequestConfig } from 'axios'
+import axios, { AxiosHeaders, type InternalAxiosRequestConfig } from 'axios'
 import type { LocalApiRequestPayload, LocalApiResponsePayload } from '../../shared/local-api-protocol'
 import {
   createLocalApiAdapter,
@@ -47,6 +47,23 @@ describe('encodeRequestData', () => {
 
   it('passes undefined through unchanged (no body)', async () => {
     await expect(encodeRequestData(undefined)).resolves.toBeUndefined()
+  })
+
+  it("parses axios's own JSON-stringified body back into the original value", async () => {
+    // `dispatchRequest` (axios core) always runs `config.transformRequest`
+    // before any adapter -- custom adapters included -- sees `config.data`.
+    // The default `transformRequest` JSON.stringifies a plain-object body
+    // under a JSON content type (this app's `apiClient` default), so this is
+    // exactly the shape `encodeRequestData` actually receives for an
+    // ordinary `apiClient.post('/sources', { name, type })`-style call, not
+    // the plain object the call site wrote.
+    const original = { name: 'Banco Serrano', type: 'BANK_ACCOUNT' }
+    const preStringifiedByAxios = JSON.stringify(original)
+    await expect(encodeRequestData(preStringifiedByAxios)).resolves.toEqual(original)
+  })
+
+  it('forwards a non-JSON string body unchanged', async () => {
+    await expect(encodeRequestData('not json at all')).resolves.toBe('not json at all')
   })
 
   it('encodes a FormData body into a SerializedFormData with matching field and file parts', async () => {
@@ -136,5 +153,54 @@ describe('createLocalApiAdapter', () => {
     await expect(createLocalApiAdapter(bridge)(config)).rejects.toMatchObject({
       response: expect.objectContaining({ status: 401 }),
     })
+  })
+
+  /**
+   * Regression test for a real bug found end to end while proving Stage 2
+   * Task 5's "Save mapping" button against a packaged build: every test
+   * above builds an `InternalAxiosRequestConfig` by hand, with `data` still
+   * the plain object a call site wrote -- none of them go through a real
+   * axios instance's own request pipeline, which unconditionally runs
+   * `config.transformRequest` (JSON.stringifying a plain-object JSON body)
+   * *before* handing `config` to ANY adapter, custom ones included. That
+   * blind spot is exactly why this bug went unnoticed: a real
+   * `apiClient.post('/sources', { name, type })` call reached
+   * `createLocalApiAdapter` with `data` already serialized to a JSON
+   * *string* -- forwarding it unchanged (this suite's previous behaviour)
+   * made `forwardLocalApiRequest` (`local-api-bridge.ts`, main)
+   * double-encode it, and the embedded API's body-parser rejected the
+   * result outright. This test installs the adapter on a REAL `axios`
+   * instance and posts a plain object exactly like `api-client.ts` does, so
+   * it fails the same way the real bug did if `encodeRequestData` ever
+   * regresses to passing an axios-pre-stringified body through unchanged
+   * again.
+   */
+  it('round-trips a real axios POST body through the real transformRequest pipeline without double-encoding it', async () => {
+    const response: LocalApiResponsePayload = {
+      status: 201,
+      statusText: 'Created',
+      headers: { 'content-type': 'application/json' },
+      data: { id: 'new-source-id' },
+    }
+    const request = jest.fn<Promise<LocalApiResponsePayload>, [LocalApiRequestPayload]>().mockResolvedValue(response)
+    const bridge: LocalApiRequestBridge = { request }
+
+    const client = axios.create({
+      baseURL: 'http://localhost:3000/api',
+      headers: { 'Content-Type': 'application/json' },
+      adapter: createLocalApiAdapter(bridge),
+    })
+
+    const body = { name: 'Banco Serrano', type: 'BANK_ACCOUNT' }
+    const result = await client.post('/sources', body)
+
+    const forwarded = request.mock.calls[0][0]
+    // The load-bearing assertion: `payload.data` must be the real object
+    // (what `forwardLocalApiRequest` will JSON.stringify exactly once), never
+    // the JSON *string* axios's own `transformRequest` already produced.
+    expect(forwarded.data).toEqual(body)
+    expect(typeof forwarded.data).not.toBe('string')
+    expect(result.status).toBe(201)
+    expect(result.data).toEqual({ id: 'new-source-id' })
   })
 })

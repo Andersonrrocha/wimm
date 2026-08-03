@@ -23,11 +23,16 @@ import {
   type LocalApiHandle,
 } from './local-api'
 import { forwardLocalApiRequest } from './local-api-bridge'
+import { applyCsvMapping, proposeCsvMapping } from './csv-mapping-bridge'
 import { resolveProfileSituation, type ProfileSituation } from './profile-lifecycle'
 import { quitAndInstallUpdate, setupAutoUpdater } from './updater'
 import type { ExportResult, ProfileBackups } from '../shared/backup-protocol'
 import type { ApiMode, LocalApiRequestPayload } from '../shared/local-api-protocol'
 import type { ProfileSummary, ProfilesSituationPayload } from '../shared/profile-protocol'
+import type {
+  CsvMappingApplyResult,
+  CsvMappingProposal,
+} from '../shared/csv-mapping-protocol'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -280,6 +285,34 @@ function registerIpcHandlers(): void {
     }
     return forwardLocalApiRequest(localApiHandle, payload)
   })
+
+  // --- CSV column mapping (Stage 2 task 5) ---------------------------------
+  //
+  // Unlike `local-api:request`, these two do not go through the embedded
+  // API at all -- `proposeCsvMapping`/`applyCsvMapping` (`csv-mapping-bridge.ts`)
+  // are pure functions with no database and no profile concept, so there is
+  // nothing here for `localApiHandle` to gate on; both are registered
+  // unconditionally, the same as `local-api:get-mode`. See that module's doc
+  // comment for why this is a direct function call rather than a new HTTP
+  // route, and for what "validate in main" means for a surface with no
+  // auth/profile boundary to check in the first place: every value the
+  // renderer supplies (`fileBytes`, `mapping`) is still `unknown` here and is
+  // never handed to `@wimm/api` code unchecked.
+  ipcMain.handle(
+    'csv-mapping:propose',
+    (event, fileBytes: unknown): CsvMappingProposal => {
+      assertTrustedSender(event, 'csv-mapping:propose')
+      return proposeCsvMapping(fileBytes)
+    },
+  )
+
+  ipcMain.handle(
+    'csv-mapping:apply',
+    (event, fileBytes: unknown, mapping: unknown): CsvMappingApplyResult => {
+      assertTrustedSender(event, 'csv-mapping:apply')
+      return applyCsvMapping(fileBytes, mapping)
+    },
+  )
 
   // --- Profile lifecycle (onboarding / picker) -----------------------------
   //

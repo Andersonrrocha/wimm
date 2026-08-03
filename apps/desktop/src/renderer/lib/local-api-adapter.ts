@@ -124,6 +124,27 @@ async function encodeFormDataPart(name: string, value: string | File): Promise<S
  * (`forwardLocalApiRequest`, in main) needs to reconstruct an equivalent
  * `Blob`. Anything else is assumed to already be JSON-serializable, which is
  * everything else this app's api-client ever sends.
+ *
+ * **Undoes axios's own JSON pre-serialization for a plain-object body.**
+ * `dispatchRequest` (axios core) always runs `config.transformRequest`
+ * *before* handing `config` to any adapter -- custom adapters included --
+ * and the default `transformRequest` `JSON.stringify`s a plain-object body
+ * under a JSON content type (this app's `apiClient` sets exactly that
+ * content type by default). So `data` here is already a JSON *string* for
+ * every ordinary `apiClient.post('/sources', { name, type })`-style call,
+ * not the plain object the call site wrote -- forwarding that string
+ * unchanged would make `forwardLocalApiRequest`'s own `JSON.stringify(data)`
+ * (`local-api-bridge.ts`, main) double-encode it into a JSON string *of* a
+ * JSON string, which the embedded API's body-parser then rejects outright
+ * (`"Unexpected token '\"'... is not valid JSON"`) -- silently breaking
+ * every JSON POST/PUT/PATCH this app makes in local mode, discovered end to
+ * end while proving Stage 2 Task 5's own `PUT /imports/csv-mapping/:sourceId`
+ * save button actually persists anything against a real packaged build.
+ * Parsing it back into a real value here is what keeps `LocalApiRequestPayload.data`
+ * genuinely JSON-*shaped* on both sides of the IPC boundary, matching what
+ * that type's own doc comment already promises -- a string that fails to
+ * parse (not axios's own JSON encoding -- a caller-supplied raw string body,
+ * or a non-JSON content type) is forwarded exactly as given, unchanged.
  */
 export async function encodeRequestData(data: unknown): Promise<unknown> {
   if (typeof FormData !== 'undefined' && data instanceof FormData) {
@@ -133,6 +154,13 @@ export async function encodeRequestData(data: unknown): Promise<unknown> {
     }
     const encoded: SerializedFormData = { __wimmFormData: true, parts }
     return encoded
+  }
+  if (typeof data === 'string' && data.length > 0) {
+    try {
+      return JSON.parse(data)
+    } catch {
+      return data
+    }
   }
   return data
 }

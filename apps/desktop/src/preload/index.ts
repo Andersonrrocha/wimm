@@ -6,6 +6,11 @@ import type {
   LocalApiResponsePayload,
 } from '../shared/local-api-protocol'
 import type { ProfileSummary, ProfilesSituationPayload } from '../shared/profile-protocol'
+import type {
+  CsvMapping,
+  CsvMappingApplyResult,
+  CsvMappingProposal,
+} from '../shared/csv-mapping-protocol'
 
 export type TokenStore = {
   getAccessToken: () => Promise<string | undefined>
@@ -157,3 +162,36 @@ const backups: BackupsApi = {
 }
 
 contextBridge.exposeInMainWorld('backups', backups)
+
+/**
+ * The renderer's only way to reach the CSV column-mapping detection/apply
+ * functions (Stage 2 task 5) -- see `csv-mapping-protocol.ts` for the wire
+ * shapes and `main/csv-mapping-bridge.ts`/`main/index.ts`'s `csv-mapping:*`
+ * handlers for what main actually validates before running them. No
+ * validation happens here, same as every other bridge in this file: the
+ * renderer is the untrusted side of this boundary. Neither operation reads
+ * or writes anything persisted -- `propose` only inspects the bytes handed
+ * to it, and `apply` is the live preview for a mapping the user has not
+ * saved yet; saving happens through the existing `GET`/`PUT
+ * /imports/csv-mapping/:sourceId` HTTP routes, reached the normal way
+ * through `apiClient` and `localApi.request` above, not through this
+ * bridge.
+ */
+export type CsvMappingApi = {
+  /** Proposes a mapping for `fileBytes`, each field carrying its own confidence and reason. */
+  propose: (fileBytes: Uint8Array) => Promise<CsvMappingProposal>
+  /** Applies `mapping` (still unconfirmed) to `fileBytes`, for the live preview. */
+  apply: (
+    fileBytes: Uint8Array,
+    mapping: CsvMapping,
+  ) => Promise<CsvMappingApplyResult>
+}
+
+const csvMapping: CsvMappingApi = {
+  propose: (fileBytes: Uint8Array) =>
+    ipcRenderer.invoke('csv-mapping:propose', fileBytes),
+  apply: (fileBytes: Uint8Array, mapping: CsvMapping) =>
+    ipcRenderer.invoke('csv-mapping:apply', fileBytes, mapping),
+}
+
+contextBridge.exposeInMainWorld('csvMapping', csvMapping)
