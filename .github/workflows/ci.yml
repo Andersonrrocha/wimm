@@ -75,3 +75,132 @@ jobs:
 
       - name: Assert CHECK constraints
         run: pnpm --filter @wimm/api run assert:constraints
+
+  # Stage 4 (desktop completion program), tasks 4.2/4.3: `verify` above never
+  # leaves ubuntu-latest, so the atomic-write pattern in `snapshot.ts` and
+  # `profile-registry.ts` (temp-file-then-`renameSync`), and the native
+  # `better-sqlite3` module both of them and the whole app depend on, have
+  # never been exercised anywhere but this one Linux distribution and one
+  # maintainer's Mac. This job answers that on all three platforms Wimm
+  # ships for.
+  #
+  # Deliberately NOT a full clone of `verify` above:
+  # - No Postgres `services:` container -- GitHub-hosted `services:` only
+  #   run on Linux runners at all, and every check that needs one (schema
+  #   parity, migrate deploy/diff, CHECK constraints) is Postgres/Prisma
+  #   plumbing that does not vary by OS. It stays exclusively in `verify`.
+  # - No Lint step -- `tsc --noEmit` typechecking is platform-independent;
+  #   running it three more times would only add wall-clock time, not
+  #   confidence. `verify` already gates it once.
+  # These two omissions are *why* this can be a second job instead of
+  # replacing the ubuntu build in `verify` with a matrix: the two jobs check
+  # non-overlapping things, so nothing here weakens what `verify` already
+  # guards.
+  cross-platform:
+    name: Cross-platform native build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # One shell across all three runners (Windows' GitHub-hosted runners
+    # ship Git Bash) so every step below is one script, not a per-OS fork.
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # Electron 42+ no longer fetches its binary via a postinstall script --
+      # it downloads on first use (documented in the task report). The first
+      # use here is the packaged-Electron process `better-sqlite3` gets
+      # rebuilt against below, so without this cache every push would
+      # re-download it, on every platform, from scratch.
+      - name: Cache Electron / electron-builder binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: ${{ runner.os }}-electron-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      # Runs the full offline suite -- @wimm/shared, @wimm/api, @wimm/desktop
+      # -- under this platform's Node-ABI `better-sqlite3` build (each
+      # package's own `pretest` selects it). This is what actually answers
+      # task 4.2 for Windows and (for the first time in CI) macOS: the new
+      # `snapshot.spec.ts` / `profile-registry.spec.ts` atomic-write tests
+      # run here, against this OS's real filesystem and real `renameSync`,
+      # not a stubbed one.
+      - name: Test
+        run: pnpm test
+
+      # Everything above exercises the *portable* `better-sqlite3` copy
+      # (Node ABI). Packaged Wimm instead runs on the copy
+      # `@prisma/adapter-better-sqlite3` bundles, rebuilt for Electron's ABI
+      # -- a per-platform native compile nothing above touches. Select it,
+      # then prove it actually works under a real Electron process (not just
+      # that the compile succeeded) via the diagnostic
+      # `apps/desktop/scripts/verify-native-runtime.ts` was written for
+      # ("the exact check CI will need once the native-module build matrix
+      # arrives" -- see that file's own doc comment).
+      - name: Select Electron-ABI native module build
+        run: npx tsx scripts/select-native-abi.ts electron
+
+      - name: Verify the native module under a real Electron process
+        run: |
+          VERIFY_NATIVE_RUNTIME_OUT="${{ runner.temp }}/verify-native-runtime.txt" \
+            ./node_modules/.bin/electron apps/desktop/scripts/verify-native-runtime.electron.cjs
+
+      - name: Show verify-native-runtime output
+        if: always()
+        run: cat "${{ runner.temp }}/verify-native-runtime.txt" || echo "No output file was written -- the Electron process likely crashed before writing anything; see the job log above."
+
+      # macOS only: `apps/desktop/scripts/after-pack.cjs` -- the hook that
+      # runs `verify-dependency-graph.cjs` -- explicitly no-ops on any
+      # platform other than darwin (see that file's own early return); it
+      # has never been proven correct anywhere but a maintainer's own Mac.
+      # `--dir` skips installer generation (dmg/nsis/AppImage/deb) and packs
+      # only the unpacked app directory -- afterPack still runs in full --
+      # to keep this proportionate to a solo-maintained project's CI budget.
+      # Windows and Linux do not get an equivalent packaging step: without
+      # after-pack.cjs doing anything there, running electron-builder would
+      # only re-prove the Electron-ABI rebuild the two steps above already
+      # cover, for real wall-clock cost and installer-toolchain fragility
+      # (nsis/AppImage/deb) this project cannot justify paying on every push.
+      - name: Package (macOS only -- exercises after-pack.cjs + verify-dependency-graph.cjs)
+        if: runner.os == 'macOS'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: pnpm --filter @wimm/desktop exec electron-builder --dir --publish=never
+
+      # Always restore Node ABI, even if an earlier step failed -- leaving a
+      # runner on the Electron build is only a problem for a persistent
+      # checkout, but matching the same "leave the tree on node" contract
+      # every local run of this suite follows keeps this job's own steps
+      # (and any future one added after it) on the ABI they expect.
+      - name: Restore Node-ABI native module build
+        if: always()
+        run: npx tsx scripts/select-native-abi.ts node
