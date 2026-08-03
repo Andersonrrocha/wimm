@@ -1,7 +1,11 @@
+import { BadRequestException } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import { ImportsController } from './imports.controller'
 import { ImportsService } from './imports.service'
-import { CsvSourceMappingService } from './csv-source-mapping.service'
+import {
+  CsvSourceMappingService,
+  InvalidStoredCsvMappingError,
+} from './csv-source-mapping.service'
 import type { SaveCsvSourceMappingDto } from './dto/csv-source-mapping.dto'
 
 describe('ImportsController (csv mapping routes)', () => {
@@ -41,6 +45,38 @@ describe('ImportsController (csv mapping routes)', () => {
       'src-1',
     )
     expect(result).toEqual({ mapping: { delimiter: ';' }, columnCount: 3 })
+  })
+
+  it('getCsvMapping turns a corrupted stored mapping into a 400 naming the situation, not a raw 500 (fix round 1)', async () => {
+    csvSourceMappingsMock.findForSource.mockRejectedValue(
+      new InvalidStoredCsvMappingError('src-1', 'unrecognized kind "nonsense"'),
+    )
+
+    await expect(
+      controller.getCsvMapping(
+        { sub: 'user-1', email: 'a@b.com', username: 'a' },
+        'src-1',
+      ),
+    ).rejects.toThrow(BadRequestException)
+    await expect(
+      controller.getCsvMapping(
+        { sub: 'user-1', email: 'a@b.com', username: 'a' },
+        'src-1',
+      ),
+    ).rejects.toThrow(/no longer valid/i)
+  })
+
+  it('getCsvMapping re-throws any other error unchanged', async () => {
+    csvSourceMappingsMock.findForSource.mockRejectedValue(
+      new Error('unrelated database failure'),
+    )
+
+    await expect(
+      controller.getCsvMapping(
+        { sub: 'user-1', email: 'a@b.com', username: 'a' },
+        'src-1',
+      ),
+    ).rejects.toThrow('unrelated database failure')
   })
 
   it('saveCsvMapping strips columnCount out of the mapping payload before delegating', async () => {

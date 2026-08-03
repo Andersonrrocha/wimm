@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -12,7 +13,10 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express'
 import type { JwtPayload } from '../auth/strategies/jwt.strategy'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
-import { CsvSourceMappingService } from './csv-source-mapping.service'
+import {
+  CsvSourceMappingService,
+  InvalidStoredCsvMappingError,
+} from './csv-source-mapping.service'
 import { CommitImportDto } from './dto/commit-import.dto'
 import { SaveCsvSourceMappingDto } from './dto/csv-source-mapping.dto'
 import { PreviewImportBody } from './dto/preview-import.dto'
@@ -48,13 +52,27 @@ export class ImportsController {
    * Fetches the saved CSV mapping for a source, or `null` when the source
    * has none yet -- the mapping UI (Stage 2, Task 5) uses this to decide
    * whether to show "map columns" or "edit the saved mapping".
+   *
+   * Unlike `ImportsService.preview` (which has a file to fall back to
+   * automatic detection for), this endpoint has nothing else to offer when
+   * the stored mapping is corrupted -- the caller asked specifically for the
+   * saved mapping. So `InvalidStoredCsvMappingError` becomes a `400` here,
+   * naming the situation plainly, rather than an unhandled 500: the mapping
+   * UI can use this to prompt the user to re-map the source.
    */
   @Get('csv-mapping/:sourceId')
-  getCsvMapping(
+  async getCsvMapping(
     @CurrentUser() user: JwtPayload,
     @Param('sourceId', ParseUUIDPipe) sourceId: string,
   ) {
-    return this.csvSourceMappings.findForSource(user.sub, sourceId)
+    try {
+      return await this.csvSourceMappings.findForSource(user.sub, sourceId)
+    } catch (e) {
+      if (e instanceof InvalidStoredCsvMappingError) {
+        throw new BadRequestException(e.message)
+      }
+      throw e
+    }
   }
 
   /**

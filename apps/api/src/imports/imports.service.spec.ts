@@ -12,7 +12,10 @@ import { DefaultCategoriesService } from '../categories/default-categories.servi
 import { CategorizationRulesService } from '../categorization-rules/categorization-rules.service'
 import { AiKeyResolverService } from '../ai/ai-key-resolver.service'
 import { AnthropicCategorizerService } from '../ai/anthropic-categorizer.service'
-import { CsvSourceMappingService } from './csv-source-mapping.service'
+import {
+  CsvSourceMappingService,
+  InvalidStoredCsvMappingError,
+} from './csv-source-mapping.service'
 import type { GenericCsvMapping } from './parsers/generic-csv-mapper'
 import { buildPdfBufferFromPlainText } from './parsers/banrisul-cc/build-pdf-fixture'
 import { extractTextFromPdfBuffer } from './parsers/banrisul-cc/extract-pdf-text'
@@ -445,6 +448,39 @@ ${'note '.repeat(30)}
       // Never a silent misparse: the mapping is still applied and the
       // (correct, in-range) row is still returned -- the user sees both the
       // warning and the resulting preview row, and decides.
+      expect(r.rows).toHaveLength(1)
+      expect(toCents(r.rows[0].amount)).toBe(12345)
+    })
+
+    it('warns and falls back to automatic detection when the stored mapping is corrupted (fix round 1), instead of failing the import', async () => {
+      csvSourceMappingsMock.findForSource.mockRejectedValue(
+        new InvalidStoredCsvMappingError('src-1', 'unrecognized kind "nonsense"'),
+      )
+
+      // A plain header-recognized CSV -- the point is that automatic
+      // detection (the same header-name heuristic used when no mapping was
+      // ever saved) still produces a usable preview once the corrupted
+      // mapping is set aside, rather than the request failing outright.
+      const body = [
+        'Data;Descrição;Valor',
+        '01/04/2026;Mercado Livre;-123,45',
+      ].join('\n')
+
+      const r = await service.preview(
+        'user-1',
+        'src-1',
+        debitCreditCsvFile('extrato.csv', body),
+      )
+
+      const w = r.parserWarnings!.find((w) => w.code === 'csv_mapping_invalid')
+      expect(w).toBeDefined()
+      expect(w!.severity).toBe('warning')
+      expect(w!.message).toContain('src-1')
+      expect(w!.message).toContain('no longer valid')
+      expect(w!.message.toLowerCase()).toContain('re-map')
+
+      // Not a failed request, and not a silent fallback either: the import
+      // still produces a usable preview via automatic detection.
       expect(r.rows).toHaveLength(1)
       expect(toCents(r.rows[0].amount)).toBe(12345)
     })

@@ -28,7 +28,10 @@ import {
   createGenericCsvMapperParser,
   getImportParser,
 } from './import-parser-registry'
-import { CsvSourceMappingService } from './csv-source-mapping.service'
+import {
+  CsvSourceMappingService,
+  InvalidStoredCsvMappingError,
+} from './csv-source-mapping.service'
 import { countGenericCsvColumns } from './parsers/generic-csv-mapper'
 import type { ParsedLedgerRow } from './parsers/csv-parser'
 import type { CommitImportDto } from './dto/commit-import.dto'
@@ -111,7 +114,36 @@ export class ImportsService {
     let parser = getImportParser(format)
     const preParseWarnings: ImportParserWarning[] = []
     if (format === ImportBatchFormat.CSV) {
-      const saved = await this.csvSourceMappings.findForSource(userId, sourceId)
+      // `findForSource` validates the stored mapping on every read (Stage 2,
+      // Task 4 fix round 1) and throws `InvalidStoredCsvMappingError` rather
+      // than returning something unusable. A corrupted saved mapping is not
+      // the user's fault and is not what they are asking about right now --
+      // they picked a file to import -- so this is deliberately a warning
+      // plus a fallback to automatic detection, not a failed request and not
+      // a silent one. Failing the request would conflate "your saved column
+      // mapping is broken" with "this import failed", the same conflation
+      // this project has fixed repeatedly for parser warnings; falling back
+      // *silently* would reintroduce exactly the silent-misparse risk this
+      // whole mapping feature exists to close, since automatic detection can
+      // produce a plausible-looking wrong number for the same file a
+      // human-confirmed mapping was protecting against.
+      let saved: Awaited<ReturnType<CsvSourceMappingService['findForSource']>>
+      try {
+        saved = await this.csvSourceMappings.findForSource(userId, sourceId)
+      } catch (e) {
+        if (e instanceof InvalidStoredCsvMappingError) {
+          saved = null
+          preParseWarnings.push({
+            code: 'csv_mapping_invalid',
+            message:
+              `${e.message} Falling back to automatic column detection for this import -- ` +
+              'check the preview rows carefully before importing, and re-map this source before your next import.',
+            severity: 'warning',
+          })
+        } else {
+          throw e
+        }
+      }
       if (saved) {
         const actualColumnCount = countGenericCsvColumns(
           file.buffer,

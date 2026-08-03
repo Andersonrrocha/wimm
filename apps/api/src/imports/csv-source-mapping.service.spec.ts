@@ -1,8 +1,29 @@
 import { Test } from '@nestjs/testing'
-import { BadRequestException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
-import { CsvSourceMappingService } from './csv-source-mapping.service'
+import {
+  CsvSourceMappingService,
+  InvalidStoredCsvMappingError,
+} from './csv-source-mapping.service'
 import type { GenericCsvMapping } from './parsers/generic-csv-mapper'
+
+/** A row shaped exactly like what `prisma.csvSourceMapping.findFirst` would
+ * return, but with an arbitrary `signConfig` string -- used to plant a
+ * corrupted blob directly at the Prisma boundary, bypassing
+ * `upsertForSource` entirely (an older app version, a hand-edited row, or a
+ * partially restored backup would all land here the same way). */
+function rowWithSignConfig(signConfig: string) {
+  return {
+    delimiter: ';',
+    hasHeader: true,
+    encoding: 'utf8',
+    dateColumn: 0,
+    descriptionColumn: 1,
+    decimalSeparator: ',',
+    dateOrder: 'DMY',
+    signConfig,
+    columnCount: 3,
+  }
+}
 
 describe('CsvSourceMappingService', () => {
   let service: CsvSourceMappingService
@@ -81,22 +102,74 @@ describe('CsvSourceMappingService', () => {
       })
     })
 
-    it('rejects a corrupted signConfig blob instead of returning a malformed mapping', async () => {
-      prismaMock.csvSourceMapping.findFirst.mockResolvedValue({
-        delimiter: ';',
-        hasHeader: true,
-        encoding: 'utf8',
-        dateColumn: 0,
-        descriptionColumn: 1,
-        decimalSeparator: ',',
-        dateOrder: 'DMY',
-        signConfig: 'not valid json{{{',
-        columnCount: 3,
-      })
+    it('rejects a corrupted signConfig blob (invalid JSON) instead of returning a malformed mapping', async () => {
+      prismaMock.csvSourceMapping.findFirst.mockResolvedValue(
+        rowWithSignConfig('not valid json{{{'),
+      )
 
       await expect(service.findForSource('user-1', 'src-1')).rejects.toThrow(
-        BadRequestException,
+        InvalidStoredCsvMappingError,
       )
+    })
+
+    // Fix round 1: validation on read, not just on write. Each of these three
+    // blobs is syntactically valid JSON -- `JSON.parse` alone would let all
+    // three through -- but none is a valid `GenericCsvSignConvention`. Each
+    // is written directly into `signConfig`, bypassing `upsertForSource`
+    // (and therefore its own `validateMapping` call) entirely, exactly as a
+    // corrupted row from an older app version, a hand edit, or a partially
+    // restored backup would arrive.
+    describe('validates a syntactically-valid-JSON but semantically invalid sign blob', () => {
+      it('rejects {"kind":"debit_credit","amountColumn":1} (wrong shape for its own kind)', async () => {
+        prismaMock.csvSourceMapping.findFirst.mockResolvedValue(
+          rowWithSignConfig(
+            JSON.stringify({ kind: 'debit_credit', amountColumn: 1 }),
+          ),
+        )
+
+        await expect(
+          service.findForSource('user-1', 'src-1'),
+        ).rejects.toThrow(InvalidStoredCsvMappingError)
+        await expect(
+          service.findForSource('user-1', 'src-1'),
+        ).rejects.toThrow(/no longer valid/i)
+      })
+
+      it('rejects {"kind":"nonsense"} (unrecognized kind)', async () => {
+        prismaMock.csvSourceMapping.findFirst.mockResolvedValue(
+          rowWithSignConfig(JSON.stringify({ kind: 'nonsense' })),
+        )
+
+        await expect(
+          service.findForSource('user-1', 'src-1'),
+        ).rejects.toThrow(InvalidStoredCsvMappingError)
+        await expect(
+          service.findForSource('user-1', 'src-1'),
+        ).rejects.toThrow(/no longer valid/i)
+      })
+
+      it('rejects {} (no kind at all)', async () => {
+        prismaMock.csvSourceMapping.findFirst.mockResolvedValue(
+          rowWithSignConfig(JSON.stringify({})),
+        )
+
+        await expect(
+          service.findForSource('user-1', 'src-1'),
+        ).rejects.toThrow(InvalidStoredCsvMappingError)
+        await expect(
+          service.findForSource('user-1', 'src-1'),
+        ).rejects.toThrow(/no longer valid/i)
+      })
+
+      it('names the source in the error message, for a caller that wants to offer re-mapping', async () => {
+        prismaMock.csvSourceMapping.findFirst.mockResolvedValue(
+          rowWithSignConfig(JSON.stringify({})),
+        )
+
+        await expect(
+          service.findForSource('user-1', 'src-42'),
+        ).rejects.toThrow(/source src-42/)
+      })
     })
   })
 

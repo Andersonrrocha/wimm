@@ -31,42 +31,90 @@ type CsvSourceMappingRow = {
   columnCount: number
 }
 
-function parseSignConfig(raw: string): GenericCsvMapping['sign'] {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e)
-    throw new BadRequestException(
-      `Stored CSV mapping has a corrupted sign configuration: ${detail}`,
+/**
+ * Thrown when a persisted `CsvSourceMapping` row exists but no longer decodes
+ * into a valid `GenericCsvMapping` -- the JSON in `signConfig` failed to
+ * parse, or parsed into something `validateMapping` rejects (wrong `kind`,
+ * a variant missing its required columns, overlapping debit/credit tokens,
+ * ...).
+ *
+ * Storing `sign` as one opaque JSON blob (see the model doc comment in
+ * `schema.prisma`) was the right call for keeping the sign union's invalid
+ * combinations unrepresentable at the schema level, but it also means the
+ * database's own constraints cannot catch a corrupted blob -- an older app
+ * version's format, a hand-edited row, a partially restored backup (this app
+ * restores from backups by design) all reach this exact path. Read-time
+ * validation is the *only* thing standing between a corrupted row and a
+ * caller that trusts it, so this class exists to name that failure
+ * distinctly from "no mapping saved" (`findForSource` still returns `null`
+ * for that) and from any other, unrelated error -- callers decide what to do
+ * with it (see `ImportsService.preview`, which turns it into a visible
+ * warning and falls back to automatic detection rather than failing the
+ * import or, worse, silently ignoring that the saved mapping was unusable).
+ */
+export class InvalidStoredCsvMappingError extends Error {
+  constructor(sourceId: string, detail: string) {
+    super(
+      `Stored CSV mapping for source ${sourceId} is no longer valid (${detail}) -- ` +
+        'it must be re-created before it can be used again.',
     )
+    this.name = 'InvalidStoredCsvMappingError'
   }
-  return parsed as GenericCsvMapping['sign']
+}
+
+function messageOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
 }
 
 /**
- * Reconstructs the in-memory `GenericCsvMapping` shape from a persisted row.
+ * Reconstructs the in-memory `GenericCsvMapping` shape from a persisted row,
+ * and -- unlike a bare cast -- actually validates it before returning it.
  * The row's own CHECK constraints (delimiter/encoding/decimalSeparator/
  * dateOrder, see `check-constraints.ts`) guarantee those four columns can
- * only ever hold one of their declared literals, so the casts below are safe
- * given data that actually came from this table -- `validateMapping` (run by
- * every caller through `applyGenericCsvMapping`) is what catches a `sign`
- * blob that fails to round-trip as a valid discriminated union.
+ * only ever hold one of their declared literals, so casting them back to
+ * their literal-union types is safe. `signConfig` has no such guarantee --
+ * it is the one column deliberately left outside the CHECK-constrained,
+ * database-verified part of this model (see `InvalidStoredCsvMappingError`)
+ * -- so it is parsed *and* run through `validateMapping` here, on every
+ * read, not only at write time. Throws `InvalidStoredCsvMappingError` (never
+ * returns a mapping that hasn't passed `validateMapping`) so a corrupted row
+ * fails loudly, named for what it is, instead of silently reaching
+ * `applyGenericCsvMapping` later and surfacing as a generic-looking
+ * `amountColumn` validation error while the user only asked to import a
+ * file.
  */
-function rowToStoredMapping(row: CsvSourceMappingRow): StoredCsvSourceMapping {
-  return {
-    mapping: {
-      delimiter: row.delimiter as GenericCsvDelimiter,
-      hasHeader: row.hasHeader,
-      encoding: row.encoding as GenericCsvEncoding,
-      dateColumn: row.dateColumn,
-      descriptionColumn: row.descriptionColumn,
-      decimalSeparator: row.decimalSeparator as DecimalSeparator,
-      dateOrder: row.dateOrder as DateOrder,
-      sign: parseSignConfig(row.signConfig),
-    },
-    columnCount: row.columnCount,
+function rowToStoredMapping(
+  row: CsvSourceMappingRow,
+  sourceId: string,
+): StoredCsvSourceMapping {
+  let sign: GenericCsvMapping['sign']
+  try {
+    sign = JSON.parse(row.signConfig) as GenericCsvMapping['sign']
+  } catch (e) {
+    throw new InvalidStoredCsvMappingError(
+      sourceId,
+      `corrupted sign configuration: ${messageOf(e)}`,
+    )
   }
+
+  const mapping: GenericCsvMapping = {
+    delimiter: row.delimiter as GenericCsvDelimiter,
+    hasHeader: row.hasHeader,
+    encoding: row.encoding as GenericCsvEncoding,
+    dateColumn: row.dateColumn,
+    descriptionColumn: row.descriptionColumn,
+    decimalSeparator: row.decimalSeparator as DecimalSeparator,
+    dateOrder: row.dateOrder as DateOrder,
+    sign,
+  }
+
+  try {
+    validateMapping(mapping)
+  } catch (e) {
+    throw new InvalidStoredCsvMappingError(sourceId, messageOf(e))
+  }
+
+  return { mapping, columnCount: row.columnCount }
 }
 
 /**
@@ -95,7 +143,7 @@ export class CsvSourceMappingService {
     const row = await this.prisma.csvSourceMapping.findFirst({
       where: { sourceId, source: { userId } },
     })
-    return row ? rowToStoredMapping(row) : null
+    return row ? rowToStoredMapping(row, sourceId) : null
   }
 
   /**
@@ -146,6 +194,6 @@ export class CsvSourceMappingService {
       update: data,
     })
 
-    return rowToStoredMapping(row)
+    return rowToStoredMapping(row, sourceId)
   }
 }
