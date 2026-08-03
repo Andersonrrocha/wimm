@@ -15,7 +15,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createProfile } from '@wimm/api/dist/prisma/local/profile-registry'
+import {
+  createProfile,
+  CURRENT_REGISTRY_VERSION,
+  PROFILE_REGISTRY_WRITTEN_BY_NEWER_BUILD_CODE,
+} from '@wimm/api/dist/prisma/local/profile-registry'
 
 import {
   decideProfileSituation,
@@ -30,7 +34,7 @@ function profile(id: string, overrides: Partial<{ name: string; lastOpenedAt: st
   return {
     id,
     name: overrides.name ?? `Profile ${id}`,
-    dbFileName: `${id}.db`,
+    databaseFileName: `${id}.db`,
     createdAt: '2026-01-01T00:00:00.000Z',
     lastOpenedAt: overrides.lastOpenedAt ?? null,
   }
@@ -75,6 +79,33 @@ describe('decideProfileSituation (pure -- no filesystem)', () => {
     expect(empty.kind).toBe('no-profiles')
     expect(corrupt.kind).toBe('corrupt-registry')
     expect(empty.kind).not.toBe(corrupt.kind)
+  })
+
+  it('returns "registry-from-newer-version", never "corrupt-registry", when the error carries the newer-build code -- identified by code, not by instanceof or message', () => {
+    // A plain object carrying `.code`, not `profile-registry.ts`'s actual
+    // error class -- proving this reacts to the discriminant field alone,
+    // exactly like `local-api.spec.ts` proves for
+    // `isDatabaseMigratedByNewerBuildError`.
+    const error = Object.assign(new Error('some registry-specific wording that could change at any time'), {
+      code: PROFILE_REGISTRY_WRITTEN_BY_NEWER_BUILD_CODE,
+    })
+    const result: ProfileListResult = { ok: false, error }
+
+    const situation = decideProfileSituation(result)
+
+    expect(situation.kind).toBe('registry-from-newer-version')
+    expect(situation.kind).not.toBe('corrupt-registry')
+    if (situation.kind === 'registry-from-newer-version') {
+      expect(situation.message).toBe(error.message)
+    }
+  })
+
+  it('still returns "corrupt-registry" for an error that merely LOOKS similar but does not carry the newer-build code', () => {
+    const error = Object.assign(new Error('written by a newer version, or so it claims'), {
+      code: 'SOMETHING_ELSE',
+    })
+    const situation = decideProfileSituation({ ok: false, error })
+    expect(situation.kind).toBe('corrupt-registry')
   })
 })
 
@@ -122,6 +153,18 @@ describe('resolveProfileSituation (reads a real registry on disk)', () => {
     const situation = resolveProfileSituation(dir)
     expect(situation.kind).toBe('corrupt-registry')
   })
+
+  it('is "registry-from-newer-version", never "corrupt-registry", when profiles.json declares a version this build does not understand', () => {
+    writeFileSync(
+      join(dir, 'profiles.json'),
+      JSON.stringify({ version: CURRENT_REGISTRY_VERSION + 1, profiles: [] }),
+    )
+    const situation = resolveProfileSituation(dir)
+    expect(situation.kind).toBe('registry-from-newer-version')
+    if (situation.kind === 'registry-from-newer-version') {
+      expect(situation.message).toContain(join(dir, 'profiles.json'))
+    }
+  })
 })
 
 describe('validateProfileName', () => {
@@ -159,10 +202,10 @@ describe('validateProfileName', () => {
     expect(() => validateProfileName('Alex\tBudget')).toThrow(InvalidProfileNameError)
   })
 
-  it('never influences a filesystem path -- path traversal characters are ordinary name characters, not rejected, because dbFileName is derived from the caller-supplied id, never the name', () => {
+  it('never influences a filesystem path -- path traversal characters are ordinary name characters, not rejected, because databaseFileName is derived from the caller-supplied id, never the name', () => {
     // This is deliberate, not an oversight: see profile-lifecycle.ts's doc
     // comment and profile-registry.ts's `createProfile`, which builds
-    // `dbFileName` from `id` alone. A name containing "../" is just a
+    // `databaseFileName` from `id` alone. A name containing "../" is just a
     // profile called "../etc/passwd" as far as the registry is concerned --
     // it can never become a path segment.
     expect(validateProfileName('../../etc/passwd')).toBe('../../etc/passwd')

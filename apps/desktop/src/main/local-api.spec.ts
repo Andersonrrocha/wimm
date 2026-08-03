@@ -187,7 +187,7 @@ describe('createProfileAndOpen / openProfile', () => {
     // migration-runner.spec.ts does: insert a migration record naming a
     // migration this build does not ship. migration-runner.ts's own "ahead
     // of this build" check (see its doc comment) is what this is exercising.
-    const dbFile = join(profileDir, 'profiles', profile.dbFileName)
+    const dbFile = join(profileDir, 'profiles', profile.databaseFileName)
     const db = openLocalDatabase(dbFile)
     db.prepare(
       `INSERT INTO "_prisma_migrations"
@@ -331,7 +331,7 @@ describe('per-profile AI key encryption secret (Task 1, phase 4c)', () => {
     expect(existsSync(secretPath)).toBe(true)
     // Sibling of profiles/, never inside it -- this is what keeps the
     // secret out of what Task 4's export copies (the .db file alone).
-    expect(secretPath).not.toContain(join('profiles', profile.dbFileName))
+    expect(secretPath).not.toContain(join('profiles', profile.databaseFileName))
 
     const secret = readFileSync(secretPath, 'utf8')
     expect(secret.length).toBeGreaterThan(0)
@@ -345,7 +345,7 @@ describe('per-profile AI key encryption secret (Task 1, phase 4c)', () => {
     handle = undefined
 
     const profile = readSoleProfile()
-    const databaseFile = join(profileDir, 'profiles', profile.dbFileName)
+    const databaseFile = join(profileDir, 'profiles', profile.databaseFileName)
     const secretPath = profileSecretFilePath(profileDir, profile.id)
     expect(existsSync(secretPath)).toBe(true)
 

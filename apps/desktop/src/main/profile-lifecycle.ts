@@ -27,25 +27,57 @@
  * everything else (`local-api.ts`, `index.ts`) calls that, never
  * `decideProfileSituation` directly with hand-rolled I/O of its own.
  */
-import { listProfiles, type Profile } from '@wimm/api/dist/prisma/local/profile-registry'
+import {
+  listProfiles,
+  PROFILE_REGISTRY_WRITTEN_BY_NEWER_BUILD_CODE,
+  type Profile,
+} from '@wimm/api/dist/prisma/local/profile-registry'
 
 /**
  * The outcome of asking `profile-registry.ts` for the current profile
  * list: either it succeeded (however many profiles that turned out to be,
- * including zero), or it threw -- a corrupt registry, per that module's
- * own contract. Never collapses the second case into the first.
+ * including zero), or it threw -- a corrupt registry, or a registry written
+ * by a newer build, per that module's own contract. Never collapses either
+ * failure into the success case.
  */
 export type ProfileListResult = { ok: true; profiles: Profile[] } | { ok: false; error: Error }
 
 /**
  * What main should do about the user's profiles, given a `ProfileListResult`.
- * Exactly one of these four is ever produced -- see `decideProfileSituation`.
+ * Exactly one of these five is ever produced -- see `decideProfileSituation`.
+ *
+ * `'registry-from-newer-version'` and `'corrupt-registry'` are deliberately
+ * separate cases, not one merged "the registry could not be read" case: a
+ * registry written by a newer build of Wimm is NOT corrupt (see
+ * `profile-registry.ts`'s `ProfileRegistryWrittenByNewerBuildError`), and
+ * telling the user to update the app is very different advice from telling
+ * them their profile index is broken and pointing them at a recovery path
+ * for a problem they do not have.
  */
 export type ProfileSituation =
   | { kind: 'no-profiles' }
   | { kind: 'single-profile'; profile: Profile }
   | { kind: 'multiple-profiles'; profiles: Profile[] }
   | { kind: 'corrupt-registry'; message: string }
+  | { kind: 'registry-from-newer-version'; message: string }
+
+/**
+ * True when `err` is `profile-registry.ts`'s
+ * `ProfileRegistryWrittenByNewerBuildError`, identified structurally by its
+ * `code` field -- never `instanceof`, and never a match on `.message`.
+ * Mirrors `local-api.ts`'s `isDatabaseMigratedByNewerBuildError` for exactly
+ * the same reason: see that function's doc comment, and
+ * `PROFILE_REGISTRY_WRITTEN_BY_NEWER_BUILD_CODE`'s doc comment
+ * (`profile-registry.ts`) for why `code` is the sound discriminant here.
+ */
+function isProfileRegistryWrittenByNewerBuildError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code: unknown }).code === PROFILE_REGISTRY_WRITTEN_BY_NEWER_BUILD_CODE
+  )
+}
 
 /**
  * The pure decision. See the module doc comment for why this takes a
@@ -57,9 +89,17 @@ export type ProfileSituation =
  * (e.g. "if profiles is empty or the read failed, no-profiles") without
  * this looking wrong at a glance. `profile-lifecycle.spec.ts`'s mutation
  * proof exercises precisely this.
+ *
+ * Within the failure branch, `isProfileRegistryWrittenByNewerBuildError` is
+ * checked BEFORE falling back to the generic `'corrupt-registry'` case --
+ * a registry from a newer build must never be reported as corrupt, see
+ * `ProfileSituation`'s doc comment.
  */
 export function decideProfileSituation(result: ProfileListResult): ProfileSituation {
   if (!result.ok) {
+    if (isProfileRegistryWrittenByNewerBuildError(result.error)) {
+      return { kind: 'registry-from-newer-version', message: result.error.message }
+    }
     return { kind: 'corrupt-registry', message: result.error.message }
   }
   if (result.profiles.length === 0) {
@@ -116,7 +156,7 @@ export const PROFILE_NAME_MAX_LENGTH = 60
  * spaces) or throwing `InvalidProfileNameError`.
  *
  * **This name is never used to build a filesystem path.**
- * `profile-registry.ts`'s `createProfile` derives `dbFileName` from the
+ * `profile-registry.ts`'s `createProfile` derives `databaseFileName` from the
  * caller-supplied `id` (a `randomUUID()`, generated in `local-api.ts`, never
  * from `name`) -- see that module's doc comment. Because of that separation,
  * this function does not need to reject or sanitize path-traversal

@@ -513,7 +513,7 @@ export async function openProfile(options: OpenProfileOptions): Promise<LocalApi
  *
  * The new profile's `id` is generated here (`randomUUID()`), never derived
  * from `options.name` -- `createProfile` (`profile-registry.ts`) builds
- * `dbFileName` from this `id` alone, which is what keeps a user-chosen name
+ * `databaseFileName` from this `id` alone, which is what keeps a user-chosen name
  * from ever being able to influence a filesystem path.
  */
 export async function createProfileAndOpen(options: CreateProfileOptions): Promise<LocalApiHandle> {

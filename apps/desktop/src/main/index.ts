@@ -168,14 +168,15 @@ let profileDir: string
  * `localApiHandle` first for exactly that reason, so a stale situation here
  * can never be reported once a profile is actually running.
  *
- * Deliberately typed to exclude `'single-profile'` and `'corrupt-registry'`:
- * `runApp` resolves both of those itself, before `createWindow()` ever runs
- * (opening the profile directly, or showing a dialog and quitting), so
- * neither can ever reach the renderer -- see `runApp`'s own doc comment.
+ * Deliberately typed to exclude `'single-profile'`, `'corrupt-registry'`, and
+ * `'registry-from-newer-version'`: `runApp` resolves all three itself,
+ * before `createWindow()` ever runs (opening the profile directly, or
+ * showing a dialog and quitting), so none of them can ever reach the
+ * renderer -- see `runApp`'s own doc comment.
  */
 let pendingProfileSituation: Extract<ProfileSituation, { kind: 'no-profiles' | 'multiple-profiles' }> | undefined
 
-/** Strips `dbFileName` before a `Profile` crosses into the renderer -- see `profile-protocol.ts`'s doc comment for why. */
+/** Strips `databaseFileName` before a `Profile` crosses into the renderer -- see `profile-protocol.ts`'s doc comment for why. */
 function toProfileSummary(profile: Profile): ProfileSummary {
   return {
     id: profile.id,
@@ -585,7 +586,7 @@ function registerIpcHandlers(): void {
  * A best-effort, filesystem-safe filename derived from a user-chosen
  * profile name -- used only as `dialog.showSaveDialog`'s suggested
  * `defaultPath` basename, which the OS dialog itself still lets the user
- * freely edit or replace before confirming. Unlike `dbFileName`
+ * freely edit or replace before confirming. Unlike `databaseFileName`
  * (`profile-registry.ts`), this never becomes an actual path segment this
  * app writes to on its own, so it does not need `validateProfileName`'s
  * full guarantees -- it only needs to avoid characters most filesystems
@@ -746,9 +747,29 @@ async function openSingleProfileOrShowError(profile: Profile): Promise<LocalApiH
  * could receive, so "the picker/onboarding gate mishandles the corrupt
  * case as no-profiles" is not a bug this file's renderer-side code could
  * even have, regardless of how carefully (or not) that code is written.
+ *
+ * A registry written by a newer build of Wimm (`'registry-from-newer-
+ * version'`): handled the same way as a corrupt registry -- a blocking
+ * dialog, then quit, before any window exists -- but with its OWN message,
+ * never the corrupt-registry one. Telling a user their profile index is
+ * "corrupt" when the real problem is "this build is older than the one that
+ * wrote it" sends them down a recovery path for a problem they do not have;
+ * see `profile-lifecycle.ts`'s `ProfileSituation` doc comment and
+ * `profile-registry.ts`'s `ProfileRegistryWrittenByNewerBuildError`.
  */
 async function decideAndOpenProfiles(): Promise<boolean> {
   const situation = resolveProfileSituation(profileDir)
+
+  if (situation.kind === 'registry-from-newer-version') {
+    dialog.showErrorBox(
+      'This profile index was created by a newer version of Wimm',
+      `${situation.message}\n\n` +
+        'Wimm cannot read your profile list with the version currently installed. This is NOT a corrupt index -- ' +
+        'it is well-formed, just written by a newer build. Your profile data itself has not been touched.\n\n' +
+        'Please update Wimm to the latest version to see your profiles again.',
+    )
+    return false
+  }
 
   if (situation.kind === 'corrupt-registry') {
     dialog.showErrorBox(
