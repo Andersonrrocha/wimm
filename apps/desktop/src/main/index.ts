@@ -222,9 +222,16 @@ function registerIpcHandlers(): void {
   // writes a credential -- the hosted-mode refresh/access tokens, or the
   // embedded API's session token -- now verifies `assertTrustedSender`
   // first. See that function's doc comment for what it actually checks and
-  // why. `local-api:get-mode` and `updater:quitAndInstall` are deliberately
-  // left as they were: neither reads nor writes anything sensitive, so
-  // there is nothing here for an untrusted sender to gain.
+  // why. `local-api:get-mode` is deliberately left as it was: it neither
+  // reads nor writes anything sensitive, so there is nothing here for an
+  // untrusted sender to gain. `updater:quitAndInstall` is NOT exempt, unlike
+  // in earlier versions of this file: Stage 4 task 4.4 changed it from a
+  // stateless pass-through into something with a real side effect -- once an
+  // update is actually ready, it tears down the active profile's database
+  // connection (see `updater.ts`'s `quitAndInstallUpdate` doc comment for
+  // why that has to happen before `electron-updater` is told to install
+  // anything) -- so it now gets the same trusted-sender check as every other
+  // handler with a real effect.
   ipcMain.handle('tokens:getAccess', (event) => {
     assertTrustedSender(event, 'tokens:getAccess')
     return getAccessToken()
@@ -248,7 +255,28 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event, 'tokens:clear')
     return clearTokens()
   })
-  ipcMain.handle('updater:quitAndInstall', () => quitAndInstallUpdate())
+  // The callback below reads `localApiHandle` at CALL time, same contract as
+  // `local-api:get-mode`/`local-api:request` -- deliberately NOT captured
+  // into a local before calling `quitAndInstallUpdate`, because
+  // `quitAndInstallUpdate` only invokes this callback at all once it has
+  // confirmed an update is actually ready to install (see that function's
+  // guard clause, `updater.ts`). Reading and clearing `localApiHandle`
+  // inside the callback, rather than unconditionally before this call, is
+  // what keeps a no-op call (no update downloaded yet) from leaving
+  // `localApiHandle` cleared while the Nest app underneath it is still
+  // running and never actually closed -- a real leak this file's own
+  // bookkeeping could not recover from, since every OTHER handler treats
+  // `localApiHandle === undefined` as "no profile is open".
+  ipcMain.handle('updater:quitAndInstall', async (event) => {
+    assertTrustedSender(event, 'updater:quitAndInstall')
+    await quitAndInstallUpdate(async () => {
+      const handle = localApiHandle
+      localApiHandle = undefined
+      if (handle) {
+        await handle.close()
+      }
+    })
+  })
 
   // --- Embedded local API handshake ---------------------------------------
   //
