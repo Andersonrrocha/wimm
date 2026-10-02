@@ -148,4 +148,17 @@ Community alternatives exist (`openai-oauth`, `login-with-chatgpt`) and may be p
 
 **Decision: implement the flow directly.** No new dependency.
 
-If the owner later wants the DevKit regardless, the honest routes are to relicense WIMM or to publish with a prominent notice that the AI feature carries a noncommercial dependency. Both cost the clean "MIT, use it however you like" story, so the choice should be deliberate rather than discovered.
+### If the DevKit is ever wanted anyway
+
+The licence text was read directly before recording this, and one clause narrows the problem considerably: "Independently authored software does not become a Modified Work merely by calling, linking to, or communicating with the Work through an interface." The copyleft reaches **modifications of OpenAI's Contribution only**. WIMM calling `@siwc/local` unmodified through its API does not become a Modified Work, so **relicensing WIMM is not required** — MIT may stand.
+
+What the licence does require of a distributor: "You may distribute the Work or a Modified Work only for a Noncommercial Purpose, provided You: (a) give recipients a copy of this License; (b) mark files You changed with prominent change notices; (c) preserve applicable copyright, patent, trademark, attribution, and third-party license notices."
+
+So the lever is disclosure, not licence choice. The options, in order of cost:
+
+1. **Do not ship the DevKit.** The decision above. No licensing surface at all.
+2. **Keep MIT, ship it, disclose it.** Legally available. Bundle the DevKit licence, preserve its notices, and state plainly that one embedded component is noncommercial-only. The cost is that `LICENSE` alone stops telling the whole truth — a reader who sees only MIT is misled about commercial use.
+3. **Relicense to a noncommercial licence** (PolyForm Noncommercial 1.0.0 is the well-drafted software one). Makes the artifact internally consistent with no asterisk. For a personal-finance app this restricts less real use than it sounds, since nearly all genuine use is personal; the cost is that the project is no longer OSI open source.
+4. **Isolate it behind the existing boundary.** `ai/local-only/` already has build-level and packaging-level guards, so the DevKit-dependent provider could ship as an opt-in add-on carrying its own licence. The core stays cleanly MIT, at the cost of real build and UX work — and it reinstates the two-build split this design collapsed.
+
+**One risk no licence choice resolves:** the owner's own distribution must itself be a Noncommercial Purpose, defined as "personal learning, experimentation, or development without an intended or reasonably anticipated commercial application." Whether a portfolio piece intended to support employment falls inside that is genuinely arguable, and it turns on the act of distributing the DevKit rather than on anything WIMM declares. That question is the owner's, or a lawyer's. This analysis is a reading of the licence text, not legal advice.
