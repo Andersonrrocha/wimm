@@ -788,7 +788,20 @@ git commit -m "feat(ai): add the single-use loopback callback listener"
 
 **Interfaces:**
 - Consumes: `OidcConfig`, `CHATGPT_RESOURCE` (Task 3)
-- Produces: `exchangeCode(args: { config; clientId; code; verifier; redirectUri; nonce; fetchImpl? }): Promise<ChatGptCredentials>` and `verifyIdentity(args: { idToken; clientId; issuer; jwksUri; nonce; fetchImpl? }): Promise<{ subject: string; accountLabel?: string; sharing: boolean }>`, where `ChatGptCredentials = { accessToken, refreshToken, idToken, expiresAt, scopes, subject, accountLabel, sharing }`.
+- Produces: `exchangeCode(args: { config; clientId; code; verifier; redirectUri; nonce; fetchImpl? }): Promise<ChatGptCredentials>`, `verifyIdentity(args: { idToken; clientId; issuer; jwksUri; nonce; fetchImpl? }): Promise<{ subject: string }>`, and `isSharingGranted(scopes: string): boolean`, where `ChatGptCredentials = { accessToken, refreshToken, idToken, expiresAt, scopes, subject, sharing }`.
+
+**`sharing` is derived, not claimed.** An earlier draft of this plan asserted `sharing` was an `id_token` claim and invented a claim URI for it. That was wrong. `sharing` is true when the connection is live *and* the **granted scopes** include `chatgpt.tokens.use.direct`:
+
+```ts
+export const SHARING_SCOPE = 'chatgpt.tokens.use.direct'
+
+/** Whether the granted scopes actually permit plan usage. */
+export function isSharingGranted(scopes: string): boolean {
+  return scopes.split(/\s+/).filter(Boolean).includes(SHARING_SCOPE)
+}
+```
+
+Do not look for a `sharing` claim; there is none.
 
 **Verification requirements:** RS256 via the discovered JWKS, `issuer` equal to the discovered issuer, `audience` equal to the installation's client ID, and the `nonce` claim equal to the one generated for that authorize call. Use `@nestjs/jwt` with a key built by `crypto.createPublicKey({ key: jwk, format: 'jwk' })` — no new dependency.
 
@@ -883,14 +896,20 @@ describe('exchangeCode', () => {
 })
 
 describe('verifyIdentity', () => {
-  it('reports sharing from the verified claims', async () => {
+  it('returns the verified subject', async () => {
     const identity = await verifyIdentity({
-      idToken: signIdToken({ nonce: 'n-1', 'https://api.openai.com/sharing': true }),
+      idToken: signIdToken({ nonce: 'n-1' }),
       clientId: 'client-1', issuer: config.issuer, jwksUri: config.jwks_uri,
       nonce: 'n-1', fetchImpl: fetchStub({}),
     })
-    expect(identity.sharing).toBe(true)
     expect(identity.subject).toBe('user-sub')
+  })
+})
+
+describe('sharing', () => {
+  it('is derived from the granted scopes, not from the id_token', () => {
+    expect(isSharingGranted('openid offline_access chatgpt.tokens.use.direct')).toBe(true)
+    expect(isSharingGranted('openid profile email offline_access')).toBe(false)
   })
 })
 ```
@@ -1048,6 +1067,19 @@ git commit -m "feat(ai): refresh ChatGPT tokens single-flight with pending rotat
 - `POST https://api.openai.com/v1/responses`, header `authorization: Bearer <access token>`, body carrying **`store: false`**.
 - Reuse the Anthropic provider's prompt shape and result parsing; do not invent a second output format.
 - Return `[]` when no connection exists, when `sharing` is false, or when the token cannot be refreshed. Categorization is an enhancement and must never gate an import.
+- **Map the API's own error codes** to the design's failure table. These are the real codes, with their retryability:
+
+| API error code | Meaning | Retryable |
+|---|---|---|
+| `subscription_sharing_user_not_eligible` | That account or workspace cannot use plan sharing | no |
+| `subscription_sharing_usage_limit_exceeded` | A sharing limit was reached — the user's own usage/app limits in ChatGPT Settings | no |
+| `subscription_sharing_usage_unavailable` | Usage could not be checked | **yes** |
+| `subscription_sharing_unsupported_capability` | The request used a capability sharing does not support | no |
+| `subscription_sharing_route_not_supported` | The request used an unsupported route | no |
+| `subscription_sharing_invalid_user` | The subscription context could not be validated | no |
+| `subscription_sharing_user_unavailable` | Account or workspace temporarily unavailable | **yes** |
+
+`subscription_sharing_usage_limit_exceeded` is the weekly/per-app cap row in the design's failure table. Do not collapse these into one message, and do not retry a non-retryable code.
 
 - [ ] **Step 1: Write the failing test**, including the privacy assertion:
 
@@ -1281,6 +1313,5 @@ git add -A && git commit -m "test(ai): close out ChatGPT plan-usage verification
 
 ## Deferred, deliberately
 
-- **Weekly per-app cap discovery.** The design's failure table requires telling the user when they have hit their own per-app cap. Whether OpenAI surfaces that as a distinct error code was not confirmed from primary sources; Task 12 must render a distinct message for it, and the code that maps the API error to that message should be written against whatever the API actually returns, observed once during Task 9. Do not invent an error code.
 - **Mobile.** `apps/mobile` is out of scope for this plan by constraint.
 - **Jev.** A separate front for deterministic low-cost categorization, not part of this work.
