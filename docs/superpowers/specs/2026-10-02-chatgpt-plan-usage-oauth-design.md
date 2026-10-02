@@ -108,6 +108,8 @@ Refresh must be **single-flight**: several categorize requests in one import bat
 
 **The cost, stated rather than buried:** this changes the Anthropic path's signature, so its existing specs change too. Every refactor in Stages 2 and 3 was held to "existing specs pass untouched" as the proof it was a refactor and not a rewrite. This one cannot meet that bar, and pretending otherwise would be worse than admitting it. The alternative — a discriminated credential union passed in — keeps the old tests but leaves a provider-specific parameter in a provider-agnostic contract. I recommend the clean change and the honest test churn.
 
+**Decided (2026-10-02):** drop `apiKey`. The signature becomes `{ transactions, candidates }` and each provider resolves its own credential. The Anthropic provider and its specs change with it; that churn is named here so it is not later mistaken for scope creep.
+
 ## Failure modes, and what the user must see
 
 These are not hypothetical; each one has a distinct cause and deserves a distinct message. Collapsing them into "AI unavailable" is the kind of conflation this project has already fixed three times elsewhere.
@@ -132,33 +134,75 @@ Every user-facing string needs `en` and `pt`.
 - Any relaxation of `contextIsolation`, `nodeIntegration: false`, `sandbox: true`, the CSP, the navigation denials, or the IPC bridge's main-side validation.
 - The plan-usage provider reachable from `app.module.ts`. That is a licensing boundary now, and it is enforced at build level.
 
+## Process boundary, settled from the code
+
+The embedded Nest API runs **in the Electron main process**, not a child: `local-api.ts` calls
+`NestFactory.create(AppLocalModule.forRoot(...))` and `app.listen(0, '127.0.0.1')` directly. That decides where
+each piece lives:
+
+- **`apps/api/src/ai/local-only/`** owns the whole OAuth protocol: PKCE generation, the authorize URL, the
+  loopback listener (plain `node:http`), the code exchange, `id_token` verification, token persistence and
+  single-flight refresh. All of it is ordinary Node, so the Electron-free rule on `apps/api` holds.
+- **`apps/desktop/src/main/`** contributes exactly one thing — opening the system browser via
+  `shell.openExternal` — injected as an `openBrowser(url)` callback. It is the only part that genuinely needs
+  Electron. (OpenAI's own DevKit takes the same injected `openBrowser` shape, arrived at independently.)
+
+**No new top-level dependency is required**, which is worth stating because `AGENTS.md` would otherwise need an
+ask: `@nestjs/jwt` is already a dependency, and Node 22 provides global `fetch` plus
+`crypto.createPublicKey({ format: 'jwk' })`, which together cover fetching OpenAI's JWKS and verifying an RS256
+`id_token` without `jose` or `jwks-rsa`.
+
 ## The SDK question — investigated and settled
 
-OpenAI ships an official DevKit (`openai/sign-in-with-chatgpt-devkit`): `@siwc/local` for the Node process and `@siwc/react` for UI. Its real advantages are not in doubt — OAuth, credential storage, account profiles, model discovery, streaming responses and token refresh, maintained by the one party that can change the protocol underneath us.
+OpenAI ships an official DevKit (`openai/sign-in-with-chatgpt-devkit`): `@siwc/local` for the Node process and
+`@siwc/react` for UI. Three findings decided it, and the first corrects an error in an earlier draft of this
+document.
 
-**It is nonetheless disqualified for this project, by its licence.**
+**1. Its credential storage is injectable — the earlier "storage conflict" finding was wrong.** An earlier note
+here claimed the DevKit forces OS-keychain storage, incompatible with WIMM's per-profile model. Reading the
+source disproves it. `ConnectionStore(directory, encryption)` takes both the directory and the provider from the
+host, and `ChatGPTConfig` exposes `storageDir` and `credentialEncryption`. The Electron `safeStorage` binding
+lives in the example app, not the package. The contract is small:
 
-The DevKit is released under the "Sign-in with ChatGPT DevKit Noncommercial License v1.0". It is not OSI-approved. It permits use "solely for Noncommercial Purposes", states that "Commercial use of OpenAI's Contribution requires a separate written agreement with OpenAI", and excludes from "Noncommercial Purpose" any "development, testing, distribution, or operation of a product or service by or for a business, employer, or client in connection with its operations or commercial advantage". Modifications must stay under the same licence.
+```ts
+export interface CredentialEncryption {
+  id: string
+  isAvailable(): boolean | Promise<boolean>
+  encrypt(plaintext: string): Uint8Array | Promise<Uint8Array>
+  decrypt(ciphertext: Uint8Array): string | Promise<string>
+}
+```
 
-WIMM ships under **MIT** (`LICENSE`, 2026, Anderson Rocha). MIT grants commercial use explicitly. Depending on a noncommercially-licensed package inside an MIT-licensed distributable is a contradiction in the artifact: the LICENSE file would promise more than the shipped application can deliver, and anyone taking WIMM at its word and running it at work would breach OpenAI's terms without being told. That is a licensing defect in a public release, not an engineering preference.
+`ai-key-crypto.ts` is nearly a drop-in. So this was never a reason to reject the DevKit, and the record should
+not pretend otherwise.
 
-A second conflict, independent of the licence: the DevKit uses "OS-encrypted credential storage", which is per machine-user. WIMM's identity model is per *profile* — the whole subject of Phase 4c. Two profiles on one machine would share a single ChatGPT connection, and it reintroduces the Linux-without-a-keyring degradation that was one of the two reasons `safeStorage` was rejected in Task 1. Whether that storage layer is injectable could not be determined from the README (it defers to `docs/security.md`); the licence settles the question regardless.
+**2. Its licence forbids commercial use.** "Sign-in with ChatGPT DevKit Noncommercial License v1.0", not
+OSI-approved. The copyleft reaches modifications only — "Independently authored software does not become a
+Modified Work merely by calling, linking to, or communicating with the Work through an interface" — so WIMM
+could have stayed MIT. The owner reviewed this and accepted it (keep MIT, ship the DevKit, disclose the embedded
+component). It was therefore **not** the deciding factor.
 
-Community alternatives exist (`openai-oauth`, `login-with-chatgpt`) and may be permissively licensed, but putting a third party's OAuth implementation on this feature's security-critical path is a worse trade than owning a few hundred tested lines — and it would need auditing anyway.
+**3. It is not installable, and that is what decided it.** `packages/local/package.json` sets
+`"private": true`, the npm registry returns **404** for `@siwc/local`, and the repository commits no `dist`. The
+package cannot be added as a dependency at all; the only route is vendoring roughly 1,100 lines of source.
 
-**Decision: implement the flow directly.** No new dependency.
+That removes the DevKit's single strongest advantage — "maintained by the one party that can change the protocol
+underneath us." Vendored, there is no update channel; upstream changes arrive only through a manual diff. The
+trade stops being *maintained dependency vs. our own code* and becomes *1,100 hand-synced lines under a foreign
+noncommercial licence vs. roughly 250 of our own under MIT* — and roughly 400 of those lines (`models.ts`,
+`responses.ts`: model discovery and response streaming) serve features WIMM does not have, since it only
+categorizes.
 
-### If the DevKit is ever wanted anyway
+**Decision: implement the flow directly. No vendoring, no new dependency, `LICENSE` stays wholly MIT, and the
+disclosure obligations never arise.**
 
-The licence text was read directly before recording this, and one clause narrows the problem considerably: "Independently authored software does not become a Modified Work merely by calling, linking to, or communicating with the Work through an interface." The copyleft reaches **modifications of OpenAI's Contribution only**. WIMM calling `@siwc/local` unmodified through its API does not become a Modified Work, so **relicensing WIMM is not required** — MIT may stand.
+Two pieces of their design are worth borrowing as *ideas*, since they encode real subtleties and the plan should
+reproduce the behaviour rather than the code:
 
-What the licence does require of a distributor: "You may distribute the Work or a Modified Work only for a Noncommercial Purpose, provided You: (a) give recipients a copy of this License; (b) mark files You changed with prominent change notices; (c) preserve applicable copyright, patent, trademark, attribution, and third-party license notices."
-
-So the lever is disclosure, not licence choice. The options, in order of cost:
-
-1. **Do not ship the DevKit.** The decision above. No licensing surface at all.
-2. **Keep MIT, ship it, disclose it.** Legally available. Bundle the DevKit licence, preserve its notices, and state plainly that one embedded component is noncommercial-only. The cost is that `LICENSE` alone stops telling the whole truth — a reader who sees only MIT is misled about commercial use.
-3. **Relicense to a noncommercial licence** (PolyForm Noncommercial 1.0.0 is the well-drafted software one). Makes the artifact internally consistent with no asterisk. For a personal-finance app this restricts less real use than it sounds, since nearly all genuine use is personal; the cost is that the project is no longer OSI open source.
-4. **Isolate it behind the existing boundary.** `ai/local-only/` already has build-level and packaging-level guards, so the DevKit-dependent provider could ship as an opt-in add-on carrying its own licence. The core stays cleanly MIT, at the cost of real build and UX work — and it reinstates the two-build split this design collapsed.
-
-**One risk no licence choice resolves:** the owner's own distribution must itself be a Noncommercial Purpose, defined as "personal learning, experimentation, or development without an intended or reasonably anticipated commercial application." Whether a portfolio piece intended to support employment falls inside that is genuinely arguable, and it turns on the act of distributing the DevKit rather than on anything WIMM declares. That question is the owner's, or a lawyer's. This analysis is a reading of the licence text, not legal advice.
+- **Refresh rotation via an encrypted pending state.** Rotated credentials are persisted *before* the new
+  identity is verified, so a signing-key outage or an app restart resumes verification from saved state instead
+  of reusing an already-consumed refresh token. Reimplementing this carelessly produces an account that silently
+  cannot reconnect.
+- **Storage hardening.** Interprocess lock, atomic file replacement, owner-only permissions, a symlink/uid
+  check, and a provider-identifier guard so a file written under one encryption scheme is never silently read
+  under another.
