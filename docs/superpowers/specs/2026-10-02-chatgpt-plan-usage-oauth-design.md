@@ -132,8 +132,20 @@ Every user-facing string needs `en` and `pt`.
 - Any relaxation of `contextIsolation`, `nodeIntegration: false`, `sandbox: true`, the CSP, the navigation denials, or the IPC bridge's main-side validation.
 - The plan-usage provider reachable from `app.module.ts`. That is a licensing boundary now, and it is enforced at build level.
 
-## Open question for the owner
+## The SDK question — investigated and settled
 
-The cookbook describes an **OpenAI-provided SDK** that handles the listener and the exchange. Using it means a new top-level dependency, which `AGENTS.md` requires asking about. Implementing the flow directly is standard OAuth with PKCE — on the order of a couple of hundred lines, no new dependency, and fully under our own tests.
+OpenAI ships an official DevKit (`openai/sign-in-with-chatgpt-devkit`): `@siwc/local` for the Node process and `@siwc/react` for UI. Its real advantages are not in doubt — OAuth, credential storage, account profiles, model discovery, streaming responses and token refresh, maintained by the one party that can change the protocol underneath us.
 
-I lean toward implementing it directly: this is the one place where the whole security posture of the feature lives, and every other guarantee in this app is one we can prove ourselves. But it is a genuine trade against maintenance, and it is the owner's call.
+**It is nonetheless disqualified for this project, by its licence.**
+
+The DevKit is released under the "Sign-in with ChatGPT DevKit Noncommercial License v1.0". It is not OSI-approved. It permits use "solely for Noncommercial Purposes", states that "Commercial use of OpenAI's Contribution requires a separate written agreement with OpenAI", and excludes from "Noncommercial Purpose" any "development, testing, distribution, or operation of a product or service by or for a business, employer, or client in connection with its operations or commercial advantage". Modifications must stay under the same licence.
+
+WIMM ships under **MIT** (`LICENSE`, 2026, Anderson Rocha). MIT grants commercial use explicitly. Depending on a noncommercially-licensed package inside an MIT-licensed distributable is a contradiction in the artifact: the LICENSE file would promise more than the shipped application can deliver, and anyone taking WIMM at its word and running it at work would breach OpenAI's terms without being told. That is a licensing defect in a public release, not an engineering preference.
+
+A second conflict, independent of the licence: the DevKit uses "OS-encrypted credential storage", which is per machine-user. WIMM's identity model is per *profile* — the whole subject of Phase 4c. Two profiles on one machine would share a single ChatGPT connection, and it reintroduces the Linux-without-a-keyring degradation that was one of the two reasons `safeStorage` was rejected in Task 1. Whether that storage layer is injectable could not be determined from the README (it defers to `docs/security.md`); the licence settles the question regardless.
+
+Community alternatives exist (`openai-oauth`, `login-with-chatgpt`) and may be permissively licensed, but putting a third party's OAuth implementation on this feature's security-critical path is a worse trade than owning a few hundred tested lines — and it would need auditing anyway.
+
+**Decision: implement the flow directly.** No new dependency.
+
+If the owner later wants the DevKit regardless, the honest routes are to relicense WIMM or to publish with a prominent notice that the AI feature carries a noncommercial dependency. Both cost the clean "MIT, use it however you like" story, so the choice should be deliberate rather than discovered.
