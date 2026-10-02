@@ -17,6 +17,39 @@ Not assumed — read from the open-source cookbook article and the quickstart:
 - The response carries an `id_token` for verification, and the resulting session carries a **`sharing` flag** indicating whether that account's plan actually grants plan access.
 - Requests then go to the **Responses API** with that profile's OAuth access token, refreshed when needed.
 
+## Protocol facts, read from the reference implementation
+
+Taken from the DevKit's `oauth.ts`/`responses.ts` as protocol documentation (no code is reused). These are
+exact values; the plan must not paraphrase them.
+
+- **Only the issuer is fixed:** `https://auth.openai.com`. `authorization_endpoint`, `token_endpoint`,
+  `jwks_uri` and `revocation_endpoint` come from **OIDC discovery**, and discovery must be rejected unless the
+  document's own `issuer` equals that value.
+- **Scopes:** `openid profile email offline_access resource.invoke chatgpt.tokens.use.direct`
+- **Resource:** `https://api.openai.com/v1` — sent on authorize, on the code exchange, and on refresh.
+- **Callback path:** `/auth/callback`, on `127.0.0.1`.
+- **PKCE:** `code_challenge_method=S256`, `code_challenge = base64url(sha256(verifier))`.
+- **Dynamic registration issues a durable `client_id`.** The first authorize sends
+  `client_id=dynamic_agent_client` plus `agent_name_hint`; the flow returns a real per-installation client ID
+  that must be **persisted and reused**, and `agent_name_hint` is sent only when no client ID is stored yet.
+  **This changes the storage shape in decision 6: a `clientId` column is required, not just tokens.**
+- **The callback's `client_id` must be validated**: present at most once, matching
+  `^[a-zA-Z0-9_-]{1,200}$`, and never equal to `dynamic_agent_client`.
+- **Exchange:** `grant_type=authorization_code` with `client_id`, `code`, `code_verifier`, `resource`.
+- **Refresh:** `grant_type=refresh_token` with `client_id`, `refresh_token`, `resource`. **The response may omit
+  `scope`** when granted scopes are unchanged — fall back to the stored scopes rather than treating it as a
+  downgrade.
+- **Identity verification:** `issuer` = the discovered issuer, `audience` = the installation's client ID, and
+  the `nonce` claim compared against the one generated for that authorize call.
+- **Revocation:** the discovered `revocation_endpoint` with `token`, `token_type_hint=refresh_token`,
+  `client_id`.
+- **Categorization requests:** `POST https://api.openai.com/v1/responses`, header
+  `authorization: Bearer <access_token>`, body carrying **`store: false`**.
+
+**`store: false` is not incidental here.** It tells OpenAI not to retain the request, and the request body
+contains transaction descriptions and amounts. For a personal-finance app this is a privacy property, not a
+performance flag, and it needs a test asserting the flag is actually sent.
+
 ## The flow
 
 ```
@@ -88,7 +121,7 @@ That property is exactly what this feature needs: **an exported profile cannot u
 
 ### 6. Storage shape, and the cost it carries
 
-Tokens are not the shape of `aiApiKeyEncrypted` (a single string): there is an access token, a refresh token, and an expiry. That needs new nullable columns or a small table.
+Tokens are not the shape of `aiApiKeyEncrypted` (a single string): there is an access token, a refresh token, an expiry, the granted scopes, **and the durable per-installation `client_id` that dynamic registration issues** (see the protocol facts above — without it, every reconnect re-registers and the stored `id_token` audience no longer verifies). That needs new nullable columns or a small table.
 
 That touches the schema, which means **both migration chains** plus the derived SQLite baseline and the CHECK-constraint list, all guarded by `assert:parity` and `assert:constraints` in CI. The hosted chain gets columns it will never populate; that is harmless and keeps the two chains identical, which is what parity requires.
 
