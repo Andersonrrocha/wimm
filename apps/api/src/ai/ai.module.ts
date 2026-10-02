@@ -18,7 +18,7 @@ import { AnthropicCategorizerService } from './anthropic-categorizer.service'
  * wrong id, or an empty array here is exactly the kind of change that test
  * exists to catch.
  *
- * A hosted-only provider (`ai/hosted/hosted-ai.module.ts`) is deliberately
+ * A local-only provider (`ai/local-only/local-only-ai.module.ts`) is deliberately
  * NOT added here -- see that module's doc comment for why merging it in is
  * deferred rather than designed against a stand-in.
  */

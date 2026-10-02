@@ -179,7 +179,7 @@ const {
   findDependencyGraphProblems,
   verifyDependencyGraph,
 } = require('./verify-dependency-graph.cjs')
-const { assertNoHostedOnlyCodeInPackage } = require('./verify-no-hosted-code-in-package.cjs')
+const { assertLocalOnlyAiShipped } = require('./verify-local-only-ai-in-package.cjs')
 
 function archName(arch) {
   return Arch[arch]
@@ -792,15 +792,17 @@ module.exports = async function afterPack(context) {
   )
 
   // Second structural check, same "throw on any real problem" contract --
-  // see verify-no-hosted-code-in-package.cjs's own doc comment. Proves the
-  // *shipped bytes* of this specific repacked archive contain no compiled
-  // hosted-only AI provider module (the owner's standing constraint: ChatGPT
-  // OAuth stays in the personally-hosted build only), on top of
-  // apps/api/scripts/verify-ai-local-composition.ts's separate, source-level
-  // proof that the local composition root's own import graph never reaches
-  // one.
-  assertNoHostedOnlyCodeInPackage(asarPath)
-  console.log('[after-pack] assertNoHostedOnlyCodeInPackage: OK -- no compiled hosted-only AI provider file shipped.')
+  // see verify-local-only-ai-in-package.cjs's own doc comment. Proves the
+  // *shipped bytes* of this specific repacked archive DO contain the compiled
+  // local-only AI provider: ChatGPT plan usage is licensed for exactly this
+  // build (free, open-source, run on the user's own machine), so a packaging
+  // glob that quietly stopped matching would ship an app whose AI
+  // categorization silently does not work. The complementary source-level
+  // proof -- that the *hosted* root's import graph never reaches that code,
+  // since a remotely hosted app needs OpenAI's waitlist -- lives in
+  // apps/api/scripts/verify-ai-hosted-composition.ts.
+  assertLocalOnlyAiShipped(asarPath)
+  console.log('[after-pack] assertLocalOnlyAiShipped: OK -- the compiled local-only AI provider is in the archive.')
 
   console.log('[after-pack] done')
 }

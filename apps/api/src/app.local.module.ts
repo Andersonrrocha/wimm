@@ -47,6 +47,7 @@ import { AiModule } from './ai/ai.module'
 import { CategoriesModule } from './categories/categories.module'
 import { CategorizationRulesModule } from './categorization-rules/categorization-rules.module'
 import { ImportsModule } from './imports/imports.module'
+import { LocalOnlyAiModule } from './ai/local-only/local-only-ai.module'
 import { LocalPrismaService } from './prisma/local/local-prisma.service'
 import { assertUsableAiKeyEncryptionSecret } from './prisma/local/profile-secret'
 import { PrismaService } from './prisma/prisma.service'
@@ -152,6 +153,13 @@ export class AppLocalModule {
         RecurrencesModule,
         ReportsModule,
         AiModule,
+        // Local-only: ChatGPT plan usage is licensed for open-source
+        // projects and personal projects that run locally, which is what
+        // this composition is; a remotely hosted app needs OpenAI's
+        // waitlist first, so `app.module.ts` must never import this. See
+        // `LocalOnlyAiModule`'s doc comment and
+        // `scripts/verify-ai-hosted-composition.ts`.
+        LocalOnlyAiModule,
       ],
       providers: [
         {

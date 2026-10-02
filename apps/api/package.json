@@ -19,7 +19,7 @@
     "gen:sqlite-schema": "tsx scripts/generate-sqlite-schema.ts",
     "gen:sqlite-baseline": "mkdir -p prisma/migrations-sqlite/0000_baseline && prisma migrate diff --from-empty --to-schema prisma/schema.sqlite.prisma --script > prisma/migrations-sqlite/0000_baseline/migration.sql.tmp && tsx scripts/inject-check-constraints.ts prisma/migrations-sqlite/0000_baseline/migration.sql.tmp && mv prisma/migrations-sqlite/0000_baseline/migration.sql.tmp prisma/migrations-sqlite/0000_baseline/migration.sql",
     "assert:parity": "tsx scripts/assert-schema-parity.ts",
-    "verify:ai-local-composition": "tsx scripts/verify-ai-local-composition.ts"
+    "verify:ai-hosted-composition": "tsx scripts/verify-ai-hosted-composition.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
