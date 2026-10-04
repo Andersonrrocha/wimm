@@ -1700,6 +1700,8 @@ describe('ChatGpt controller (behavioral, over the real local composition)', () 
 })
 ```
 
+**Carry-over from Task 2 that this task must resolve.** `ImportsService` now gates AI work on the user's `aiCategorizationMode`, which defaults to `OFF`. No task in this plan currently sets that mode, so a user who connects ChatGPT but never changes the mode would be silently skipped once `ImportsService` is routed to this provider. Decide it here, explicitly, and state the decision in the connect flow's doc comment: either a successful connect sets the mode, or the gate must also treat a live ChatGPT connection as consent. Do not leave it implicit — the gate is harmless today only because this provider is unreachable from `ImportsService`.
+
 **`ChatGptConnectFlow`** is the service the controller delegates to: it runs discovery, starts the listener, calls `openBrowser`, awaits the callback, exchanges, and persists. Create it in this task as a thin composition of Tasks 3-8; the controller itself must hold no logic.
 
 - [ ] **Step 2: Run it and watch it fail**
