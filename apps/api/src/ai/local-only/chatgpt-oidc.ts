@@ -50,8 +50,28 @@ export async function discoverOidcConfig(
     )
   }
   for (const key of REQUIRED_ENDPOINTS) {
-    if (typeof document[key] !== 'string' || !document[key]) {
+    const value = document[key]
+    if (typeof value !== 'string' || !value) {
       throw new Error(`ChatGPT OIDC discovery is missing ${key}.`)
+    }
+    // Presence is not enough. The PKCE verifier and the authorization code
+    // are sent to `token_endpoint`, so a discovery document that satisfied
+    // the issuer check but named a plaintext or non-HTTP endpoint would hand
+    // them over in the clear. Parse and require https.
+    //
+    // Deliberately NOT a same-origin check: the real discovery document has
+    // not been read, and an authorization server may legitimately serve
+    // `jwks_uri` from another origin (a CDN, typically). Asserting
+    // same-origin on an unverified assumption would break the live flow, so
+    // this constrains only what is universally true of OAuth endpoints.
+    let parsed: URL
+    try {
+      parsed = new URL(value)
+    } catch {
+      throw new Error(`ChatGPT OIDC discovery has a malformed ${key}.`)
+    }
+    if (parsed.protocol !== 'https:') {
+      throw new Error(`ChatGPT OIDC discovery ${key} must use https.`)
     }
   }
   return document as unknown as OidcConfig

@@ -21,6 +21,12 @@ export interface AuthorizeRequest {
  * `state` and `nonce` and verify the latter two later -- generating them and
  * then not checking them is the classic way to ship PKCE that proves nothing.
  *
+ * **`verifier` must never be logged, serialised or persisted.** It is the
+ * proof redeemed at the token endpoint, and the returned object is a flat
+ * one, so `JSON.stringify` or a bare `logger.log(request)` would carry it.
+ * Only `url` is safe to hand onwards; the spec asserts the verifier never
+ * reaches the authorize URL.
+ *
  * `agent_name_hint` is sent only when no client ID is stored yet: dynamic
  * registration issues a durable per-installation client ID, and re-sending
  * the hint on later authorizations would request a second registration.
@@ -34,9 +40,17 @@ export function createAuthorizeRequest(args: {
   const verifier = randomValue()
   const state = randomValue()
   const nonce = randomValue()
+  // One source of truth for "do we already have a client ID", and trimmed.
+  // Reading `args.existingClientId` twice -- once through `??` and once
+  // through `!` -- made a blank value behave incoherently: `??` kept it
+  // (sending `client_id=`) while `!` treated it as absent (also sending the
+  // hint). Trimming additionally folds in a whitespace-only value, which is
+  // truthy and so survives `||`; a real client ID matches
+  // `^[a-zA-Z0-9_-]{1,200}$`, so whitespace in one is always a data error.
+  const clientId = args.existingClientId?.trim() || undefined
   const url = new URL(args.config.authorization_endpoint)
   url.searchParams.set('response_type', 'code')
-  url.searchParams.set('client_id', args.existingClientId ?? DYNAMIC_CLIENT_ID)
+  url.searchParams.set('client_id', clientId ?? DYNAMIC_CLIENT_ID)
   url.searchParams.set('redirect_uri', args.redirectUri)
   url.searchParams.set('scope', CHATGPT_SCOPES)
   url.searchParams.set('resource', CHATGPT_RESOURCE)
@@ -47,7 +61,7 @@ export function createAuthorizeRequest(args: {
     'code_challenge',
     createHash('sha256').update(verifier).digest('base64url'),
   )
-  if (!args.existingClientId) {
+  if (!clientId) {
     url.searchParams.set('agent_name_hint', args.appName)
   }
   return { url: url.toString(), verifier, state, nonce }

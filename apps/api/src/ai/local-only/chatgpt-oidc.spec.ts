@@ -32,6 +32,37 @@ describe('discoverOidcConfig', () => {
     )
   })
 
+  it.each([
+    ['http://auth.openai.com/oauth/token', /https/i],
+    ['javascript:alert(1)', /https/i],
+    ['file:///etc/passwd', /https/i],
+    ['/oauth/token', /malformed/i],
+    ['not a url', /malformed/i],
+  ])(
+    'rejects a token_endpoint of %p -- the verifier would be sent there',
+    async (endpoint, expected) => {
+      await expect(
+        discoverOidcConfig(
+          fetchReturning({ ...wellFormed, token_endpoint: endpoint }),
+        ),
+      ).rejects.toThrow(expected)
+    },
+  )
+
+  it('rejects a non-https endpoint in any required field, not just the token one', async () => {
+    for (const key of [
+      'authorization_endpoint',
+      'jwks_uri',
+      'revocation_endpoint',
+    ] as const) {
+      await expect(
+        discoverOidcConfig(
+          fetchReturning({ ...wellFormed, [key]: 'http://auth.openai.com/x' }),
+        ),
+      ).rejects.toThrow(new RegExp(key))
+    }
+  })
+
   it('rejects a non-OK response', async () => {
     await expect(
       discoverOidcConfig(fetchReturning(wellFormed, false)),

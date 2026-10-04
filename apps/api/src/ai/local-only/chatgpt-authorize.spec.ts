@@ -35,6 +35,20 @@ describe('createAuthorizeRequest', () => {
     expect(params.has('agent_name_hint')).toBe(false)
   })
 
+  it.each(['', '   '])(
+    'treats a blank stored client id as absent rather than sending it (%p)',
+    (blank) => {
+      const params = new URL(
+        createAuthorizeRequest({ ...base, existingClientId: blank }).url,
+      ).searchParams
+      // Reading the field twice (`??` for the id, `!` for the hint) used to
+      // make these two disagree: a blank id was sent verbatim AND the hint
+      // was sent alongside it.
+      expect(params.get('client_id')).toBe(DYNAMIC_CLIENT_ID)
+      expect(params.get('agent_name_hint')).toBe('WIMM')
+    },
+  )
+
   it('sends the exact scopes and resource', () => {
     const params = new URL(createAuthorizeRequest(base).url).searchParams
     expect(params.get('scope')).toBe(CHATGPT_SCOPES)
@@ -47,7 +61,19 @@ describe('createAuthorizeRequest', () => {
     expect(a.verifier).not.toBe(b.verifier)
     expect(a.state).not.toBe(b.state)
     expect(a.nonce).not.toBe(b.nonce)
-    expect(a.verifier.length).toBeGreaterThanOrEqual(43)
+    // RFC 7636 wants 43-128 characters from the unreserved set. A bare
+    // lower bound let two real regressions through review: randomBytes(100)
+    // (134 chars, over the maximum) and .toString('base64') instead of
+    // 'base64url' (44 chars with '=' padding and possible '+' and '/') --
+    // the latter being the classic PKCE slip, which would surface only
+    // against a live authorization server this offline suite never touches.
+    for (const verifier of [a.verifier, b.verifier]) {
+      expect(verifier).toMatch(/^[A-Za-z0-9._~-]{43,128}$/)
+    }
+    // `state` and `nonce` travel in a URL, so hold them to the same set.
+    for (const value of [a.state, a.nonce, b.state, b.nonce]) {
+      expect(value).toMatch(/^[A-Za-z0-9._~-]{43,128}$/)
+    }
   })
 
   it('derives the three values independently of one another', () => {
