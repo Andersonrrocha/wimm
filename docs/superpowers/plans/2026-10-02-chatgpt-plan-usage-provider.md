@@ -693,35 +693,65 @@ describe('startCallbackListener', () => {
 
   // DO NOT probe `0.0.0.0` here. An earlier draft of this plan did, and the
   // test was not merely vacuous but INVERTED: on macOS (BSD semantics) a
-  // connection to 0.0.0.0 reaches a server bound to 127.0.0.1, so the
-  // assertion failed against the CORRECT implementation and could not
-  // detect the mutation at all. Measured on this host:
+  // connection to the unspecified address is routed to the local host, so it
+  // succeeds against a server bound to 127.0.0.1 as readily as against one
+  // bound to everything. The assertion therefore failed against the CORRECT
+  // implementation. Measured on the development host:
   //
   //   server bound 127.0.0.1 -> probe 0.0.0.0        = CONNECTED  (!)
   //   server bound 127.0.0.1 -> probe 192.168.0.106  = ECONNREFUSED
   //   server bound 0.0.0.0   -> probe 192.168.0.106  = CONNECTED
   //
-  // The machine's own non-loopback address is what discriminates.
-  it('binds only the loopback interface, not every interface', async () => {
-    const { networkInterfaces } = await import('node:os')
-    const external = Object.values(networkInterfaces())
-      .flat()
-      .find((i) => i && i.family === 'IPv4' && !i.internal)?.address
-    if (!external) return // nothing to prove on a host with no such interface
+  // Only a genuinely non-loopback address separates the two binds. Skip the
+  // test by name on a host that has no such interface -- and note that the
+  // runtime guard below still fails the whole suite if the bind is wrong, so
+  // skipping costs less than it appears to.
+  const portOf = (redirectUri: string): number =>
+    Number(new URL(redirectUri).port)
 
-    const listener = await startCallbackListener()
-    const port = Number(new URL(listener.redirectUri).port)
-    const { createConnection } = await import('node:net')
-    const reachableExternally = await new Promise<boolean>((resolve) => {
-      const socket = createConnection({ host: external, port })
+  const accepts = (host: string, port: number): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      const socket = createConnection({ host, port })
+      socket.setTimeout(2000, () => {
+        socket.destroy()
+        resolve(false)
+      })
       socket.on('connect', () => {
         socket.destroy()
         resolve(true)
       })
       socket.on('error', () => resolve(false))
     })
+
+  const externalAddress = (): string | undefined =>
+    Object.values(networkInterfaces())
+      .flatMap((addresses) => addresses ?? [])
+      .find((address) => address.family === 'IPv4' && !address.internal)
+      ?.address
+
+  it('binds only the loopback interface, not every interface', async () => {
+    const external = externalAddress()
+    if (!external) return // nothing to prove on a host with no such interface
+
+    // POSITIVE CONTROL, and the reason this test is trustworthy: bind a
+    // throwaway wildcard server and prove the probe can reach *something*
+    // through this exact path. Without it, a probe that can reach nothing at
+    // all -- a firewall, a sandbox, a wrong address -- would make the
+    // assertion below pass for entirely the wrong reason.
+    const wildcard = createServer((socket) => socket.destroy())
+    await new Promise<void>((resolve) => wildcard.listen(0, '0.0.0.0', resolve))
+    const controlPort = (wildcard.address() as { port: number }).port
+    const controlReachable = await accepts(external, controlPort)
+    await new Promise((resolve) => wildcard.close(resolve))
+    expect(controlReachable).toBe(true)
+
+    const listener = await startCallbackListener()
+    const port = portOf(listener.redirectUri)
+    // Both directions: reachable on loopback, unreachable off it. Asserting
+    // only the second would also pass for a server bound to nothing.
+    expect(await accepts('127.0.0.1', port)).toBe(true)
+    expect(await accepts(external, port)).toBe(false)
     listener.close()
-    expect(reachableExternally).toBe(false)
   })
 
   it('accepts a callback that arrives before it is armed', async () => {
