@@ -5,6 +5,10 @@ import {
   CHATGPT_SCOPES,
   type OidcConfig,
 } from './chatgpt-oidc'
+import {
+  readExpiresInSeconds,
+  readJsonObject,
+} from './chatgpt-token-response'
 
 export const SHARING_SCOPE = 'chatgpt.tokens.use.direct'
 
@@ -271,20 +275,7 @@ export async function exchangeCode(args: {
       `ChatGPT token exchange failed (status ${response.status}).`,
     )
   }
-  // `json()` on a malformed body quotes its first characters, and this body
-  // carries the tokens -- a parse error could put a fragment of one into the
-  // message. Wrap it, and reject a JSON `null`, which would otherwise make
-  // every field read below throw a raw TypeError.
-  let parsed: unknown
-  try {
-    parsed = await response.json()
-  } catch {
-    throw new Error('ChatGPT token response could not be parsed.')
-  }
-  if (typeof parsed !== 'object' || parsed === null) {
-    throw new Error('ChatGPT token response was not an object.')
-  }
-  const data = parsed as Record<string, unknown>
+  const data = await readJsonObject(response, 'ChatGPT token response')
 
   if (typeof data.access_token !== 'string' || !data.access_token) {
     throw new Error('ChatGPT token exchange returned no access token.')
@@ -311,17 +302,7 @@ export async function exchangeCode(args: {
       'ChatGPT token exchange granted offline_access but returned no refresh token.',
     )
   }
-  // `Number.isFinite` alone is not enough: 1e13 produces a Date of
-  // "Invalid Date", and every later `expiresAt <= now` comparison is false
-  // for NaN, so the credential reads as never expiring. Clamp to a year,
-  // which is far beyond any real access-token lifetime.
-  const MAX_EXPIRES_IN_SECONDS = 365 * 24 * 60 * 60
-  const expiresInSeconds =
-    typeof data.expires_in === 'number' &&
-    Number.isFinite(data.expires_in) &&
-    data.expires_in > 0
-      ? Math.min(data.expires_in, MAX_EXPIRES_IN_SECONDS)
-      : 0
+  const expiresInSeconds = readExpiresInSeconds(data.expires_in)
 
   const identity = await verifyIdentity({
     idToken: data.id_token,

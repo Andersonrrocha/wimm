@@ -4,6 +4,10 @@ import type {
 } from './chatgpt-connection.store'
 import { CHATGPT_RESOURCE, type OidcConfig } from './chatgpt-oidc'
 import {
+  readExpiresInSeconds,
+  readJsonObject,
+} from './chatgpt-token-response'
+import {
   isSharingGranted,
   type ChatGptCredentials,
   type verifyIdentity,
@@ -18,7 +22,6 @@ import {
 const REQUEST_TIMEOUT_MS = 30_000
 
 /** Same ceiling Task 6 applies on the initial exchange. */
-const MAX_EXPIRES_IN_SECONDS = 365 * 24 * 60 * 60
 
 /**
  * Nothing was lost: the stored credentials are untouched, or a rotation is
@@ -233,7 +236,7 @@ export class ChatGptRefreshService {
       )
     }
 
-    const credentials = readRotation(await readJson(response), live, receivedAt)
+    const credentials = readRotation(await readJsonObject(response, 'ChatGPT token refresh response'), live, receivedAt)
 
     try {
       await this.store.savePending(userId, credentials, receivedAt, generation)
@@ -389,21 +392,6 @@ async function isTerminalGrantFailure(response: Response): Promise<boolean> {
   return false
 }
 
-async function readJson(response: Response): Promise<Record<string, unknown>> {
-  // `json()` on a malformed body quotes its first characters, and this body
-  // carries the tokens. Wrap it, and reject a JSON `null`.
-  let parsed: unknown
-  try {
-    parsed = await response.json()
-  } catch {
-    throw new Error('ChatGPT token refresh response could not be parsed.')
-  }
-  if (typeof parsed !== 'object' || parsed === null) {
-    throw new Error('ChatGPT token refresh response was not an object.')
-  }
-  return parsed as Record<string, unknown>
-}
-
 /**
  * Builds the rotated credentials from a refresh response, filling in what a
  * refresh response may legitimately leave out.
@@ -432,12 +420,7 @@ function readRotation(
   }
   const scopes =
     typeof data.scope === 'string' && data.scope ? data.scope : live.scopes
-  const expiresInSeconds =
-    typeof data.expires_in === 'number' &&
-    Number.isFinite(data.expires_in) &&
-    data.expires_in > 0
-      ? Math.min(data.expires_in, MAX_EXPIRES_IN_SECONDS)
-      : 0
+  const expiresInSeconds = readExpiresInSeconds(data.expires_in)
   return {
     accessToken: data.access_token,
     refreshToken:
