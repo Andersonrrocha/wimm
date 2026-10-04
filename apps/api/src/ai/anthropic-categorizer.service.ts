@@ -2,6 +2,11 @@ import Anthropic from '@anthropic-ai/sdk'
 import { Injectable, Logger } from '@nestjs/common'
 import { AiKeyResolverService } from './ai-key-resolver.service'
 import type { AiProvider } from './ai-provider.interface'
+import {
+  buildPrompt,
+  mapSuggestions,
+  type RawSuggestions,
+} from './categorize-suggestions'
 import type {
   AiCategorizeCandidate,
   AiCategorizeInput,
@@ -10,12 +15,21 @@ import type {
 
 const MODEL = 'claude-haiku-4-5'
 const MAX_TOKENS = 4000
-const MIN_CONFIDENCE = 0.6
+
+/**
+ * The one prompt line that is specific to this transport: it names the tool
+ * this request defines. The rest of the prompt is shared
+ * (`categorize-suggestions.ts`).
+ */
+const SUBMIT_INSTRUCTION =
+  'Submit one suggestion per transaction via the submit_categorizations tool.'
 
 /**
  * Categorizes a batch of import rows by asking Claude to pick the best
  * matching candidate category. Uses the SDK's tool_use so the response is
- * structured JSON we can trust without parsing free-form text.
+ * structured JSON we can trust without parsing free-form text. The prompt
+ * and the validation of what comes back are shared with the other provider
+ * (`categorize-suggestions.ts`); only the tool_use transport is this class's.
  *
  * Privacy contract: the only payload sent to Anthropic is `{description,
  * amount}` per row plus the candidate category names. Source names, account
@@ -57,9 +71,11 @@ export class AnthropicCategorizerService implements AiProvider {
 
     const client = new Anthropic({ apiKey })
 
-    const candidateById = new Map(args.candidates.map((c) => [c.id, c]))
-
-    const prompt = buildPrompt(args.transactions, args.candidates)
+    const prompt = buildPrompt(
+      args.transactions,
+      args.candidates,
+      SUBMIT_INSTRUCTION,
+    )
 
     const response = await client.messages.create({
       model: MODEL,
@@ -110,55 +126,6 @@ export class AnthropicCategorizerService implements AiProvider {
       return []
     }
 
-    const input = toolUse.input as {
-      suggestions?: Array<{
-        index?: number
-        categoryId?: string | null
-        confidence?: number
-      }>
-    }
-
-    const out: AiCategorizeResult[] = []
-    for (const s of input.suggestions ?? []) {
-      if (typeof s.index !== 'number') continue
-      const confidence = typeof s.confidence === 'number' ? s.confidence : 0
-      let categoryId: string | null = null
-      if (
-        typeof s.categoryId === 'string' &&
-        candidateById.has(s.categoryId) &&
-        confidence >= MIN_CONFIDENCE
-      ) {
-        categoryId = s.categoryId
-      }
-      out.push({ index: s.index, categoryId, confidence })
-    }
-    return out
+    return mapSuggestions(toolUse.input as RawSuggestions, args.candidates)
   }
-}
-
-function buildPrompt(
-  transactions: AiCategorizeInput[],
-  candidates: AiCategorizeCandidate[],
-): string {
-  const candidateLines = candidates
-    .map((c) => `- ${c.id}: ${c.name}`)
-    .join('\n')
-  const txLines = transactions
-    .map((t) => `${t.index}. amount=${t.amount} description="${t.description}"`)
-    .join('\n')
-
-  return [
-    'You are a personal-finance assistant categorizing transactions for a user.',
-    'For each transaction below, pick the single best-matching category from the candidate list, or return null if none fits well.',
-    'Use the categoryId verbatim from the candidate list. Do not invent ids.',
-    'Confidence should reflect how sure you are: 0.9+ for obvious matches, 0.6-0.8 for likely matches, below 0.6 (returns null) when guessing.',
-    '',
-    'Candidate categories (id: name):',
-    candidateLines,
-    '',
-    'Transactions to categorize:',
-    txLines,
-    '',
-    'Submit one suggestion per transaction via the submit_categorizations tool.',
-  ].join('\n')
 }
