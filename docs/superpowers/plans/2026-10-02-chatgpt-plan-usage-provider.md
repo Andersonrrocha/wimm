@@ -1263,6 +1263,20 @@ export async function exchangeCode(args: {
 }
 ```
 
+### Hardening added after review — the committed file is the reference
+
+The code above is what the task started from. Review found seven properties it did not have, and **`apps/api/src/ai/local-only/chatgpt-token-exchange.ts` as committed is now the reference implementation** — do not copy the snippet above without these:
+
+1. **`verifyIdentity` failed OPEN on a falsy `clientId`, `issuer` or `nonce`.** `jsonwebtoken` guards its own checks with truthiness (`if (options.audience)`, `if (options.issuer)`), so an empty string *skips* the check rather than tightening it; and `nonce: undefined` against an absent claim is `undefined !== undefined`, which is false. A guard at the top of the function now refuses all three. This function is exported and Task 8 calls it directly, which is why the guard belongs there and not in the caller.
+2. **`exp` is now required.** OIDC Core makes it REQUIRED, but `jsonwebtoken` enforces it only when the claim is present — so a validly signed token with no `exp` was accepted and never expired.
+3. **`algorithms: ['RS256']` and expiry enforcement had no tests.** Removing the algorithm pin, or adding `ignoreExpiration: true`, passed the whole suite. Both are now pinned, including an HS256-token-signed-with-the-public-PEM case: the classic algorithm-confusion attack, where a public key becomes an HMAC secret anyone can use.
+4. **`redirect: 'error'` on the token POST.** `fetch` follows a 307/308 and **re-sends the body**, which here is the authorization code and the PKCE verifier. The endpoint is pinned by discovery and https-checked, but a redirect would still forward both.
+5. **`expires_in` is clamped to a year.** `1e13` produced an `Invalid Date` that still satisfied `Number.isFinite`, and because every `expiresAt <= now` comparison is false for `NaN`, the credential read as never expiring.
+6. **Every parse path is wrapped.** `jwt.decode`, both `response.json()` calls and `createPublicKey` all threw raw library errors, and two of those quote the first characters of what they failed to parse — a fragment of the identity token or of the token response. A JSON `null` body and a `null` entry in `keys` are rejected explicitly rather than throwing a `TypeError`.
+7. **`redirect_uri` is asserted in the grant-fields test.** Dropping it from the body passed every test, and a conformant server rejects an exchange without it.
+
+**Knowingly left alone:** the signing-key cache has no TTL, so a key withdrawn from the JWKS stays trusted for the life of the process, and there is no `kty`/`use` filter or duplicate-`kid` handling. The identity token arrives from the token endpoint over pinned TLS and eviction happens on any verification failure, so the exposure is small; a TTL has its own failure modes and would be a design decision rather than a fix.
+
 **Error messages must never interpolate a token, a code, or a verifier.** Every message above carries only a status, a field name, or the JWT library's own message — never a value from `args` or from the response body. The spec has a test for this; treat it as a hard requirement.
 
 - [ ] **Step 4: Run the test**
