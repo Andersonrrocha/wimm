@@ -52,8 +52,14 @@ describe('exchangeCode', () => {
       redirectUri: 'http://127.0.0.1:1/auth/callback', nonce: 'n-1', fetchImpl: spyFetch,
     })
     expect(sent[0]).toMatchObject({
-      grant_type: 'authorization_code', client_id: 'client-1',
-      code: 'c', code_verifier: 'v', resource: 'https://api.openai.com/v1',
+      grant_type: 'authorization_code',
+      client_id: 'client-1',
+      code: 'c',
+      code_verifier: 'v',
+      // Was unasserted: dropping it from the body passed every test, and an
+      // exchange without it is rejected by a conformant server.
+      redirect_uri: 'http://127.0.0.1:1/auth/callback',
+      resource: 'https://api.openai.com/v1',
     })
   })
 
@@ -152,9 +158,15 @@ describe('exchangeCode', () => {
     const other = generateKeyPairSync('rsa', { modulusLength: 2048 })
     let served: KeyObject = other.publicKey
     let jwksCalls = 0
+    // Its own jwks_uri. The signing-key cache is module-level and shared
+    // across tests, so with `config.jwks_uri` this test only started from a
+    // cold cache because an earlier test's verification failure happened to
+    // evict `k1`. Run under `-t` on its own it then false-failed on correct
+    // code. The leak table already isolates itself the same way.
+    const isolated = { ...config, jwks_uri: 'https://auth.openai.com/jwks-kid-reuse' }
     const rotating = (async (input: string | URL) => {
       const url = String(input)
-      if (url === config.jwks_uri) {
+      if (url === isolated.jwks_uri) {
         jwksCalls += 1
         return {
           ok: true,
@@ -177,7 +189,7 @@ describe('exchangeCode', () => {
 
     const call = () =>
       exchangeCode({
-        config,
+        config: isolated,
         clientId: 'client-1',
         code: 'c',
         verifier: 'v',
@@ -194,6 +206,117 @@ describe('exchangeCode', () => {
     served = publicKey
     await expect(call()).resolves.toMatchObject({ subject: 'user-sub' })
     expect(jwksCalls).toBe(2)
+  })
+
+  describe('properties that nothing pinned before review', () => {
+    const PEM = publicKey.export({ type: 'spki', format: 'pem' }).toString()
+    const signWith = (
+      algorithm: 'RS384' | 'RS512' | 'HS256',
+      secretOrKey: string | Buffer | typeof privateKey,
+    ) =>
+      new JwtService().sign(
+        {
+          iss: config.issuer,
+          aud: 'client-1',
+          sub: 'user-sub',
+          nonce: 'n-1',
+        },
+        {
+          ...(algorithm === 'HS256'
+            ? { secret: secretOrKey as string }
+            : { privateKey: secretOrKey as typeof privateKey }),
+          algorithm,
+          keyid: 'k1',
+          expiresIn: '5m',
+        },
+      )
+
+    const body = (idToken: string) => ({
+      access_token: 'access-value',
+      refresh_token: 'refresh-value',
+      id_token: idToken,
+      expires_in: 3600,
+      scope: CHATGPT_SCOPES,
+    })
+
+    // Removing `algorithms: ['RS256']` passed all 26 tests before these.
+    it.each(['RS384', 'RS512'] as const)(
+      'rejects a genuinely signed %s token, because only RS256 is allowed',
+      async (algorithm) => {
+        await expect(
+          exchange(body(signWith(algorithm, privateKey))),
+        ).rejects.toThrow()
+      },
+    )
+
+    it('rejects an HS256 token signed with the public PEM as the HMAC secret', async () => {
+      // The classic algorithm-confusion attack: the "public" key is public,
+      // so if HS256 were accepted anyone could mint a valid token.
+      await expect(exchange(body(signWith('HS256', PEM)))).rejects.toThrow()
+    })
+
+    it('rejects an expired token', async () => {
+      // Adding `ignoreExpiration: true` passed all 26 tests before this.
+      const expired = new JwtService().sign(
+        { iss: config.issuer, aud: 'client-1', sub: 'user-sub', nonce: 'n-1' },
+        { privateKey, algorithm: 'RS256', keyid: 'k1', expiresIn: '-10s' },
+      )
+      await expect(exchange(body(expired))).rejects.toThrow()
+    })
+
+    it('rejects a token with no exp claim at all', async () => {
+      // OIDC Core makes `exp` REQUIRED, but jsonwebtoken only enforces it
+      // when present -- so without this check such a token never expires.
+      const noExpiry = new JwtService().sign(
+        { iss: config.issuer, aud: 'client-1', sub: 'user-sub', nonce: 'n-1' },
+        { privateKey, algorithm: 'RS256', keyid: 'k1' },
+      )
+      await expect(exchange(body(noExpiry))).rejects.toThrow(/expiry/i)
+    })
+
+    it('computes expiresAt as now plus expires_in seconds', async () => {
+      // Changing `* 1000` to `* 1` passed all 26 tests before this.
+      const before = Date.now()
+      const result = await exchange(body(signIdToken({ nonce: 'n-1' })))
+      const elapsed = Date.now() - before
+      const delta = result.expiresAt.getTime() - before
+      expect(delta).toBeGreaterThanOrEqual(3600 * 1000 - 50)
+      expect(delta).toBeLessThanOrEqual(3600 * 1000 + elapsed + 50)
+    })
+
+    it.each([1e13, 1e308, Number.MAX_VALUE])(
+      'clamps an absurd expires_in of %p to a real date rather than an Invalid Date',
+      async (expires_in) => {
+        // An Invalid Date still satisfies Number.isFinite upstream, and every
+        // later `expiresAt <= now` comparison is false for NaN -- so the
+        // credential would read as never expiring.
+        const result = await exchange({
+          ...body(signIdToken({ nonce: 'n-1' })),
+          expires_in,
+        })
+        expect(Number.isNaN(result.expiresAt.getTime())).toBe(false)
+      },
+    )
+
+    it.each([
+      ['an empty client id', { clientId: '' }],
+      ['an empty issuer', { issuer: '' }],
+      ['an empty nonce', { nonce: '' }],
+    ])('refuses to verify with %s, rather than skipping the check', async (_why, override) => {
+      // jsonwebtoken guards its own checks with truthiness, so an empty
+      // string SKIPS the check instead of tightening it. All three fail open.
+      await expect(
+        verifyIdentity({
+          idToken: signIdToken({ nonce: 'n-1' }),
+          clientId: 'client-1',
+          issuer: config.issuer,
+          jwksUri: config.jwks_uri,
+          nonce: 'n-1',
+          fetchImpl: fetchStub({}),
+          ...override,
+        }),
+      ).rejects.toThrow(/client id, an issuer and a nonce/)
+    })
   })
 
   it('rejects an id_token whose nonce does not match', async () => {

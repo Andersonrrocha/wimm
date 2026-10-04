@@ -57,21 +57,42 @@ async function fetchSigningKey(
       `ChatGPT signing keys are unavailable (status ${response.status}).`,
     )
   }
-  const body: unknown = await response.json()
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    // `json()` on a non-JSON body quotes its first characters. This body is
+    // not secret, but the wrapper keeps every message in this module static.
+    throw new Error('ChatGPT signing keys could not be parsed.')
+  }
   const keys =
     typeof body === 'object' &&
     body !== null &&
     Array.isArray((body as { keys?: unknown }).keys)
       ? ((body as { keys: unknown[] }).keys as Array<Record<string, unknown>>)
       : []
-  const jwk = keys.find((candidate) => candidate.kid === kid)
+  // `Array.isArray` says nothing about the elements: a `null` entry would
+  // make the predicate below throw a raw TypeError.
+  const jwk = keys.find(
+    (candidate) =>
+      typeof candidate === 'object' &&
+      candidate !== null &&
+      candidate.kid === kid,
+  )
   if (jwk === undefined) {
     throw new Error('ChatGPT signing key for this token was not found.')
   }
 
-  const pem = createPublicKey({ key: jwk as never, format: 'jwk' })
-    .export({ type: 'spki', format: 'pem' })
-    .toString()
+  // An unsupported `kty` (an `oct` entry, say) makes `createPublicKey` throw
+  // a raw TypeError naming the kty. Wrap it so the message stays ours.
+  let pem: string
+  try {
+    pem = createPublicKey({ key: jwk as never, format: 'jwk' })
+      .export({ type: 'spki', format: 'pem' })
+      .toString()
+  } catch {
+    throw new Error('ChatGPT signing key is not a usable public key.')
+  }
 
   const perUri = keyCache.get(jwksUri) ?? new Map<string, string>()
   perUri.set(kid, pem)
@@ -98,11 +119,32 @@ export async function verifyIdentity(args: {
   nonce: string
   fetchImpl?: typeof fetch
 }): Promise<{ subject: string }> {
+  // `jsonwebtoken` guards its own checks with truthiness -- `if
+  // (options.audience)`, `if (options.issuer)` -- so an empty string does not
+  // relax the check, it SKIPS it entirely. And a `nonce` of `undefined`
+  // compared against an absent claim is `undefined !== undefined`, which is
+  // false, so it passes. All three therefore fail OPEN. TypeScript forbids
+  // them at today's single call site, but this function is exported and Task
+  // 8 calls it directly, so the guard belongs here rather than in the
+  // caller.
+  if (!args.clientId || !args.issuer || !args.nonce) {
+    throw new Error(
+      'ChatGPT identity verification refuses to run without a client id, an issuer and a nonce.',
+    )
+  }
+
   const jwt = new JwtService()
-  const decoded = jwt.decode<{ header?: { kid?: unknown } } | null>(
-    args.idToken,
-    { complete: true },
-  )
+  // `decode` throws a raw SyntaxError when the payload is not JSON, and that
+  // message quotes the first characters of the payload -- a fragment of the
+  // token. Wrap it so nothing from the token can reach a message.
+  let decoded: { header?: { kid?: unknown } } | null
+  try {
+    decoded = jwt.decode<{ header?: { kid?: unknown } } | null>(args.idToken, {
+      complete: true,
+    })
+  } catch {
+    throw new Error('ChatGPT identity token could not be decoded.')
+  }
   const kid = decoded?.header?.kid
   if (typeof kid !== 'string' || !kid) {
     throw new Error('ChatGPT identity token has no usable key id.')
@@ -114,7 +156,7 @@ export async function verifyIdentity(args: {
     args.fetchImpl ?? fetch,
   )
 
-  let payload: { sub?: unknown; nonce?: unknown }
+  let payload: { sub?: unknown; nonce?: unknown; exp?: unknown }
   try {
     payload = await jwt.verifyAsync(args.idToken, {
       publicKey,
@@ -139,6 +181,12 @@ export async function verifyIdentity(args: {
   if (typeof payload.sub !== 'string' || !payload.sub) {
     throw new Error('ChatGPT identity token has no subject.')
   }
+  // OIDC Core makes `exp` REQUIRED, but `jsonwebtoken` only enforces it when
+  // the claim is present -- so a validly signed token with no `exp` is
+  // otherwise accepted and never expires.
+  if (typeof payload.exp !== 'number') {
+    throw new Error('ChatGPT identity token has no expiry.')
+  }
   return { subject: payload.sub }
 }
 
@@ -155,6 +203,11 @@ export async function exchangeCode(args: {
   const response = await fetchImpl(args.config.token_endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    // `fetch` follows a 307/308 and RE-SENDS the body, which here is the
+    // authorization code and the PKCE verifier. The endpoint is pinned by
+    // discovery and https-checked, but a redirect would still forward both
+    // to wherever it points. Refuse instead of following.
+    redirect: 'error',
     body: new URLSearchParams({
       grant_type: 'authorization_code',
       client_id: args.clientId,
@@ -169,7 +222,20 @@ export async function exchangeCode(args: {
       `ChatGPT token exchange failed (status ${response.status}).`,
     )
   }
-  const data = (await response.json()) as Record<string, unknown>
+  // `json()` on a malformed body quotes its first characters, and this body
+  // carries the tokens -- a parse error could put a fragment of one into the
+  // message. Wrap it, and reject a JSON `null`, which would otherwise make
+  // every field read below throw a raw TypeError.
+  let parsed: unknown
+  try {
+    parsed = await response.json()
+  } catch {
+    throw new Error('ChatGPT token response could not be parsed.')
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new Error('ChatGPT token response was not an object.')
+  }
+  const data = parsed as Record<string, unknown>
 
   if (typeof data.access_token !== 'string' || !data.access_token) {
     throw new Error('ChatGPT token exchange returned no access token.')
@@ -196,9 +262,16 @@ export async function exchangeCode(args: {
       'ChatGPT token exchange granted offline_access but returned no refresh token.',
     )
   }
+  // `Number.isFinite` alone is not enough: 1e13 produces a Date of
+  // "Invalid Date", and every later `expiresAt <= now` comparison is false
+  // for NaN, so the credential reads as never expiring. Clamp to a year,
+  // which is far beyond any real access-token lifetime.
+  const MAX_EXPIRES_IN_SECONDS = 365 * 24 * 60 * 60
   const expiresInSeconds =
-    typeof data.expires_in === 'number' && Number.isFinite(data.expires_in)
-      ? data.expires_in
+    typeof data.expires_in === 'number' &&
+    Number.isFinite(data.expires_in) &&
+    data.expires_in > 0
+      ? Math.min(data.expires_in, MAX_EXPIRES_IN_SECONDS)
       : 0
 
   const identity = await verifyIdentity({
