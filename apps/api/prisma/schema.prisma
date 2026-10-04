@@ -42,6 +42,7 @@ model User {
   recurrences          Recurrence[]
   categorizationRules  CategorizationRule[]
   installmentPlans     InstallmentPlan[]
+  chatGptConnection    ChatGptConnection?
 }
 
 model Source {
@@ -276,4 +277,34 @@ model RefreshToken {
   createdAt DateTime @default(now())
 
   @@index([userId])
+}
+
+/// One ChatGPT plan-usage connection per user. Local compositions only;
+/// the hosted chain gets the table but never populates it (see
+/// verify-ai-hosted-composition.ts for why that boundary exists).
+model ChatGptConnection {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Durable per-installation client ID issued by dynamic registration.
+  /// Retained across disconnect: it is the `id_token` audience, and
+  /// re-registering would invalidate every previously stored identity.
+  clientId         String
+  /// AES-256-GCM, base64. Access + refresh token and id_token. NULL after
+  /// disconnect. Never returned by the API.
+  tokensEncrypted  String?
+  /// Rotated credentials persisted before their identity is verified, so a
+  /// signing-key outage or restart resumes verification instead of reusing
+  /// an already-consumed refresh token.
+  pendingEncrypted String?
+  /// Space-separated granted scopes. Refresh responses may omit `scope`;
+  /// this is the fallback, not a downgrade signal.
+  scopes           String
+  /// Whether the account's plan actually grants plan usage.
+  sharing          Boolean  @default(false)
+  expiresAt        DateTime?
+  subject          String?
+  accountLabel     String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 }

@@ -12,8 +12,9 @@ const Database = require('better-sqlite3')
 const BASELINE = join(__dirname, '../../prisma/migrations-sqlite/0000_baseline/migration.sql')
 
 /**
- * Every table schema.sqlite.prisma declares, including the two that carry no
- * CHECK constraint at all (InstallmentPlan, RefreshToken). Listed explicitly,
+ * Every table schema.sqlite.prisma declares, including the three that carry no
+ * CHECK constraint at all (InstallmentPlan, RefreshToken, ChatGptConnection).
+ * Listed explicitly,
  * independent of CHECK_CONSTRAINTS, so a constraint leaking into one of them
  * is visible here rather than silently absent from the thing being checked.
  */
@@ -29,6 +30,7 @@ const ALL_TABLES = [
   'Recurrence',
   'Transaction',
   'RefreshToken',
+  'ChatGptConnection',
 ]
 
 /**
