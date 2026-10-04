@@ -396,8 +396,25 @@ export async function discoverOidcConfig(
     )
   }
   for (const key of REQUIRED_ENDPOINTS) {
-    if (typeof document[key] !== 'string' || !document[key]) {
+    const value = document[key]
+    if (typeof value !== 'string' || !value) {
       throw new Error(`ChatGPT OIDC discovery is missing ${key}.`)
+    }
+    // Presence is not enough: the PKCE verifier and the authorization code
+    // are sent to `token_endpoint`. Parse and require https.
+    //
+    // Deliberately NOT same-origin: the real discovery document has not been
+    // read, and an authorization server may legitimately serve `jwks_uri`
+    // from another origin. Asserting same-origin on an unverified
+    // assumption would break the live flow.
+    let parsed: URL
+    try {
+      parsed = new URL(value)
+    } catch {
+      throw new Error(`ChatGPT OIDC discovery has a malformed ${key}.`)
+    }
+    if (parsed.protocol !== 'https:') {
+      throw new Error(`ChatGPT OIDC discovery ${key} must use https.`)
     }
   }
   return document as unknown as OidcConfig
@@ -410,7 +427,7 @@ export async function discoverOidcConfig(
 pnpm --filter @wimm/api test -- chatgpt-oidc
 ```
 
-Expected: 5 passing.
+Expected: 11 passing.
 
 - [ ] **Step 5: Commit**
 
@@ -484,7 +501,12 @@ describe('createAuthorizeRequest', () => {
     expect(a.verifier).not.toBe(b.verifier)
     expect(a.state).not.toBe(b.state)
     expect(a.nonce).not.toBe(b.nonce)
-    expect(a.verifier.length).toBeGreaterThanOrEqual(43)
+    // RFC 7636 wants 43-128 characters from the unreserved set. A bare lower
+    // bound let two real regressions through: randomBytes(100) (134 chars)
+    // and .toString('base64') instead of 'base64url' (padding, '+' and '/').
+    for (const value of [a.verifier, b.verifier, a.state, a.nonce]) {
+      expect(value).toMatch(/^[A-Za-z0-9._~-]{43,128}$/)
+    }
   })
 
   it('derives the three values independently of one another', () => {
@@ -564,9 +586,13 @@ export function createAuthorizeRequest(args: {
   const verifier = randomValue()
   const state = randomValue()
   const nonce = randomValue()
+  // One trimmed read of the client id. Reading it twice -- `??` for the id
+  // and `!` for the hint -- made a blank value send `client_id=` AND the
+  // hint; a whitespace-only value is truthy and survives `||` too.
+  const clientId = args.existingClientId?.trim() || undefined
   const url = new URL(args.config.authorization_endpoint)
   url.searchParams.set('response_type', 'code')
-  url.searchParams.set('client_id', args.existingClientId ?? DYNAMIC_CLIENT_ID)
+  url.searchParams.set('client_id', clientId ?? DYNAMIC_CLIENT_ID)
   url.searchParams.set('redirect_uri', args.redirectUri)
   url.searchParams.set('scope', CHATGPT_SCOPES)
   url.searchParams.set('resource', CHATGPT_RESOURCE)
@@ -577,7 +603,7 @@ export function createAuthorizeRequest(args: {
     'code_challenge',
     createHash('sha256').update(verifier).digest('base64url'),
   )
-  if (!args.existingClientId) {
+  if (!clientId) {
     url.searchParams.set('agent_name_hint', args.appName)
   }
   return { url: url.toString(), verifier, state, nonce }
@@ -590,7 +616,7 @@ export function createAuthorizeRequest(args: {
 pnpm --filter @wimm/api test -- chatgpt-authorize
 ```
 
-Expected: 5 passing.
+Expected: 9 passing.
 
 - [ ] **Step 5: Commit**
 
@@ -609,9 +635,38 @@ git commit -m "feat(ai): build the ChatGPT authorize request with PKCE"
 
 **Interfaces:**
 - Consumes: `CHATGPT_CALLBACK_PATH`, `DYNAMIC_CLIENT_ID` (Task 3)
-- Produces: `startCallbackListener(args: { expectedState: string; timeoutMs?: number }): Promise<{ redirectUri: string; result: Promise<{ code: string; clientId: string }>; close(): void }>`
+- Produces: `startCallbackListener(args?: { timeoutMs?: number }): Promise<CallbackListener>` where
 
-**Security surface:** this binds a real socket and receives attacker-reachable input. It must bind `127.0.0.1` only, accept exactly the callback path, require a single `code`, require `state` to match, reject a `client_id` equal to `dynamic_agent_client` or failing `^[a-zA-Z0-9_-]{1,200}$`, and close on the first request.
+```ts
+interface CallbackListener {
+  /** `http://127.0.0.1:<bound port>/auth/callback` — known only after binding. */
+  redirectUri: string
+  /** Arm the listener with the state to require. Call at most once. */
+  awaitCallback(expectedState: string): Promise<{ code: string; clientId: string }>
+  close(): void
+}
+```
+
+### Why the state arrives after binding, not in the constructor
+
+An earlier draft of this plan had `startCallbackListener({ expectedState })`, and that was **impossible to call**. Task 4's `createAuthorizeRequest` takes `redirectUri` as an input and is the only producer of `state`. A listener that takes `expectedState` as an input is the only producer of `redirectUri`, because the port does not exist until the socket is bound. Neither could go first. This was caught in review, and it would have surfaced at implementation time rather than in any test, because Task 10's controller spec overrides the flow that composes them.
+
+Splitting binding from arming breaks the cycle and leaves Task 4 — already committed and tested — untouched. The order becomes:
+
+```ts
+const listener = await startCallbackListener({ timeoutMs })
+const request = createAuthorizeRequest({
+  config, redirectUri: listener.redirectUri, appName, existingClientId,
+})
+// Arm BEFORE opening the browser, so a fast callback cannot arrive unarmed.
+const pending = listener.awaitCallback(request.state)
+await openBrowser(request.url)
+const { code, clientId } = await pending
+```
+
+**The listener must also tolerate the opposite order.** Buffer the first request that arrives and validate it when `awaitCallback` is called, rather than requiring the arm to come first. That removes ordering from the set of things a caller can get wrong, and it is a small state machine: hold whichever of (arm, request) arrives first, settle when both are present.
+
+**Security surface:** this binds a real socket and receives attacker-reachable input. It must bind `127.0.0.1` only, accept exactly the callback path, require a single `code`, require `state` to match the armed value, reject a `client_id` equal to `dynamic_agent_client` or failing `^[a-zA-Z0-9_-]{1,200}$`, and close on the first request.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -625,44 +680,90 @@ const hit = async (redirectUri: string, query: string) => {
 }
 
 describe('startCallbackListener', () => {
-  it('binds loopback only and resolves on a valid callback', async () => {
-    const listener = await startCallbackListener({ expectedState: 's-1' })
+  it('binds loopback on the callback path and resolves a valid callback', async () => {
+    const listener = await startCallbackListener()
     expect(new URL(listener.redirectUri).hostname).toBe('127.0.0.1')
     expect(new URL(listener.redirectUri).pathname).toBe('/auth/callback')
+
+    const pending = listener.awaitCallback('s-1')
     await hit(listener.redirectUri, 'code=c-1&state=s-1&client_id=abc123')
-    await expect(listener.result).resolves.toEqual({ code: 'c-1', clientId: 'abc123' })
+
+    await expect(pending).resolves.toEqual({ code: 'c-1', clientId: 'abc123' })
   })
 
-  it('rejects a state mismatch', async () => {
-    const listener = await startCallbackListener({ expectedState: 's-1' })
+  it('binds only the loopback interface, not every interface', async () => {
+    const listener = await startCallbackListener()
+    const port = Number(new URL(listener.redirectUri).port)
+    const { createConnection } = await import('node:net')
+    const reachableExternally = await new Promise<boolean>((resolve) => {
+      const socket = createConnection({ host: '0.0.0.0', port })
+      socket.on('connect', () => { socket.destroy(); resolve(true) })
+      socket.on('error', () => resolve(false))
+    })
+    listener.close()
+    expect(reachableExternally).toBe(false)
+  })
+
+  it('accepts a callback that arrives before it is armed', async () => {
+    const listener = await startCallbackListener()
+    // Deliberately the wrong order: the request lands first.
+    await hit(listener.redirectUri, 'code=c-1&state=s-1&client_id=abc123')
+    await expect(listener.awaitCallback('s-1')).resolves.toEqual({
+      code: 'c-1',
+      clientId: 'abc123',
+    })
+  })
+
+  it('rejects a buffered callback whose state does not match the armed value', async () => {
+    const listener = await startCallbackListener()
     await hit(listener.redirectUri, 'code=c-1&state=WRONG&client_id=abc123')
-    await expect(listener.result).rejects.toThrow(/state/i)
+    await expect(listener.awaitCallback('s-1')).rejects.toThrow(/state/i)
   })
 
-  it('rejects the dynamic placeholder as a returned client id', async () => {
-    const listener = await startCallbackListener({ expectedState: 's-1' })
-    await hit(listener.redirectUri, 'code=c-1&state=s-1&client_id=dynamic_agent_client')
-    await expect(listener.result).rejects.toThrow(/client_id/i)
-  })
-
-  it('rejects a duplicated code parameter', async () => {
-    const listener = await startCallbackListener({ expectedState: 's-1' })
-    await hit(listener.redirectUri, 'code=a&code=b&state=s-1&client_id=abc123')
-    await expect(listener.result).rejects.toThrow(/code/i)
+  it.each([
+    ['code=c-1&state=WRONG&client_id=abc123', /state/i],
+    ['code=c-1&state=s-1&client_id=dynamic_agent_client', /client_id/i],
+    ['code=c-1&state=s-1&client_id=has%20space', /client_id/i],
+    ['code=a&code=b&state=s-1&client_id=abc123', /code/i],
+    ['state=s-1&client_id=abc123', /code/i],
+    ['code=c-1&state=s-1', /client_id/i],
+  ])('rejects the callback %p', async (query, expected) => {
+    const listener = await startCallbackListener()
+    const pending = listener.awaitCallback('s-1')
+    await hit(listener.redirectUri, query)
+    await expect(pending).rejects.toThrow(expected)
   })
 
   it('rejects a request to any other path', async () => {
-    const listener = await startCallbackListener({ expectedState: 's-1' })
+    const listener = await startCallbackListener()
+    const pending = listener.awaitCallback('s-1')
     const origin = new URL(listener.redirectUri).origin
     await fetch(`${origin}/not-the-callback?code=c&state=s-1&client_id=abc123`).catch(
       () => undefined,
     )
-    await expect(listener.result).rejects.toThrow()
+    await expect(pending).rejects.toThrow()
   })
 
-  it('rejects on timeout and frees the port', async () => {
-    const listener = await startCallbackListener({ expectedState: 's-1', timeoutMs: 50 })
-    await expect(listener.result).rejects.toThrow(/timed out/i)
+  it('rejects on timeout', async () => {
+    const listener = await startCallbackListener({ timeoutMs: 50 })
+    await expect(listener.awaitCallback('s-1')).rejects.toThrow(/timed out/i)
+  })
+
+  it('refuses a second arm', async () => {
+    const listener = await startCallbackListener({ timeoutMs: 50 })
+    listener.awaitCallback('s-1').catch(() => undefined)
+    expect(() => listener.awaitCallback('s-2')).toThrow(/once/i)
+    listener.close()
+  })
+
+  it('never puts the code or the state in an error message', async () => {
+    const listener = await startCallbackListener()
+    const pending = listener.awaitCallback('s-1')
+    await hit(listener.redirectUri, 'code=secret-code&state=WRONG&client_id=abc123')
+    await pending.catch((error: Error) => {
+      expect(error.message).not.toContain('secret-code')
+      expect(error.message).not.toContain('s-1')
+    })
   })
 })
 ```
@@ -677,8 +778,9 @@ Expected: FAIL, cannot resolve the module.
 
 - [ ] **Step 3: Implement**
 
+Structure it as a small state machine over two slots — the armed `expectedState` and the first received request — settling when both are present:
+
 ```ts
-// apps/api/src/ai/local-only/chatgpt-callback-listener.ts
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { CHATGPT_CALLBACK_PATH, DYNAMIC_CLIENT_ID } from './chatgpt-oidc'
@@ -688,98 +790,22 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
 
 export interface CallbackListener {
   redirectUri: string
-  result: Promise<{ code: string; clientId: string }>
+  awaitCallback(expectedState: string): Promise<{ code: string; clientId: string }>
   close(): void
 }
-
-/**
- * A single-use loopback listener for the OAuth redirect.
- *
- * Binds 127.0.0.1 on an ephemeral port -- deliberately not the API's own
- * port, so nothing about the authorization flow depends on where the API
- * happens to be listening. The first request on the callback path settles
- * the result and the server closes; everything else is rejected.
- */
-export async function startCallbackListener(args: {
-  expectedState: string
-  timeoutMs?: number
-}): Promise<CallbackListener> {
-  let settle: (value: { code: string; clientId: string }) => void
-  let fail: (error: Error) => void
-  const result = new Promise<{ code: string; clientId: string }>((resolve, reject) => {
-    settle = resolve
-    fail = reject
-  })
-
-  const server = createServer((request, response) => {
-    const respond = (status: number, body: string) => {
-      response.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' })
-      response.end(body)
-      close()
-    }
-    let url: URL
-    try {
-      url = new URL(request.url ?? '/', 'http://127.0.0.1')
-    } catch {
-      fail(new Error('ChatGPT callback received an unparseable request.'))
-      return respond(400, 'Bad request')
-    }
-    if (url.pathname !== CHATGPT_CALLBACK_PATH) {
-      fail(new Error(`ChatGPT callback received an unexpected path: ${url.pathname}`))
-      return respond(404, 'Not found')
-    }
-    const codes = url.searchParams.getAll('code')
-    const clientIds = url.searchParams.getAll('client_id')
-    const state = url.searchParams.get('state')
-    const code = codes[0]
-    const clientId = clientIds[0]
-    if (codes.length !== 1 || !code) {
-      fail(new Error('ChatGPT callback did not carry exactly one code.'))
-      return respond(400, 'Bad request')
-    }
-    if (state !== args.expectedState) {
-      fail(new Error('ChatGPT callback state did not match the request.'))
-      return respond(400, 'Bad request')
-    }
-    if (
-      clientIds.length !== 1 ||
-      !clientId ||
-      clientId === DYNAMIC_CLIENT_ID ||
-      !CLIENT_ID_PATTERN.test(clientId)
-    ) {
-      fail(new Error('ChatGPT callback returned an unusable client_id.'))
-      return respond(400, 'Bad request')
-    }
-    settle({ code, clientId })
-    respond(200, 'WIMM is connected. You can close this tab.')
-  })
-
-  const timer = setTimeout(() => {
-    fail(new Error('ChatGPT authorization timed out.'))
-    close()
-  }, args.timeoutMs ?? DEFAULT_TIMEOUT_MS)
-  timer.unref?.()
-
-  let closed = false
-  const close = () => {
-    if (closed) return
-    closed = true
-    clearTimeout(timer)
-    server.close()
-  }
-
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-  const address = server.address() as AddressInfo
-  // Never surface a rejection as an unhandled promise if no one awaits it.
-  result.catch(() => undefined)
-
-  return {
-    redirectUri: `http://127.0.0.1:${address.port}${CHATGPT_CALLBACK_PATH}`,
-    result,
-    close,
-  }
-}
 ```
+
+Requirements the tests above pin, and which the implementation must therefore satisfy:
+
+- `listen(0, '127.0.0.1')`, and nothing reachable on `0.0.0.0`.
+- Only `CHATGPT_CALLBACK_PATH` is served; anything else fails the pending promise and answers 404.
+- Exactly one `code` and exactly one `client_id`; `client_id` must match `CLIENT_ID_PATTERN` and must not be `DYNAMIC_CLIENT_ID`.
+- `state` must equal the armed value. When a request is buffered before arming, that comparison happens at arm time.
+- The timeout starts at bind, not at arm, and fires `/timed out/`.
+- `awaitCallback` throws synchronously on a second call.
+- **No error message may contain the code or the state.** Report which field was wrong, never its value.
+- The server closes on the first request on the callback path, and `close()` is idempotent.
+- Attach a `.catch(() => undefined)` to the internal promise so an unawaited rejection never becomes an unhandled rejection.
 
 - [ ] **Step 4: Run the test**
 
@@ -787,28 +813,11 @@ export async function startCallbackListener(args: {
 pnpm --filter @wimm/api test -- chatgpt-callback-listener
 ```
 
-Expected: 6 passing.
+Expected: all passing.
 
-- [ ] **Step 5: Prove the loopback bind is real, not a string (mutation check)**
+- [ ] **Step 5: Prove the loopback bind is real, not a string**
 
-Temporarily change `server.listen(0, '127.0.0.1', resolve)` to `server.listen(0, '0.0.0.0', resolve)` and re-run. The suite still passes — which is the point: a hostname assertion on `redirectUri` proves nothing about the bind. Add this assertion so it does, then revert the mutation:
-
-```ts
-it('binds only the loopback interface, not every interface', async () => {
-  const listener = await startCallbackListener({ expectedState: 's-1' })
-  const port = Number(new URL(listener.redirectUri).port)
-  const { createConnection } = await import('node:net')
-  const reachableExternally = await new Promise<boolean>((resolve) => {
-    const socket = createConnection({ host: '0.0.0.0', port })
-    socket.on('connect', () => { socket.destroy(); resolve(true) })
-    socket.on('error', () => resolve(false))
-  })
-  listener.close()
-  expect(reachableExternally).toBe(false)
-})
-```
-
-Re-run with the mutation in place: this new test must FAIL. Revert to `'127.0.0.1'`: it must PASS. `apps/desktop/src/main/local-api.ts` has `assertBoundToLoopback` for the same reason — its doc comment records that asserting on the *string passed to* `listen()` proves nothing.
+Mutate `server.listen(0, '127.0.0.1', resolve)` to `server.listen(0, '0.0.0.0', resolve)`. The "binds only the loopback interface" test must FAIL; revert and it must PASS. A hostname assertion on `redirectUri` alone proves nothing about the bind, which is exactly why `apps/desktop/src/main/local-api.ts` carries `assertBoundToLoopback` — see its doc comment.
 
 - [ ] **Step 6: Commit**
 
@@ -817,7 +826,6 @@ git add apps/api/src/ai/local-only
 git commit -m "feat(ai): add the single-use loopback callback listener"
 ```
 
----
 
 ## Task 6: Token exchange and identity verification
 

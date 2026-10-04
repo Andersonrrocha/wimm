@@ -105,7 +105,7 @@ When in doubt, read `ARCHITECTURE.md` first, then `packages/shared/src/index.ts`
 
 Use domain-based scopes:
 
-`auth`, `users`, `transactions`, `imports`, `categories`, `recurrences`, `reports`, `database`, `api`, `desktop`, `mobile`, `shared`, `workspace`, `docs`
+`auth`, `users`, `transactions`, `imports`, `categories`, `recurrences`, `reports`, `database`, `ai`, `api`, `desktop`, `mobile`, `shared`, `workspace`, `docs`
 
 Examples:
 
