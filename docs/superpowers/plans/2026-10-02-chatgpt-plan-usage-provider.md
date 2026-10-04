@@ -1944,7 +1944,7 @@ git commit -m "feat(ai): refresh ChatGPT tokens single-flight with pending rotat
 
 Two pieces of work that reviews identified, reproduced, and deliberately did not patch into the task that found them. They are scheduled rather than noted, and the controller runs them directly — they are not task-brief numbered tasks.
 
-### F1. Tie a rotation to the credential generation it started from
+### F1. Tie a rotation to the credential generation it started from — **DONE**
 
 **Why:** reproduced against the real store by Task 8's review. A refresh that is in flight across a disconnect *and a full reconnect* is not stopped: the real `savePending` only requires that *some* live connection exists, so the stale rotation is promoted over the fresh sign-in. The same flight receiving a terminal grant error calls `clearTokens` and wipes the new sign-in. Task 7's review found the disconnect-only half of this; Task 8's review found the reconnect half and reproduced both.
 
@@ -1953,6 +1953,12 @@ Two pieces of work that reviews identified, reproduced, and deliberately did not
 **Shape of the fix:** the store, not the service. `savePending` and `clearTokens` become conditional on the live blob still being the one the flight read — the same compare-and-swap `promotePending` already uses and that is already proven by a forced-interleaving test. That needs the live ciphertext to reach the caller as an opaque generation token, e.g. `load` returning `{ credentials, generation }`, with `savePending(userId, credentials, receivedAt, expectedGeneration)`.
 
 **Must carry a forced-interleaving test**, because a sequential suite cannot distinguish a conditional write from an unconditional one — Task 7's compare-and-swap passed every test with the clause deleted.
+
+**As built:** `loadLive(userId)` returns `{ credentials, generation }`, where the generation is the stored ciphertext — unique per save because the IV is random, so the comparison cannot suffer ABA. `load` stays the simpler reader for callers that only need a token; `savePending` *requires* a generation, so a caller that took the simple path has nothing to pass and the compiler stops it rather than the runtime. `clearTokens(userId, expectedGeneration?)` is conditional when given one and unconditional when not — a refresh that fails terminally must pass it; a user-initiated disconnect means "clear whatever is there".
+
+Four behaviours now pinned, each mutation-verified: a rotation whose generation predates a reconnection is refused; a stale flight's clear does not wipe the reconnection; an unconditional clear still works; and at the service level, neither a stale promote nor a stale clear survives a sign-in that happened mid-flight.
+
+One consequence worth stating: a stale flight now ends in a **retryable** error, not `null`. `null` would mean "reconnect" about a connection that exists — the one that just signed in — and a retry reads it and proceeds correctly. That is the Task 8 store-failure fix and this one composing as intended.
 
 ### F2. De-duplicate what Tasks 6 and 8 now both carry
 
