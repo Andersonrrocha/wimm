@@ -1973,14 +1973,44 @@ One consequence worth stating: a stale flight now ends in a **retryable** error,
 ## Task 9: The provider
 
 **Files:**
+- Create: `apps/api/src/ai/categorize-suggestions.ts` — the prompt and the result validation, extracted so both providers share them
+- Modify: `apps/api/src/ai/anthropic-categorizer.service.ts` — use the extracted pair
 - Create: `apps/api/src/ai/local-only/chatgpt-oauth-provider.ts`
 - Delete: `apps/api/src/ai/local-only/chatgpt-oauth-provider.stub.ts`
-- Modify: `apps/api/src/ai/local-only/local-only-ai.module.ts`
+- Modify: `apps/api/src/ai/local-only/local-only-ai.module.ts` — the real wiring
 - Test: `apps/api/src/ai/local-only/chatgpt-oauth-provider.spec.ts`
 
 **Interfaces:**
-- Consumes: `ChatGptRefreshService` (Task 8), the `AiProvider` contract as changed in Task 2
-- Produces: `ChatGptOAuthProvider` with `readonly id = 'chatgpt-oauth'`
+- Consumes: `ChatGptRefreshService.accessTokenFor(userId)` and `ChatGptConnectionStore.status(userId)` (Tasks 7–8), the `AiProvider` contract as changed in Task 2
+- Produces: `ChatGptOAuthProvider` with `readonly id = 'chatgpt-oauth'`; `buildPrompt` and `mapSuggestions` exported from `categorize-suggestions.ts`
+
+### Settled during pre-flight — do not rediscover these
+
+**Where the access token comes from.** `ChatGptRefreshService.accessTokenFor(userId)` returns a usable token, or `null` when there is no connection, no refresh token, or the grant was terminally refused. It *throws* `ChatGptRefreshRetryableError` when something transient failed. **Both outcomes must leave the import alone**: `null` and a retryable throw both mean "no suggestions this time", so catch the throw and return `[]`. Categorization is an enhancement and must never gate an import.
+
+**Where `sharing` comes from.** The refresh service does not report it. `ChatGptConnectionStore.status(userId)` returns `{ connected, sharing, accountLabel, expiresAt }` and carries no credential, so it is the right read. This provider therefore needs **both** collaborators, not just the refresh service.
+
+**Retry a 401 exactly once**, by calling `accessTokenFor` again. Task 8's 60-second expiry skew covers request latency but cannot cover clock disagreement with OpenAI, and a resumed rotation can hand back an access token that has already expired. One retry closes both; a second would be a loop.
+
+**The module wiring, which this task owns.** `AppLocalModule.forRoot` already publishes the secret into a **global** `ConfigService` as `AI_KEY_ENCRYPTION_SECRET` — the same seam `AiKeyCrypto` reads. So no dynamic module and no new injection token is needed:
+
+```ts
+{
+  provide: ChatGptConnectionStore,
+  useFactory: (prisma: PrismaService, config: ConfigService) =>
+    new ChatGptConnectionStore(
+      prisma,
+      config.getOrThrow<string>('AI_KEY_ENCRYPTION_SECRET'),
+    ),
+  inject: [PrismaService, ConfigService],
+}
+```
+
+`ChatGptRefreshService` takes its collaborators as one object, so it needs a factory too, supplying the real store, `discoverOidcConfig`, global `fetch` and `verifyIdentity`. Register `ChatGptOAuthProvider` into `AI_PROVIDERS`. **The module's doc comment currently says it is "deliberately not wired into `AI_PROVIDERS`" — that sentence becomes false here and must be rewritten, not left.**
+
+**Structured output differs from Anthropic's, so only part is reusable.** The Anthropic provider forces a tool call (`tools` + `tool_choice`) and reads a `tool_use` block. OpenAI's Responses API uses `text: { format: { type: 'json_schema', strict: true, ... } }` and returns the JSON as `output_text`. The *mechanism* must differ; the **prompt and the result validation must not**. That validation — rejecting a non-numeric index, flooring a missing confidence to 0, refusing a `categoryId` that is not in the candidate list, and applying `MIN_CONFIDENCE` — is what stops a model from inventing a category id. Two copies would drift, and the two providers would then disagree about the same model output. `buildPrompt` is currently module-private and the mapping is inline; extract both. This is the second use, which is exactly when `AGENTS.md` says to abstract.
+
+The extraction lives in `apps/api/src/ai/`, not in `local-only/`: the Anthropic provider is reachable from the hosted root, so shared code cannot sit behind the licensing boundary. `local-only/` importing from `ai/` is fine — the boundary is one-way, and `verify:ai-hosted-composition` still passes because the hosted root cannot reach `local-only/`.
 
 **Requirements:**
 - `POST https://api.openai.com/v1/responses`, header `authorization: Bearer <access token>`, body carrying **`store: false`**.
