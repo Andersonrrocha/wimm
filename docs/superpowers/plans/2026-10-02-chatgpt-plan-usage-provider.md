@@ -1359,7 +1359,23 @@ git commit -m "feat(ai): exchange the ChatGPT code and verify the id_token"
 
 **Interfaces:**
 - Consumes: `ChatGptCredentials` (Task 6), the `chatGptConnection` delegate (Task 1), `encryptWithAiKey`/`decryptWithAiKey` from `../ai-key-crypto`
-- Produces: `ChatGptConnectionStore` with `load(userId)`, `loadPending(userId)`, `loadClientId(userId)`, `save(userId, clientId, credentials)`, `savePending(userId, credentials)`, `promotePending(userId)`, `clearTokens(userId)`, `status(userId)`
+- Produces: `ChatGptConnectionStore` with `load(userId)`, `loadPending(userId)`, `loadClientId(userId)`, `save(userId, clientId, credentials)`, `savePending(userId, credentials, receivedAt)`, `promotePending(userId)`, `clearTokens(userId)`, `status(userId)`, plus the `PendingRotation` type.
+
+**Three signatures differ from an earlier draft, all for reasons found in review or in Task 8's needs:**
+
+```ts
+export interface PendingRotation {
+  credentials: ChatGptCredentials
+  receivedAt: Date
+}
+
+savePending(userId: string, credentials: ChatGptCredentials, receivedAt: Date): Promise<void>
+loadPending(userId: string): Promise<PendingRotation | null>
+promotePending(userId: string): Promise<boolean>
+```
+
+- **`receivedAt` is sealed with the rotation**, inside the encrypted payload, so no migration is needed. Task 8 verifies a resumed rotation as of that moment rather than now — a signing-key outage can outlast the identity token *without* invalidating the refresh token, and verifying against the current clock would fail permanently on an already-consumed refresh token. An earlier draft had nowhere to put this, which is the gap that stalled Task 8.
+- **`promotePending` returns whether the promotion landed.** Its compare-and-swap can lose, leaving the OLD credentials live; a caller that assumed success would then refresh with an already-consumed token, and a server detecting reuse may revoke the entire grant.
 
   `save` takes `clientId` separately from the credentials because the durable client ID outlives them: `clearTokens` must null the tokens while retaining it.
 
@@ -1369,6 +1385,9 @@ git commit -m "feat(ai): exchange the ChatGPT code and verify the id_token"
 - `clearTokens` nulls `tokensEncrypted` and `pendingEncrypted` but **retains `clientId` and `accountLabel`**.
 - `status` never returns a token — only `{ connected, sharing, accountLabel, expiresAt }`.
 - **`refreshToken` is `string | null`** (Task 6). Persist and return `null` as `null`; never coerce it to `''`. A connection with a null refresh token is usable until it expires and then needs a fresh sign-in.
+- **`savePending` must refuse when there is no live connection.** Because `clearTokens` keeps the row so `clientId` survives, a plain `update({ where: { userId } })` still finds a disconnected row — and a refresh already in flight when the user clicked Disconnect would put a refresh token back on disk, which a later promote would make live again with `sharing` true. Make the write conditional on `tokensEncrypted: { not: null }` and throw when nothing matched. Reconnecting itself after an explicit disconnect is not a race worth tolerating.
+- **`clearTokens` also nulls `subject`.** It is the one account identifier among the plaintext mirror columns and nothing ever reads it. `clientId` and `accountLabel` are retained deliberately; `subject` is not.
+- **The compare-and-swap in `promotePending` needs a test that forces the interleaving.** Every other test is sequential, so the `pendingEncrypted: sealed` clause is vacuous in them — removing it passes the whole suite. Hook the delegate's `findUnique` so a newer `savePending` lands between the read and the conditional write, then assert `promotePending` returns `false`, the live credentials are unchanged, and the newer rotation survives.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1595,6 +1614,8 @@ git commit -m "feat(ai): store ChatGPT credentials under the per-profile secret"
 - **A refresh response may omit `scope`.** Fall back to the stored scopes; do not treat the omission as a scope downgrade. Task 6 applies the same RFC 6749 §5.1 fallback on the initial exchange — keep the two consistent.
 - **A stored `refreshToken` of `null` means this connection cannot be refreshed.** Return `null` immediately rather than posting a grant with no token.
 - **Pending rotation:** persist rotated credentials via `savePending` *before* verifying the new `id_token`; `promotePending` only after verification succeeds. If verification fails because the signing-key service is unavailable, leave the pending state in place and return a retryable error — a later call, including after a restart, resumes from it rather than replaying a consumed refresh token.
+- **Check `promotePending`'s return value.** It is `false` when its compare-and-swap lost, which leaves the OLD credentials live. Treating that as success means the next refresh replays an already-consumed token, and a server that detects reuse may revoke the whole grant. On `false`, re-read rather than assuming.
+- **`savePending` throws when the connection has been disconnected.** A refresh that was in flight when the user clicked Disconnect must not resurrect it. Treat the throw as "the attempt is over", not as a retryable error.
 - **Call `verifyIdentity` with `nonce: null` and `verifyAt: <when the rotation was received>`.** Both arguments exist for this task specifically, and both were added to Task 6 after review:
   - **`nonce: null`** — a refresh has no new authorize request, so there is no nonce to compare. `null` is the only way to say that; `undefined` and `''` are refused, so "forgot to pass it" can never be mistaken for "deliberately absent". Task 6's guard would otherwise reject every refresh outright.
   - **`verifyAt`** — store the receipt time alongside the pending rotation and verify against it. A signing-key outage can outlast the identity token *without* invalidating the refresh token, so verifying a resumed rotation against the current clock fails permanently, on a refresh token that has already been consumed. That is precisely the "account that silently cannot reconnect" this pending-state design exists to prevent, and it is the subtlety the reference implementation encodes as `receivedAt`.
@@ -1623,7 +1644,7 @@ const USER = 'user-1'
 /** Minimal in-memory stand-in for `ChatGptConnectionStore`. */
 class StoreDouble {
   current: ChatGptCredentials | null = null
-  pending: ChatGptCredentials | null = null
+  pending: { credentials: ChatGptCredentials; receivedAt: Date } | null = null
   clientId: string | null = 'client-1'
   cleared = 0
 
@@ -1634,12 +1655,20 @@ class StoreDouble {
     this.current = credentials
     this.pending = null
   }
-  async savePending(_u: string, credentials: ChatGptCredentials) {
-    this.pending = credentials
+  async savePending(
+    _u: string,
+    credentials: ChatGptCredentials,
+    receivedAt: Date,
+  ) {
+    // The real store refuses this when there is no live connection.
+    if (this.current === null) throw new Error('No live ChatGPT connection to rotate.')
+    this.pending = { credentials, receivedAt }
   }
-  async promotePending() {
-    if (this.pending) this.current = this.pending
+  async promotePending(): Promise<boolean> {
+    if (this.pending === null) return false
+    this.current = this.pending.credentials
     this.pending = null
+    return true
   }
   async clearTokens() {
     this.current = null
