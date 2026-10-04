@@ -278,8 +278,21 @@ export class ChatGptRefreshService {
   }
 }
 
+/**
+ * Treat a token as expired slightly before it is, so one that would die
+ * mid-request is refreshed first.
+ *
+ * Without this, a token with two seconds left passes the check, the
+ * categorize request starts, and the token expires in flight -- a 401 and a
+ * wasted round trip. Task 9 must still retry a 401 by calling
+ * `accessTokenFor` again, because this cannot cover clock skew between this
+ * machine and OpenAI; the skew covers request latency, the retry covers
+ * disagreement about the time.
+ */
+const EXPIRY_SKEW_MS = 60_000
+
 function isExpired(credentials: ChatGptCredentials): boolean {
-  return credentials.expiresAt.getTime() <= Date.now()
+  return credentials.expiresAt.getTime() - EXPIRY_SKEW_MS <= Date.now()
 }
 
 /** The body of a refused grant, read only to see whether it says `invalid_grant`. */

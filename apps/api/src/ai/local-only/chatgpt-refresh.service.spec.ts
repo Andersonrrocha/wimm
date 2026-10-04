@@ -339,6 +339,42 @@ describe('ChatGptRefreshService', () => {
       expect(calls).toHaveLength(0)
     })
 
+    it('refreshes a token that is about to expire, rather than handing out one that dies in flight', async () => {
+      // 30 seconds left: valid by the clock, but a categorize request started
+      // with it would very likely 401 mid-flight. The skew refreshes first.
+      const store = new StoreDouble()
+      store.current = {
+        ...expired(),
+        accessToken: 'nearly-dead',
+        expiresAt: new Date(Date.now() + 30_000),
+      }
+      const { calls, fetchImpl } = tokenEndpointSpy(() => ({
+        ok: true,
+        body: rotated(),
+      }))
+
+      await expect(
+        build(store, fetchImpl).accessTokenFor(USER),
+      ).resolves.toBe('new-access')
+      expect(calls).toHaveLength(1)
+    })
+
+    it('leaves a token alone when it expires well beyond the skew window', async () => {
+      // The skew must not be so wide that it refreshes constantly.
+      const store = new StoreDouble()
+      store.current = {
+        ...expired(),
+        accessToken: 'plenty-of-time',
+        expiresAt: new Date(Date.now() + 5 * 60_000),
+      }
+      const { calls, fetchImpl } = tokenEndpointSpy(() => ({ ok: true, body: {} }))
+
+      await expect(
+        build(store, fetchImpl).accessTokenFor(USER),
+      ).resolves.toBe('plenty-of-time')
+      expect(calls).toHaveLength(0)
+    })
+
     it('returns null without attempting a grant when the stored refresh token is null', async () => {
       // Task 6 yields `refreshToken: null` when `offline_access` was not
       // granted. Posting a grant with no token would be a guaranteed round
