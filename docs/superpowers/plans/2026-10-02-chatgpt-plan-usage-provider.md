@@ -22,6 +22,9 @@
 - Run tests with `pnpm test`, never bare `npx jest`, in `apps/api` — the package's `test` script sets `NODE_OPTIONS=--experimental-vm-modules` (pdfjs needs it) and `pretest` selects the node native ABI. Bare `npx jest` produces 6 spurious failing suites.
 - Issuer `https://auth.openai.com`; resource `https://api.openai.com/v1`; scopes `openid profile email offline_access resource.invoke chatgpt.tokens.use.direct`; callback path `/auth/callback` on `127.0.0.1`; `code_challenge_method=S256`.
 - Every request to `https://api.openai.com/v1/responses` must carry `store: false`.
+- `assert:parity` is offline and must pass after every schema change. `assert:constraints` is **not** offline — it reads `DATABASE_URL` and queries live Postgres — so never put it in an offline verification chain, and never apply a migration to a live database to make it pass.
+- Derived Prisma artifacts (`prisma/schema.sqlite.prisma`, `prisma/migrations-sqlite/0000_baseline/migration.sql`) are regenerated with `gen:sqlite-schema` / `gen:sqlite-baseline`, never hand-edited: parity compares them byte for byte.
+- New model ids use `@default(uuid())`, matching the 11 existing models.
 - Do not add attribution lines to commit messages.
 
 ---
@@ -32,7 +35,8 @@
 |---|---|
 | `apps/api/prisma/schema.prisma` | `ChatGptConnection` model (modify) |
 | `apps/api/prisma/migrations/20261002120000_add_chatgpt_connection/migration.sql` | Postgres chain |
-| `apps/api/prisma/migrations-sqlite/0000_baseline/migration.sql` | regenerated SQLite baseline |
+| `apps/api/prisma/schema.sqlite.prisma` | regenerated derived schema (`gen:sqlite-schema`) |
+| `apps/api/prisma/migrations-sqlite/0000_baseline/migration.sql` | regenerated SQLite baseline (`gen:sqlite-baseline`) |
 | `apps/api/src/ai/ai-provider.interface.ts` | drop `apiKey` from the contract (modify) |
 | `apps/api/src/ai/anthropic-categorizer.service.ts` | resolve its own key (modify) |
 | `apps/api/src/imports/imports.service.ts` | stop passing `apiKey` (modify) |
@@ -56,7 +60,8 @@
 **Files:**
 - Modify: `apps/api/prisma/schema.prisma`
 - Create: `apps/api/prisma/migrations/20261002120000_add_chatgpt_connection/migration.sql`
-- Modify: `apps/api/prisma/migrations-sqlite/0000_baseline/migration.sql`
+- Modify: `apps/api/prisma/schema.sqlite.prisma` (derived; regenerate, never hand-edit)
+- Modify: `apps/api/prisma/migrations-sqlite/0000_baseline/migration.sql` (derived; regenerate, never hand-edit)
 
 **Interfaces:**
 - Produces: a `chatGptConnection` Prisma delegate with fields `userId` (unique), `clientId`, `tokensEncrypted`, `pendingEncrypted`, `scopes`, `sharing`, `expiresAt`, `subject`, `accountLabel`, `createdAt`, `updatedAt`.
@@ -80,7 +85,7 @@ Append to the model list, and add the back-relation `chatGptConnection ChatGptCo
 /// the hosted chain gets the table but never populates it (see
 /// verify-ai-hosted-composition.ts for why that boundary exists).
 model ChatGptConnection {
-  id               String   @id @default(cuid())
+  id               String   @id @default(uuid())
   userId           String   @unique
   user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   /// Durable per-installation client ID issued by dynamic registration.
@@ -133,13 +138,19 @@ ALTER TABLE "ChatGptConnection" ADD CONSTRAINT "ChatGptConnection_userId_fkey"
   FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ```
 
-- [ ] **Step 4: Regenerate the SQLite baseline and assert parity**
+- [ ] **Step 4: Regenerate the two derived SQLite artifacts, then assert parity**
+
+Both are generated, never hand-written — parity check 1 and check 3 compare them **byte for byte** against what deriving them produces, so a hand edit fails even when it is semantically correct:
 
 ```bash
-pnpm --filter @wimm/api assert:parity && pnpm --filter @wimm/api assert:constraints
+pnpm --filter @wimm/api gen:sqlite-schema
+pnpm --filter @wimm/api gen:sqlite-baseline
+pnpm --filter @wimm/api assert:parity
 ```
 
-Expected: both exit 0. If `assert:parity` reports the SQLite baseline is missing the table, add the equivalent `CREATE TABLE`/`CREATE UNIQUE INDEX` to `migrations-sqlite/0000_baseline/migration.sql` (SQLite types: `TEXT`, `INTEGER NOT NULL DEFAULT 0` for the boolean, `DATETIME`) and re-run until both pass.
+Expected: `assert:parity` prints 3 PASS lines. If it complains about anything other than this task's table, **stop and report** — pre-existing drift is not this task's to fix.
+
+**Do not run `assert:constraints` here.** Unlike `assert:parity`, it is not offline: it loads `dotenv/config`, reads `DATABASE_URL`, and runs a `SELECT ... FROM pg_constraint` against a live Postgres. It cannot pass without a migrated Postgres, and this task must not apply migrations to one. The SQLite side of the same guarantee is parity check 2 ("Baseline carries every CHECK constraint"), which `assert:parity` already covers.
 
 - [ ] **Step 5: Run the full api suite and the composition guard**
 
@@ -2051,13 +2062,20 @@ pnpm --filter @wimm/api test \
  && pnpm --filter @wimm/desktop test \
  && pnpm --filter @wimm/shared test \
  && pnpm --filter @wimm/api assert:parity \
- && pnpm --filter @wimm/api assert:constraints \
  && pnpm --filter @wimm/api verify:ai-hosted-composition \
  && pnpm lint \
  && pnpm build
 ```
 
 Expected: all green. Baselines before this plan: api 67 suites / 596 tests, desktop 8 / 111, shared 34, scripts 14, route posture 7, parity 3/3, build 3/3, lint 6/6.
+
+`assert:constraints` is deliberately **not** in that chain: it queries a live Postgres via `DATABASE_URL` and cannot run offline. Run it separately, against a migrated Postgres, when one is available:
+
+```bash
+pnpm --filter @wimm/api assert:constraints
+```
+
+This table adds no CHECK constraints, so it cannot regress that assertion; parity check 2 covers the SQLite side.
 
 - [ ] **Step 2: Verify the packaged app still ships the local-only AI code**
 
