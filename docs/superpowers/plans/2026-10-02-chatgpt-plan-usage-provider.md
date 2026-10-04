@@ -1578,6 +1578,9 @@ git commit -m "feat(ai): store ChatGPT credentials under the per-profile secret"
 - **A refresh response may omit `scope`.** Fall back to the stored scopes; do not treat the omission as a scope downgrade. Task 6 applies the same RFC 6749 §5.1 fallback on the initial exchange — keep the two consistent.
 - **A stored `refreshToken` of `null` means this connection cannot be refreshed.** Return `null` immediately rather than posting a grant with no token.
 - **Pending rotation:** persist rotated credentials via `savePending` *before* verifying the new `id_token`; `promotePending` only after verification succeeds. If verification fails because the signing-key service is unavailable, leave the pending state in place and return a retryable error — a later call, including after a restart, resumes from it rather than replaying a consumed refresh token.
+- **Call `verifyIdentity` with `nonce: null` and `verifyAt: <when the rotation was received>`.** Both arguments exist for this task specifically, and both were added to Task 6 after review:
+  - **`nonce: null`** — a refresh has no new authorize request, so there is no nonce to compare. `null` is the only way to say that; `undefined` and `''` are refused, so "forgot to pass it" can never be mistaken for "deliberately absent". Task 6's guard would otherwise reject every refresh outright.
+  - **`verifyAt`** — store the receipt time alongside the pending rotation and verify against it. A signing-key outage can outlast the identity token *without* invalidating the refresh token, so verifying a resumed rotation against the current clock fails permanently, on a refresh token that has already been consumed. That is precisely the "account that silently cannot reconnect" this pending-state design exists to prevent, and it is the subtlety the reference implementation encodes as `receivedAt`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1657,10 +1660,21 @@ function tokenEndpointSpy(
   return { calls, fetchImpl }
 }
 
+// Matches the real `verifyIdentity`'s shape closely enough that a call with
+// the wrong arguments fails to type-check here too.
+type VerifyIdentity = (args: {
+  idToken: string
+  clientId: string
+  issuer: string
+  jwksUri: string
+  nonce: string | null
+  verifyAt?: Date
+}) => Promise<{ subject: string }>
+
 const build = (
   store: StoreDouble,
   fetchImpl: typeof fetch,
-  verifyIdentity: () => Promise<{ subject: string }> = async () => ({ subject: 'sub-1' }),
+  verifyIdentity: VerifyIdentity = async () => ({ subject: 'sub-1' }),
 ) =>
   new ChatGptRefreshService({
     store: store as never,
@@ -1767,6 +1781,29 @@ describe('ChatGptRefreshService', () => {
     // second refresh grant with an already-consumed refresh token.
     expect(calls).toHaveLength(1)
     expect(store.pending).toBeNull()
+  })
+
+  it('verifies the rotation with a null nonce and the receipt time', async () => {
+    // A double accepts anything, so without this the two arguments that make
+    // refresh work at all would be unpinned.
+    const store = new StoreDouble()
+    store.current = expired()
+    const { fetchImpl } = tokenEndpointSpy(() => ({
+      ok: true,
+      body: { access_token: 'a', refresh_token: 'r', id_token: 'i', expires_in: 60, scope: SCOPES },
+    }))
+    const seen: Array<{ nonce: string | null; verifyAt?: Date }> = []
+    const service = build(store, fetchImpl, async (args) => {
+      seen.push({ nonce: args.nonce, verifyAt: args.verifyAt })
+      return { subject: 'sub-1' }
+    })
+
+    await service.accessTokenFor(USER)
+
+    expect(seen).toHaveLength(1)
+    // `null`, not undefined and not '': Task 6 refuses both.
+    expect(seen[0]!.nonce).toBeNull()
+    expect(seen[0]!.verifyAt).toBeInstanceOf(Date)
   })
 
   it('clears the connection and returns null when the refresh token is rejected', async () => {
