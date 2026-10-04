@@ -2108,6 +2108,17 @@ git add -A && git commit -m "test(ai): close out ChatGPT plan-usage verification
 
 ---
 
+## Before the first release — a blocking prerequisite, not a deferral
+
+**Confirmed with the owner on 2026-10-04: no `v*` release has ever been cut.** That is what makes Task 1's approach valid, and it is the only thing that makes it valid.
+
+The SQLite chain is a single `0000_baseline/migration.sql` that parity check 3 requires be a full regeneration, so a schema change rewrites it rather than adding an incremental migration. But `apps/api/src/prisma/local/migration-runner.ts` hard-fails at boot when an already-applied migration's checksum no longer matches its file. Consequences, in order of when they bite:
+
+1. **Already true, today.** Any local profile database that applied an older baseline now refuses to boot. Commit `5581938` (CsvSourceMapping) already had this effect, so Task 1 is the second occurrence, not the first. Development profiles must be recreated after a schema change; that is the accepted cost of the pre-release window.
+2. **Blocking, before the first `v*` tag.** `release-desktop.yml` triggers on `v*`, and `electron-updater` is wired to GitHub releases, so users *will* update with data on disk. The 2026-07-28 embedded-local-runtime design states it plainly: a regenerated baseline "works only until the first schema change ships, and then it either wipes or breaks the database of everyone who already uses the app."
+
+**So before any release ships, the SQLite chain must move to incremental migrations** — freeze `0000_baseline`, author `0001_` onward for both dialects, and change parity check 3 to compare the *sum* of the chain against a regeneration rather than the baseline file alone. That is its own piece of work, outside this plan, and it must land before the first tag rather than after.
+
 ## Deferred, deliberately
 
 - **Mobile.** `apps/mobile` is out of scope for this plan by constraint.
