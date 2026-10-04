@@ -920,7 +920,10 @@ import { JwtService } from '@nestjs/jwt'
 import { exchangeCode, verifyIdentity } from './chatgpt-token-exchange'
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
-const jwk = { ...createPublicKey(publicKey).export({ format: 'jwk' }), kid: 'k1', alg: 'RS256' }
+// `createPublicKey(publicKey)` throws "Invalid key object type public,
+// expected private" on Node 22 -- it derives a public key, it does not accept
+// one. Export the KeyObject directly; the JWK is byte-identical (verified).
+const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'k1', alg: 'RS256' }
 const config = {
   issuer: 'https://auth.openai.com',
   authorization_endpoint: 'https://auth.openai.com/authorize',
@@ -1037,7 +1040,11 @@ Expected: FAIL, cannot resolve the module.
 // apps/api/src/ai/local-only/chatgpt-token-exchange.ts
 import { createPublicKey } from 'crypto'
 import { JwtService } from '@nestjs/jwt'
-import { CHATGPT_RESOURCE, type OidcConfig } from './chatgpt-oidc'
+import {
+  CHATGPT_RESOURCE,
+  CHATGPT_SCOPES,
+  type OidcConfig,
+} from './chatgpt-oidc'
 
 export const SHARING_SCOPE = 'chatgpt.tokens.use.direct'
 
@@ -1054,7 +1061,13 @@ export function isSharingGranted(scopes: string): boolean {
 
 export interface ChatGptCredentials {
   accessToken: string
-  refreshToken: string
+  /**
+   * `null` when `offline_access` was not granted, meaning this connection
+   * cannot be refreshed. Deliberately not `''`: an empty string would flow
+   * into a refresh grant as a real-looking value and fail at the server
+   * rather than here.
+   */
+  refreshToken: string | null
   idToken: string
   expiresAt: Date
   scopes: string
@@ -1204,7 +1217,14 @@ export async function exchangeCode(args: {
   if (typeof data.id_token !== 'string' || !data.id_token) {
     throw new Error('ChatGPT token exchange returned no identity token.')
   }
-  const scopes = typeof data.scope === 'string' ? data.scope : ''
+  // RFC 6749 section 5.1 makes `scope` OPTIONAL in a token response when it
+  // is identical to what was requested. Reading an omission as "no scopes"
+  // is exactly backwards and breaks the HAPPY path twice: `sharing` would be
+  // false on a good connection, and the `offline_access` requirement below
+  // would be skipped so a missing refresh token would pass unnoticed. Task 8
+  // applies the same fallback on refresh; keep the two consistent.
+  const scopes =
+    typeof data.scope === 'string' && data.scope ? data.scope : CHATGPT_SCOPES
   const needsRefresh = scopes.split(/\s+/).includes('offline_access')
   if (
     needsRefresh &&
@@ -1230,7 +1250,10 @@ export async function exchangeCode(args: {
 
   return {
     accessToken: data.access_token,
-    refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token : '',
+    refreshToken:
+      typeof data.refresh_token === 'string' && data.refresh_token
+        ? data.refresh_token
+        : null,
     idToken: data.id_token,
     expiresAt: new Date(Date.now() + expiresInSeconds * 1000),
     scopes,
@@ -1255,15 +1278,52 @@ Expected: 5 passing.
 Add a test that drives `exchangeCode` into each failure branch and asserts the thrown message contains neither the access token, the refresh token, the code, nor the verifier:
 
 ```ts
-it('never puts a credential in an error message', async () => {
-  const secrets = ['at', 'rt', 'the-code', 'the-verifier']
+// Two things went wrong in an earlier draft of this test, and both are easy
+// to repeat:
+//
+// 1. The sentinels were `'at'` and `'rt'`. Both are substrings of ordinary
+//    error text -- "ChatGPT" contains "at", "match" contains "at" -- so the
+//    assertion failed against CORRECT code.
+// 2. The assertions lived inside `.catch()`, so if nothing threw the test
+//    passed having asserted nothing at all.
+//
+// Use sentinels that cannot occur by accident, assert that it DID reject, and
+// drive each failure branch separately rather than only one.
+const SENTINELS = {
+  accessToken: 'SENTINEL-ACCESS-TOKEN-7f3a',
+  refreshToken: 'SENTINEL-REFRESH-TOKEN-91bd',
+  code: 'SENTINEL-AUTH-CODE-4c2e',
+  verifier: 'SENTINEL-PKCE-VERIFIER-6a80',
+}
+
+it.each([
+  ['a nonce mismatch', { nonce: 'SOMETHING-ELSE' }],
+  ['an audience mismatch', { nonce: 'n-1', aud: 'another-client' }],
+  ['an issuer mismatch', { nonce: 'n-1', iss: 'https://auth.evil.example' }],
+])('never leaks a credential when verification fails on %s', async (_label, claims) => {
+  let rejected = false
   await exchangeCode({
-    config, clientId: 'client-1', code: 'the-code', verifier: 'the-verifier',
-    redirectUri: 'http://127.0.0.1:1/auth/callback', nonce: 'n-1',
-    fetchImpl: fetchStub({ access_token: 'at', refresh_token: 'rt', id_token: signIdToken({ nonce: 'X' }), expires_in: 1, scope: 'offline_access' }),
+    config,
+    clientId: 'client-1',
+    code: SENTINELS.code,
+    verifier: SENTINELS.verifier,
+    redirectUri: 'http://127.0.0.1:1/auth/callback',
+    nonce: 'n-1',
+    fetchImpl: fetchStub({
+      access_token: SENTINELS.accessToken,
+      refresh_token: SENTINELS.refreshToken,
+      id_token: signIdToken(claims),
+      expires_in: 3600,
+      scope: CHATGPT_SCOPES,
+    }),
   }).catch((error: Error) => {
-    for (const secret of secrets) expect(error.message).not.toContain(secret)
+    rejected = true
+    for (const secret of Object.values(SENTINELS)) {
+      expect(error.message).not.toContain(secret)
+    }
   })
+  // Without this the test would pass vacuously if the call ever succeeded.
+  expect(rejected).toBe(true)
 })
 ```
 
