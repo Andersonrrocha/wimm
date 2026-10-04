@@ -1960,7 +1960,7 @@ Four behaviours now pinned, each mutation-verified: a rotation whose generation 
 
 One consequence worth stating: a stale flight now ends in a **retryable** error, not `null`. `null` would mean "reconnect" about a connection that exists — the one that just signed in — and a retry reads it and proceeds correctly. That is the Task 8 store-failure fix and this one composing as intended.
 
-### F2. De-duplicate what Tasks 6 and 8 now both carry
+### F2. De-duplicate what Tasks 6 and 8 now both carry — **DONE**
 
 **Why:** `MAX_EXPIRES_IN_SECONDS`, the `expires_in` clamp, the JSON-parse wrapper, the scope fallback and the `isSharingGranted` call exist in both `chatgpt-token-exchange.ts` and `chatgpt-refresh.service.ts`. `AGENTS.md` says to abstract on the second duplication, and this is the second.
 
@@ -1977,7 +1977,15 @@ One consequence worth stating: a stale flight now ends in a **retryable** error,
 
 **Shape:** a shared module inside `ai/local-only/`, as its own `refactor(ai)` commit with no behaviour change — the existing tests of both files must pass **untouched**, which is what makes it a refactor rather than a rewrite. If either file's tests need editing, the extraction has changed behaviour and is wrong.
 
-**Sequencing:** F2 writes to `chatgpt-token-exchange.ts` and `chatgpt-refresh.service.ts`. Task 9 reads the refresh service as a collaborator and runs the suite, so the two must not overlap — two actors writing one worktree is what destroyed in-flight work earlier in this plan.
+**Sequencing:** F2 writes to `chatgpt-token-exchange.ts` and `chatgpt-refresh.service.ts`. Task 9 reads the refresh service as a collaborator and runs the suite, so the two must not overlap — two actors writing one worktree is what destroyed in-flight work earlier in this plan. **Observed:** F2 was held until Task 9 committed, and ran alone.
+
+**As built:** `chatgpt-token-response.ts` exports `MAX_EXPIRES_IN_SECONDS`, `readJsonObject(response, label)` and `readExpiresInSeconds(value)`, with its own 19-test spec. Both callers now use them, and **both pre-existing specs passed untouched** — 102 tests across the two files — which is the proof this was a refactor and not a rewrite.
+
+Two things deliberately left alone, each for a reason:
+- **The JWKS parse site** keeps its own inline wrapper. It has no non-object rejection: a JSON `null` body there currently becomes `keys = []` and then "signing key not found", so routing it through `readJsonObject` would change its message. Preserving behaviour mattered more than a third call site.
+- **Arrays still pass `readJsonObject`** (`typeof [] === 'object'` and not null), exactly as both call sites already behaved. Downstream field reads simply find nothing. Pinned by a test so the next reader knows it is deliberate.
+
+**A pre-existing test gap surfaced by the extraction.** Dropping the non-object rejection passed all 102 tests of the two callers: neither had ever tested a `null` or non-object body. That gap was invisible while the code sat in two places. The new module's spec now covers it, and dropping the rejection fails 5 tests.
 
 ---
 
