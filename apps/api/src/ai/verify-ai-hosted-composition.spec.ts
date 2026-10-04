@@ -40,7 +40,7 @@ describe('verify-ai-hosted-composition (real codebase)', () => {
     expect(() => assertExcludesLocalOnlyProviders()).not.toThrow()
   })
 
-  it('DOES find the local-only stub reachable from the real local composition root (negative control)', () => {
+  it('DOES find the local-only provider reachable from the real local composition root (negative control)', () => {
     // Proves the check is not vacuous, and proves it in both directions at
     // once: the same detection this suite relies on for `app.module.ts`
     // genuinely fires for the root that really does import
@@ -50,7 +50,7 @@ describe('verify-ai-hosted-composition (real codebase)', () => {
 
     const relativePaths = localOnlyFilesReached.map((file) => file.replace(process.cwd(), ''))
     expect(localOnlyFilesReached.length).toBeGreaterThan(0)
-    expect(relativePaths.some((file) => file.includes('chatgpt-oauth-provider.stub'))).toBe(true)
+    expect(relativePaths.some((file) => file.includes('chatgpt-oauth-provider.ts'))).toBe(true)
     expect(relativePaths.some((file) => file.includes('local-only-ai.module'))).toBe(true)
   })
 })

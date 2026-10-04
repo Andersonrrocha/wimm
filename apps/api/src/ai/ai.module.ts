@@ -19,8 +19,10 @@ import { AnthropicCategorizerService } from './anthropic-categorizer.service'
  * exists to catch.
  *
  * A local-only provider (`ai/local-only/local-only-ai.module.ts`) is deliberately
- * NOT added here -- see that module's doc comment for why merging it in is
- * deferred rather than designed against a stand-in.
+ * NOT added here: this module is reachable from the hosted root, and a
+ * local-only provider must not be. `LocalOnlyAiModule` registers its own
+ * `AI_PROVIDERS` -- this list plus the ChatGPT provider -- see its doc
+ * comment.
  */
 export function buildAiProviders(anthropic: AnthropicCategorizerService): AiProvider[] {
   return [anthropic]

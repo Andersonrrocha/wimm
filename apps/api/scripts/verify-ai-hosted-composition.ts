@@ -43,10 +43,9 @@
  * states the invariant rather than naming a build, deliberately: the
  * previous name (`ai/hosted/`) encoded a *policy assumption* about which
  * build owned the code, and that is precisely what turned out to be wrong.
- * There is no real ChatGPT plan-usage provider in the tree yet;
- * `ChatGptOauthProviderStub` is a realistic stand-in at that exact path,
- * used by this script's own suite and by the mutation proof to show the
- * check actually fires.
+ * The real ChatGPT plan-usage provider (`ChatGptOAuthProvider`) sits at
+ * that path, and this script's own suite uses it, via `app.local.module.ts`,
+ * as the negative control that shows the check actually fires.
  *
  * **What this proves, and what it does not.** This proves the source-level
  * import graph reachable from `app.module.ts` never reaches
