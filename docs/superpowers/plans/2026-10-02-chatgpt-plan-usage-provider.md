@@ -1966,7 +1966,18 @@ One consequence worth stating: a stale flight now ends in a **retryable** error,
 
 **Why it was not done in Task 8:** the implementer declined to edit a file that had already been reviewed, which was the right call. `AGENTS.md` also says never to mix a refactor with a feature change.
 
-**Shape:** extract into a shared module inside `ai/local-only/`, as its own `refactor(ai)` commit with no behaviour change — the existing tests of both files must pass untouched, which is what makes it a refactor rather than a rewrite.
+**Scope, established by reading both files rather than taking the review's list at face value.** Of the five items it named, only two are genuine duplication:
+
+| Named by the review | Verdict |
+|---|---|
+| `MAX_EXPIRES_IN_SECONDS` and the `expires_in` clamp | **Duplicated.** Identical constant and identical expression in both. Extract. |
+| The JSON-parse wrapper | **Duplicated in structure, not in message.** Three sites: "ChatGPT signing keys…", "ChatGPT token response…", "ChatGPT token refresh response…". The repeated part is the try/catch around `response.json()` plus the non-object rejection; the distinct messages are deliberate, so you can tell *which* parse failed. Extract as a helper taking the label. |
+| `isSharingGranted` | **Already shared.** `chatgpt-token-exchange.ts` exports it and `chatgpt-refresh.service.ts` imports it. Nothing to do. |
+| The scope fallback | **Not duplication, and must not be merged.** The exchange falls back to `CHATGPT_SCOPES` — what was requested, per RFC 6749 §5.1. The refresh falls back to `live.scopes` — what was previously granted. Two deliberately different behaviours that happen to share a shape. Collapsing them into one function would force a single fallback where two are needed. |
+
+**Shape:** a shared module inside `ai/local-only/`, as its own `refactor(ai)` commit with no behaviour change — the existing tests of both files must pass **untouched**, which is what makes it a refactor rather than a rewrite. If either file's tests need editing, the extraction has changed behaviour and is wrong.
+
+**Sequencing:** F2 writes to `chatgpt-token-exchange.ts` and `chatgpt-refresh.service.ts`. Task 9 reads the refresh service as a collaborator and runs the suite, so the two must not overlap — two actors writing one worktree is what destroyed in-flight work earlier in this plan.
 
 ---
 
