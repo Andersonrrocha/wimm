@@ -88,12 +88,33 @@ export class ChatGptConnectionStore {
   }
 
   /** Rotated credentials awaiting identity verification, if any. */
-  async loadPending(userId: string): Promise<ChatGptCredentials | null> {
+  async loadPending(userId: string): Promise<PendingRotation | null> {
     const row = await this.prisma.chatGptConnection.findUnique({
       where: { userId },
       select: { pendingEncrypted: true },
     })
-    return this.open(row?.pendingEncrypted ?? null)
+    const sealed = row?.pendingEncrypted ?? null
+    const credentials = this.open(sealed)
+    if (sealed === null || credentials === null) return null
+    const receivedAt = this.openReceivedAt(sealed)
+    // A rotation with no readable receipt time is corruption: verifying it
+    // against the wrong clock is exactly the failure this field prevents.
+    if (receivedAt === null) return null
+    return { credentials, receivedAt }
+  }
+
+  /** The receipt time sealed alongside a pending rotation, or null. */
+  private openReceivedAt(sealed: string): Date | null {
+    try {
+      const payload = JSON.parse(decryptWithAiKey(this.key, sealed)) as {
+        receivedAt?: unknown
+      }
+      if (typeof payload.receivedAt !== 'string') return null
+      const parsed = new Date(payload.receivedAt)
+      return Number.isNaN(parsed.getTime()) ? null : parsed
+    } catch {
+      return null
+    }
   }
 
   /** The durable client ID. Survives `clearTokens`. */
@@ -140,11 +161,22 @@ export class ChatGptConnectionStore {
   async savePending(
     userId: string,
     credentials: ChatGptCredentials,
+    receivedAt: Date,
   ): Promise<void> {
-    await this.prisma.chatGptConnection.update({
-      where: { userId },
-      data: { pendingEncrypted: this.seal(credentials) },
+    // Conditional on a LIVE connection. `clearTokens` deliberately keeps the
+    // row so `clientId` survives a disconnect, so a plain
+    // `update({ where: { userId } })` still finds it -- and a refresh that
+    // was already in flight when the user clicked Disconnect would put a
+    // refresh token back on disk, which a later `promotePending` would make
+    // live again with `sharing` true. Reconnecting itself after an explicit
+    // disconnect is not a race worth tolerating.
+    const { count } = await this.prisma.chatGptConnection.updateMany({
+      where: { userId, tokensEncrypted: { not: null } },
+      data: { pendingEncrypted: this.seal(credentials, receivedAt) },
     })
+    if (count === 0) {
+      throw new Error('No live ChatGPT connection to rotate.')
+    }
   }
 
   /**
@@ -153,18 +185,26 @@ export class ChatGptConnectionStore {
    * verification and promotion is safe) or when the pending value cannot be
    * read.
    */
-  async promotePending(userId: string): Promise<void> {
+  /**
+   * Promotes a saved rotation, returning whether it actually landed.
+   *
+   * The boolean matters: a lost compare-and-swap leaves the OLD credentials
+   * live, and a caller that assumed success would then refresh using an
+   * already-consumed refresh token. A server that detects reuse may revoke
+   * the whole grant, so "it didn't land" must be visible.
+   */
+  async promotePending(userId: string): Promise<boolean> {
     const row = await this.prisma.chatGptConnection.findUnique({
       where: { userId },
       select: { pendingEncrypted: true },
     })
     const sealed = row?.pendingEncrypted ?? null
     const credentials = this.open(sealed)
-    if (sealed === null || credentials === null) return
+    if (sealed === null || credentials === null) return false
 
     // Conditional on the pending value still being the one just read, so a
     // newer `savePending` that landed in between is not discarded.
-    await this.prisma.chatGptConnection.updateMany({
+    const { count } = await this.prisma.chatGptConnection.updateMany({
       where: { userId, pendingEncrypted: sealed },
       data: {
         tokensEncrypted: sealed,
@@ -172,6 +212,7 @@ export class ChatGptConnectionStore {
         ...mirror(credentials),
       },
     })
+    return count > 0
   }
 
   /**
@@ -187,6 +228,11 @@ export class ChatGptConnectionStore {
         pendingEncrypted: null,
         sharing: false,
         expiresAt: null,
+        // `subject` is the one account identifier among the mirror columns,
+        // nothing ever reads it, and a disconnect should not leave it behind.
+        // `clientId` and `accountLabel` are retained deliberately -- see this
+        // method's contract.
+        subject: null,
       },
     })
   }
@@ -211,8 +257,11 @@ export class ChatGptConnectionStore {
     }
   }
 
-  private seal(credentials: ChatGptCredentials): string {
+  private seal(credentials: ChatGptCredentials, receivedAt?: Date): string {
     const payload: StoredPayload = {
+      ...(receivedAt === undefined
+        ? {}
+        : { receivedAt: receivedAt.toISOString() }),
       accessToken: credentials.accessToken,
       refreshToken: credentials.refreshToken,
       idToken: credentials.idToken,
@@ -239,6 +288,20 @@ export class ChatGptConnectionStore {
 }
 
 /** What is encrypted. `expiresAt` is an ISO string because JSON has no Date. */
+/**
+ * A saved rotation, with the moment it was received.
+ *
+ * The receipt time is load-bearing, not bookkeeping: a signing-key outage can
+ * outlast the identity token without invalidating the refresh token, so a
+ * resumed rotation must be verified as of when it arrived. Verified against
+ * the current clock it would fail permanently, on a refresh token that has
+ * already been consumed -- an account that can never reconnect.
+ */
+export interface PendingRotation {
+  credentials: ChatGptCredentials
+  receivedAt: Date
+}
+
 interface StoredPayload {
   accessToken: string
   refreshToken: string | null
@@ -247,6 +310,8 @@ interface StoredPayload {
   scopes: string
   subject: string
   sharing: boolean
+  /** Only written for a pending rotation; absent on the live credentials. */
+  receivedAt?: string
 }
 
 /** The non-secret columns that mirror the payload. */

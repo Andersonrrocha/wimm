@@ -36,6 +36,8 @@ function freshDatabaseFile(): string {
 const ACCESS = 'SENTINEL-ACCESS-TOKEN-5b1d93'
 const REFRESH = 'SENTINEL-REFRESH-TOKEN-c7e402'
 const ID_TOKEN = 'SENTINEL-ID-TOKEN-8a6f15'
+/** A fixed receipt time, so assertions on it are deterministic. */
+const RECEIVED_AT = new Date('2026-10-04T12:00:00.000Z')
 const SCOPES = 'openid offline_access chatgpt.tokens.use.direct'
 
 const credentials = (
@@ -121,6 +123,7 @@ describe('ChatGptConnectionStore', () => {
         accessToken: 'SENTINEL-ROTATED-ACCESS-2f90d1',
         refreshToken: 'SENTINEL-ROTATED-REFRESH-6e44a8',
       }),
+      RECEIVED_AT,
     )
     const row = await prisma.chatGptConnection.findUnique({ where: { userId } })
     expect(row?.pendingEncrypted).toBeTruthy()
@@ -182,7 +185,7 @@ describe('ChatGptConnectionStore', () => {
       where: { userId },
       data: { accountLabel: 'ada@example.com' },
     })
-    await store.savePending(userId, credentials({ accessToken: 'rotated' }))
+    await store.savePending(userId, credentials({ accessToken: 'rotated' }), RECEIVED_AT)
 
     await store.clearTokens(userId)
 
@@ -284,6 +287,7 @@ describe('ChatGptConnectionStore', () => {
     await store.savePending(
       userId,
       credentials({ accessToken: 'rotated-access', refreshToken: 'rotated-refresh' }),
+      RECEIVED_AT,
     )
 
     // Before promotion the live credential is still the old one.
@@ -310,6 +314,7 @@ describe('ChatGptConnectionStore', () => {
         expiresAt,
         subject: 'sub-2',
       }),
+      RECEIVED_AT,
     )
     await store.promotePending(userId)
 
@@ -323,25 +328,134 @@ describe('ChatGptConnectionStore', () => {
     })
   })
 
-  it('treats promotion with nothing pending as a no-op', async () => {
+  it('treats promotion with nothing pending as a no-op, and reports false', async () => {
     await store.save(userId, 'client-1', credentials())
-    await store.promotePending(userId)
+    // `false` rather than `undefined`: a caller that assumed success would
+    // refresh with an already-consumed token, and a server detecting reuse
+    // may revoke the whole grant.
+    await expect(store.promotePending(userId)).resolves.toBe(false)
     expect((await store.load(userId))?.accessToken).toBe(ACCESS)
 
     // And for a user with no row at all.
-    await expect(store.promotePending(await createUser())).resolves.toBeUndefined()
+    await expect(store.promotePending(await createUser())).resolves.toBe(false)
+  })
+
+  it('reports true when a rotation actually lands', async () => {
+    await store.save(userId, 'client-1', credentials())
+    await store.savePending(
+      userId,
+      credentials({ accessToken: 'rotated-access' }),
+      RECEIVED_AT,
+    )
+    await expect(store.promotePending(userId)).resolves.toBe(true)
+  })
+
+  it('refuses to save a rotation once the connection has been disconnected', async () => {
+    // `clearTokens` keeps the row so `clientId` survives, so a plain
+    // `update({ where: { userId } })` still finds it -- and a refresh already
+    // in flight when the user clicked Disconnect would put a refresh token
+    // back on disk, which a later promote would make live again with
+    // `sharing` true. Reconnecting itself after an explicit disconnect is not
+    // a race worth tolerating.
+    await store.save(userId, 'client-1', credentials())
+    await store.clearTokens(userId)
+
+    await expect(
+      store.savePending(userId, credentials({ accessToken: 'late' }), RECEIVED_AT),
+    ).rejects.toThrow(/no live chatgpt connection/i)
+
+    const row = await prisma.chatGptConnection.findUnique({ where: { userId } })
+    expect(row?.pendingEncrypted).toBeNull()
+    await expect(store.promotePending(userId)).resolves.toBe(false)
+    await expect(store.status(userId)).resolves.toMatchObject({
+      connected: false,
+      sharing: false,
+    })
+  })
+
+  it('does not leave the account subject behind after a disconnect', async () => {
+    // `subject` is the one account identifier among the mirror columns and
+    // nothing ever reads it. `clientId` and `accountLabel` are retained
+    // deliberately; this is not.
+    await store.save(userId, 'client-1', credentials())
+    const before = await prisma.chatGptConnection.findUnique({ where: { userId } })
+    expect(before?.subject).toBe('sub-1')
+
+    await store.clearTokens(userId)
+
+    const after = await prisma.chatGptConnection.findUnique({ where: { userId } })
+    expect(after?.subject).toBeNull()
+    expect(after?.clientId).toBe('client-1')
+  })
+
+  it('reports false and keeps the live credentials when a newer rotation lands mid-promote', async () => {
+    // The compare-and-swap in `promotePending` is the only concurrency
+    // property this store relies on, and every other test here is
+    // sequential -- so the `pendingEncrypted: sealed` clause is vacuous in
+    // them. Force the interleaving instead: once the pending value has been
+    // read, a NEWER rotation lands before the conditional write runs.
+    await store.save(userId, 'client-1', credentials())
+    await store.savePending(
+      userId,
+      credentials({ accessToken: 'first-rotation' }),
+      RECEIVED_AT,
+    )
+
+    const delegate = prisma.chatGptConnection
+    const realFindUnique = delegate.findUnique.bind(delegate)
+    let injected = false
+    const hook = jest
+      .spyOn(delegate, 'findUnique')
+      .mockImplementation((async (args: unknown) => {
+        const row = await realFindUnique(args as never)
+        if (!injected) {
+          injected = true
+          await store.savePending(
+            userId,
+            credentials({ accessToken: 'second-rotation' }),
+            RECEIVED_AT,
+          )
+        }
+        return row
+      }) as never)
+
+    try {
+      // The read saw `first-rotation`; by the time it writes, the stored
+      // pending value is `second-rotation`, so the clause does not match.
+      await expect(store.promotePending(userId)).resolves.toBe(false)
+    } finally {
+      hook.mockRestore()
+    }
+
+    // Nothing was promoted, and the newer rotation was not discarded.
+    expect((await store.load(userId))?.accessToken).toBe(ACCESS)
+    expect((await store.loadPending(userId))?.credentials.accessToken).toBe(
+      'second-rotation',
+    )
+  })
+
+  it('seals the receipt time with the rotation and returns it', async () => {
+    // Task 8 verifies a resumed rotation as of this moment, not now: a
+    // signing-key outage can outlast the identity token without invalidating
+    // the refresh token.
+    await store.save(userId, 'client-1', credentials())
+    await store.savePending(userId, credentials(), RECEIVED_AT)
+
+    const pending = await store.loadPending(userId)
+    expect(pending?.receivedAt).toEqual(RECEIVED_AT)
+    expect(pending?.receivedAt).toBeInstanceOf(Date)
   })
 
   it('does not promote a pending value that cannot be read', async () => {
     await store.save(userId, 'client-1', credentials())
-    await store.savePending(userId, credentials({ accessToken: 'rotated-access' }))
+    await store.savePending(userId, credentials({ accessToken: 'rotated-access' }), RECEIVED_AT)
     const foreign = storeOver(prisma, generateAiKeyEncryptionSecret())
 
     await foreign.promotePending(userId)
 
     // Live credential untouched, pending slot untouched.
     expect((await store.load(userId))?.accessToken).toBe(ACCESS)
-    expect((await store.loadPending(userId))?.accessToken).toBe('rotated-access')
+    expect((await store.loadPending(userId))?.credentials.accessToken).toBe('rotated-access')
   })
 
   it('round-trips a null refresh token as null, not as an empty string', async () => {
@@ -357,8 +471,8 @@ describe('ChatGptConnectionStore', () => {
 
   it('keeps a null refresh token null through a pending rotation and its promotion', async () => {
     await store.save(userId, 'client-1', credentials())
-    await store.savePending(userId, credentials({ refreshToken: null }))
-    expect((await store.loadPending(userId))?.refreshToken).toBeNull()
+    await store.savePending(userId, credentials({ refreshToken: null }), RECEIVED_AT)
+    expect((await store.loadPending(userId))?.credentials.refreshToken).toBeNull()
 
     await store.promotePending(userId)
 
@@ -367,18 +481,19 @@ describe('ChatGptConnectionStore', () => {
 
   it('leaves the live credential intact when a rotation is saved but not promoted', async () => {
     await store.save(userId, 'client-1', credentials())
-    await store.savePending(userId, credentials({ accessToken: 'rotated-access' }))
+    await store.savePending(userId, credentials({ accessToken: 'rotated-access' }), RECEIVED_AT)
     const row = await prisma.chatGptConnection.findUnique({ where: { userId } })
     expect(row?.pendingEncrypted).toBeTruthy()
     expect((await store.load(userId))?.accessToken).toBe(ACCESS)
     await expect(store.loadPending(userId)).resolves.toMatchObject({
-      accessToken: 'rotated-access',
+      credentials: { accessToken: 'rotated-access' },
+      receivedAt: RECEIVED_AT,
     })
   })
 
   it('supersedes a pending rotation when a fresh sign-in is saved', async () => {
     await store.save(userId, 'client-1', credentials())
-    await store.savePending(userId, credentials({ accessToken: 'stale-rotation' }))
+    await store.savePending(userId, credentials({ accessToken: 'stale-rotation' }), RECEIVED_AT)
 
     await store.save(userId, 'client-1', credentials({ accessToken: 'fresh-access' }))
 
