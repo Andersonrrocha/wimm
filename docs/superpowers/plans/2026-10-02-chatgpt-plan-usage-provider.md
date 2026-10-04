@@ -25,6 +25,7 @@
 - `assert:parity` is offline and must pass after every schema change. `assert:constraints` is **not** offline — it reads `DATABASE_URL` and queries live Postgres — so never put it in an offline verification chain, and never apply a migration to a live database to make it pass.
 - Derived Prisma artifacts (`prisma/schema.sqlite.prisma`, `prisma/migrations-sqlite/0000_baseline/migration.sql`) are regenerated with `gen:sqlite-schema` / `gen:sqlite-baseline`, never hand-edited: parity compares them byte for byte.
 - New model ids use `@default(uuid())`, matching the 11 existing models.
+- **Stage by explicit file path, never `git add -A` or a directory.** More than one agent may be working in this worktree, and a directory-wide stage has already come close to sweeping another task's in-flight edits into the wrong commit. Each task's commit step names its own files.
 - Do not add attribution lines to commit messages.
 
 ---
@@ -432,7 +433,7 @@ Expected: 11 passing.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/ai/local-only
+git add apps/api/src/ai/local-only/chatgpt-oidc.ts apps/api/src/ai/local-only/chatgpt-oidc.spec.ts
 git commit -m "feat(ai): add ChatGPT OIDC discovery with issuer pinning"
 ```
 
@@ -621,7 +622,7 @@ Expected: 9 passing.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/ai/local-only
+git add apps/api/src/ai/local-only/chatgpt-authorize.ts apps/api/src/ai/local-only/chatgpt-authorize.spec.ts
 git commit -m "feat(ai): build the ChatGPT authorize request with PKCE"
 ```
 
@@ -879,7 +880,7 @@ Run both. Reporting only the first would leave the test unproven; reporting only
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/api/src/ai/local-only
+git add apps/api/src/ai/local-only/chatgpt-callback-listener.ts apps/api/src/ai/local-only/chatgpt-callback-listener.spec.ts
 git commit -m "feat(ai): add the single-use loopback callback listener"
 ```
 
@@ -1344,7 +1345,7 @@ it.each([
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/api/src/ai/local-only
+git add apps/api/src/ai/local-only/chatgpt-token-exchange.ts apps/api/src/ai/local-only/chatgpt-token-exchange.spec.ts
 git commit -m "feat(ai): exchange the ChatGPT code and verify the id_token"
 ```
 
@@ -1383,6 +1384,7 @@ import { join } from 'node:path'
 import Database = require('better-sqlite3')
 import { LocalPrismaService } from '../../prisma/local/local-prisma.service'
 import { generateAiKeyEncryptionSecret } from '../../prisma/local/profile-secret'
+import type { PrismaService } from '../../prisma/prisma.service'
 import { ChatGptConnectionStore } from './chatgpt-connection.store'
 import type { ChatGptCredentials } from './chatgpt-token-exchange'
 
@@ -1436,7 +1438,14 @@ describe('ChatGptConnectionStore', () => {
         passwordHash: 'irrelevant-hash',
       },
     })
-    store = new ChatGptConnectionStore(prisma, secret)
+    // `LocalPrismaService` is not assignable to `PrismaService`, and ts-jest
+    // type-checks specs, so the constructor cannot take it directly. Cast at
+    // the seam -- the same one `app.local.module.ts` uses for its
+    // `useExisting` binding -- rather than widening the production type.
+    store = new ChatGptConnectionStore(
+      prisma as unknown as PrismaService,
+      secret,
+    )
   })
 
   afterEach(async () => {
@@ -1475,9 +1484,17 @@ describe('ChatGptConnectionStore', () => {
 
   it('keeps clientId and accountLabel when tokens are cleared', async () => {
     await store.save(userId, 'client-1', credentials())
+    // Set a label FIRST. Without this the assertion below is vacuous: with
+    // no label ever written, `accountLabel` is null before and after, so a
+    // `clearTokens` that wrongly nulled it would still pass.
+    await prisma.chatGptConnection.update({
+      where: { userId },
+      data: { accountLabel: 'ada@example.com' },
+    })
     await store.clearTokens(userId)
     const row = await prisma.chatGptConnection.findUnique({ where: { userId } })
     expect(row?.clientId).toBe('client-1')
+    expect(row?.accountLabel).toBe('ada@example.com')
     expect(row?.tokensEncrypted).toBeNull()
     expect(row?.pendingEncrypted).toBeNull()
     await expect(store.load(userId)).resolves.toBeNull()
@@ -1556,7 +1573,7 @@ The ciphertext test must fail if `encryptWithAiKey` is replaced by an identity f
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/api/src/ai/local-only
+git add apps/api/src/ai/local-only/chatgpt-connection.store.ts apps/api/src/ai/local-only/chatgpt-connection.store.spec.ts
 git commit -m "feat(ai): store ChatGPT credentials under the per-profile secret"
 ```
 
@@ -1870,7 +1887,7 @@ Remove the in-flight map and re-run: the ten-concurrent-callers test must FAIL w
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/api/src/ai/local-only
+git add apps/api/src/ai/local-only/chatgpt-refresh.service.ts apps/api/src/ai/local-only/chatgpt-refresh.service.spec.ts
 git commit -m "feat(ai): refresh ChatGPT tokens single-flight with pending rotation"
 ```
 
@@ -1945,7 +1962,7 @@ Temporarily add `import { LocalOnlyAiModule } from './ai/local-only/local-only-a
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/api/src/ai/local-only
+git add apps/api/src/ai/local-only/chatgpt-oauth-provider.ts apps/api/src/ai/local-only/chatgpt-oauth-provider.spec.ts apps/api/src/ai/local-only/local-only-ai.module.ts
 git commit -m "feat(ai): implement the ChatGPT plan-usage provider"
 ```
 
@@ -2133,6 +2150,10 @@ describe('ChatGpt controller (behavioral, over the real local composition)', () 
   })
 })
 ```
+
+**Carry-overs from Task 7.** Two things the store deliberately does not do, which this task owns:
+- **Wiring its encryption secret.** `ChatGptConnectionStore` takes `aiKeyEncryptionSecret: string` as a constructor argument, and Nest cannot resolve a `string` from its type. Bind it with a `useFactory` (or an injection token) fed from `AppLocalModuleOptions.aiKeyEncryptionSecret` — the same value `AppLocalModule.forRoot` already receives. Until that exists the store cannot be injected at all.
+- **Writing `accountLabel`.** The store only *retains* it across a disconnect; nothing ever sets it. The connect flow here must, or the UI has no account to name.
 
 **Carry-over from Task 5.** A denied consent redirects back with `error=access_denied` and **no** `code`, so the listener surfaces it as a missing-code failure and the authorization server's own reason is lost. Read `error`/`error_description` from the callback in this flow and map a denial to its own message — "you declined" is not "something went wrong". Also accepted knowingly from Task 5: because the listener closes on the first request, any local process (or a web page in the user's browser) can end a sign-in attempt with one request to the port. It cannot forge a success without the armed `state`, and keeping the listener open after a bad request would be the worse trade.
 
@@ -2539,7 +2560,7 @@ git status --porcelain && pnpm --filter @wimm/api exec tsx ../../scripts/select-
 - [ ] **Step 4: Commit any verification fixes**
 
 ```bash
-git add -A && git commit -m "test(ai): close out ChatGPT plan-usage verification"
+git add apps/api apps/desktop && git commit -m "test(ai): close out ChatGPT plan-usage verification"
 ```
 
 ---
