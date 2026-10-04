@@ -47,6 +47,8 @@ import { CHATGPT_CALLBACK_PATH, DYNAMIC_CLIENT_ID } from './chatgpt-oidc'
 
 const CLIENT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,200}$/
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
+/** `setTimeout`'s ceiling; past this it warns and fires almost immediately. */
+const MAX_TIMEOUT_MS = 2_147_483_647
 const LOOPBACK_HOST = '127.0.0.1'
 
 export interface CallbackResult {
@@ -75,12 +77,26 @@ type Arrival =
   | { kind: 'failure'; error: Error }
   | { kind: 'callback'; query: URLSearchParams }
 
+/**
+ * The only user-visible string this module produces. The project rule is that
+ * UI strings live in `i18next` resources, and this deliberately does not:
+ * `i18next` is a renderer concern, this page is served by the API to a
+ * detached browser tab, and wiring a translation runtime into `apps/api` for
+ * one terminal "you can close this tab" message would cost more than it
+ * buys. Both supported languages are therefore shown at once. If a third
+ * language is ever added, this is the line that has to change.
+ */
 const DONE_PAGE =
   '<!doctype html><meta charset="utf-8"><title>WIMM</title>' +
   '<p>You can close this tab and return to WIMM.</p>' +
   '<p>Você pode fechar esta aba e voltar ao WIMM.</p>'
 
-function respond(res: ServerResponse, status: number, body: string): void {
+function respond(
+  res: ServerResponse,
+  status: number,
+  body: string,
+  extra: Record<string, string> = {},
+): void {
   res.writeHead(status, {
     'Content-Type': 'text/html; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
@@ -92,6 +108,7 @@ function respond(res: ServerResponse, status: number, body: string): void {
     'X-Content-Type-Options': 'nosniff',
     // A single-use listener has no use for a kept-alive connection.
     Connection: 'close',
+    ...extra,
   })
   res.end(body)
 }
@@ -138,6 +155,19 @@ export async function startCallbackListener(
   args: { timeoutMs?: number } = {},
 ): Promise<CallbackListener> {
   const timeoutMs = args.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  // `setTimeout` coerces anything it cannot use into ~1ms and warns past
+  // 2^31-1, so a bad value would silently become "no timeout at all" rather
+  // than an error. Refuse it at the boundary instead, the same
+  // set-verify-refuse shape `assertUsableSessionToken` uses.
+  if (
+    !Number.isInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > MAX_TIMEOUT_MS
+  ) {
+    throw new Error(
+      `ChatGPT sign-in callback listener refuses to start: timeoutMs must be an integer in 1..${MAX_TIMEOUT_MS}.`,
+    )
+  }
   const server = createServer()
 
   await new Promise<void>((resolve, reject) => {
@@ -268,7 +298,8 @@ export async function startCallbackListener(
       return
     }
     if (req.method !== 'GET') {
-      respond(res, 405, 'Method not allowed.')
+      // RFC 9110 requires `Allow` on a 405.
+      respond(res, 405, 'Method not allowed.', { Allow: 'GET' })
       arrive({
         kind: 'failure',
         error: new Error(
@@ -289,8 +320,14 @@ export async function startCallbackListener(
 
   // A server error after binding (for example running out of descriptors)
   // would otherwise be thrown as an uncaught exception.
-  server.on('error', () =>
-    abandon(new Error('ChatGPT sign-in callback listener failed.')),
+  server.on('error', (error: NodeJS.ErrnoException) =>
+    abandon(
+      new Error(
+        // The code (EMFILE, EADDRINUSE, ...) is the only actionable part and
+        // is never attacker-supplied text, so it is safe to carry.
+        `ChatGPT sign-in callback listener failed${error.code ? ` (${error.code})` : ''}.`,
+      ),
+    ),
   )
 
   return {
@@ -304,11 +341,21 @@ export async function startCallbackListener(
       return result
     },
     close(): void {
-      abandon(
-        new Error(
-          'ChatGPT sign-in callback listener was closed before a callback arrived.',
-        ),
+      const closed = new Error(
+        'ChatGPT sign-in callback listener was closed before a callback arrived.',
       )
+      // A callback that arrived but was never judged -- `close()` before any
+      // `awaitCallback` -- must not survive and then resolve on a later arm.
+      // `abandon` alone cannot do this: it returns early once any arrival is
+      // recorded, so the buffered callback would outlive the close and the
+      // interface's own promise ("frees the port and fails a pending wait")
+      // would be false. A failure arrival is already final and is left alone.
+      if (!settled && arrival?.kind === 'callback') {
+        arrival = { kind: 'failure', error: closed }
+        conclude()
+      }
+      abandon(closed)
+      server.closeAllConnections()
     },
   }
 }

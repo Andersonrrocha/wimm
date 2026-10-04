@@ -225,6 +225,59 @@ describe('startCallbackListener', () => {
     await expect(pending).rejects.toThrow(/method/i)
   })
 
+  it('sends Allow: GET with the 405, as RFC 9110 requires', async () => {
+    const listener = await start()
+    listener.awaitCallback('s-1').catch(() => undefined)
+    const url = new URL(listener.redirectUri)
+    const response = await fetch(`${url.origin}${url.pathname}?${VALID}`, {
+      method: 'POST',
+    })
+    expect(response.status).toBe(405)
+    expect(response.headers.get('allow')).toBe('GET')
+  })
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
+    'refuses to start with a timeoutMs of %p rather than silently firing at once',
+    async (timeoutMs) => {
+      // `setTimeout` coerces each of these into roughly 1ms, which would turn
+      // a misconfigured timeout into "no timeout at all" with no signal.
+      await expect(startCallbackListener({ timeoutMs })).rejects.toThrow(
+        /timeoutMs/,
+      )
+    },
+  )
+
+  it('discards a buffered callback when closed before it is judged', async () => {
+    const listener = await start()
+    // The callback lands while nothing is armed, so it is buffered...
+    expect(await hit(listener.redirectUri, VALID)).toBe(200)
+    // ...and then the attempt is abandoned.
+    listener.close()
+
+    // Without this, the buffered callback outlived `close()` and a later arm
+    // resolved it -- contradicting `close()`'s own contract.
+    await expect(listener.awaitCallback('s-1')).rejects.toThrow(/closed/i)
+  })
+
+  it('clears the timeout once a callback has been accepted', async () => {
+    // Implementation-coupled by necessity, and labelled as such: a cleared
+    // `Timeout` still reports `hasRef() === true`, and the timeout callback
+    // is a no-op once the promise has settled, so there is no observable
+    // behaviour to assert instead. What this pins is the regression the
+    // review identified -- a ref'd timer surviving a successful sign-in for
+    // the rest of the timeout window.
+    const cleared = jest.spyOn(global, 'clearTimeout')
+    try {
+      const listener = await start()
+      const pending = listener.awaitCallback('s-1')
+      expect(await hit(listener.redirectUri, VALID)).toBe(200)
+      await expect(pending).resolves.toMatchObject({ code: 'c-1' })
+      expect(cleared).toHaveBeenCalled()
+    } finally {
+      cleared.mockRestore()
+    }
+  })
+
   it('rejects on timeout', async () => {
     const listener = await start({ timeoutMs: 50 })
     await expect(listener.awaitCallback('s-1')).rejects.toThrow(/timed out/i)
