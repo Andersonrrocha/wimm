@@ -88,6 +88,26 @@ export class ChatGptConnectionStore {
   }
 
   /** Rotated credentials awaiting identity verification, if any. */
+  /**
+   * The live credential and its generation marker, for a caller that is
+   * about to write based on what it reads.
+   *
+   * `load` stays the simpler reader for callers that only need the token.
+   * `savePending` *requires* a generation, so a caller that took the simple
+   * path has nothing to pass and the compiler stops it there rather than at
+   * runtime.
+   */
+  async loadLive(userId: string): Promise<LiveConnection | null> {
+    const row = await this.prisma.chatGptConnection.findUnique({
+      where: { userId },
+      select: { tokensEncrypted: true },
+    })
+    const sealed = row?.tokensEncrypted ?? null
+    const credentials = this.open(sealed)
+    if (sealed === null || credentials === null) return null
+    return { credentials, generation: sealed }
+  }
+
   async loadPending(userId: string): Promise<PendingRotation | null> {
     const row = await this.prisma.chatGptConnection.findUnique({
       where: { userId },
@@ -162,6 +182,7 @@ export class ChatGptConnectionStore {
     userId: string,
     credentials: ChatGptCredentials,
     receivedAt: Date,
+    expectedGeneration: string,
   ): Promise<void> {
     // Conditional on a LIVE connection. `clearTokens` deliberately keeps the
     // row so `clientId` survives a disconnect, so a plain
@@ -170,8 +191,14 @@ export class ChatGptConnectionStore {
     // refresh token back on disk, which a later `promotePending` would make
     // live again with `sharing` true. Reconnecting itself after an explicit
     // disconnect is not a race worth tolerating.
+    // Conditional on the SAME live credential the caller read, not merely on
+    // some live credential existing. `tokensEncrypted: { not: null }` alone
+    // closes the disconnect case but not disconnect-then-reconnect: a flight
+    // that started before a fresh sign-in would still write its stale
+    // rotation, and the following promote would make it live over the new
+    // one. Reproduced against this store in review.
     const { count } = await this.prisma.chatGptConnection.updateMany({
-      where: { userId, tokensEncrypted: { not: null } },
+      where: { userId, tokensEncrypted: expectedGeneration },
       data: { pendingEncrypted: this.seal(credentials, receivedAt) },
     })
     if (count === 0) {
@@ -220,9 +247,23 @@ export class ChatGptConnectionStore {
    * `sharing` and `expiresAt` describe a live connection, so they are reset
    * rather than left claiming one.
    */
-  async clearTokens(userId: string): Promise<void> {
+  /**
+   * Clears every secret, keeping `clientId` and `accountLabel`.
+   *
+   * `expectedGeneration` makes the clear conditional on the live credential
+   * still being the one the caller read. A refresh that fails terminally
+   * must pass it: without it, a flight that started before a reconnect wipes
+   * the fresh sign-in. A user-initiated disconnect passes nothing — it means
+   * "clear whatever is there".
+   */
+  async clearTokens(userId: string, expectedGeneration?: string): Promise<void> {
     await this.prisma.chatGptConnection.updateMany({
-      where: { userId },
+      where: {
+        userId,
+        ...(expectedGeneration === undefined
+          ? {}
+          : { tokensEncrypted: expectedGeneration }),
+      },
       data: {
         tokensEncrypted: null,
         pendingEncrypted: null,
@@ -297,6 +338,25 @@ export class ChatGptConnectionStore {
  * the current clock it would fail permanently, on a refresh token that has
  * already been consumed -- an account that can never reconnect.
  */
+/**
+ * The live credential together with an opaque marker for *this* stored
+ * value.
+ *
+ * Pass `generation` back to `savePending` or `clearTokens` so a write that
+ * started from this credential cannot land on a different one. Without it, a
+ * refresh still in flight across a disconnect **and a reconnect** writes its
+ * stale rotation over the fresh sign-in, or wipes it on a terminal error --
+ * both reproduced against this store in review.
+ *
+ * It is the stored ciphertext. Every save re-encrypts with a random IV, so
+ * each one is unique and the comparison cannot suffer ABA. Callers must treat
+ * it as opaque: it is a generation marker, not a credential to read.
+ */
+export interface LiveConnection {
+  credentials: ChatGptCredentials
+  generation: string
+}
+
 export interface PendingRotation {
   credentials: ChatGptCredentials
   receivedAt: Date

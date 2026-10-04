@@ -20,6 +20,8 @@ interface Slot {
   current: ChatGptCredentials | null
   pending: { credentials: ChatGptCredentials; receivedAt: Date } | null
   clientId: string | null
+  /** Changes on every `save`, mirroring the real store's per-write ciphertext. */
+  generation: string
 }
 
 /**
@@ -36,6 +38,7 @@ interface Slot {
  */
 class StoreDouble {
   private readonly slots = new Map<string, Slot>()
+  private generations = 1
   cleared = 0
   /** Calls in the order they happened, so ordering is asserted, not assumed. */
   readonly events: string[] = []
@@ -46,7 +49,15 @@ class StoreDouble {
   slot(userId: string): Slot {
     let slot = this.slots.get(userId)
     if (slot === undefined) {
-      slot = { current: null, pending: null, clientId: 'client-1' }
+      // Keyed by user AND counted, so no literal a mutation might hardcode
+      // can coincide with it. A plain 'gen-1' start made a mutation that
+      // hardcoded 'gen-1' indistinguishable from reading the real value.
+      slot = {
+        current: null,
+        pending: null,
+        clientId: 'client-1',
+        generation: `gen-${userId}-${(this.generations += 1)}`,
+      }
       this.slots.set(userId, slot)
     }
     return slot
@@ -61,6 +72,17 @@ class StoreDouble {
   set clientId(value: string | null) { this.slot(USER).clientId = value }
 
   async load(userId: string) { return this.slot(userId).current }
+  /**
+   * Mirrors the real store: a generation marker that changes on every write.
+   * The real one is the ciphertext, unique per save because the IV is random;
+   * here a counter is enough, and keeping it realistic is what lets the
+   * generation-conditional writes below be exercised at all.
+   */
+  async loadLive(userId: string) {
+    const slot = this.slot(userId)
+    if (slot.current === null) return null
+    return { credentials: slot.current, generation: slot.generation }
+  }
   async loadPending(userId: string) { return this.slot(userId).pending }
   async loadClientId(userId: string) { return this.slot(userId).clientId }
   async save(userId: string, clientId: string, credentials: ChatGptCredentials) {
@@ -68,12 +90,23 @@ class StoreDouble {
     slot.current = credentials
     slot.clientId = clientId
     slot.pending = null
+    // A fresh sign-in is a new generation, which is what makes a stale
+    // flight's conditional write miss.
+    slot.generation = `gen-${userId}-${(this.generations += 1)}`
   }
-  async savePending(userId: string, credentials: ChatGptCredentials, receivedAt: Date) {
+  async savePending(
+    userId: string,
+    credentials: ChatGptCredentials,
+    receivedAt: Date,
+    expectedGeneration: string,
+  ) {
     this.events.push('savePending')
     const slot = this.slot(userId)
-    // The real store refuses this when there is no live connection.
-    if (slot.current === null) throw new Error('No live ChatGPT connection to rotate.')
+    // The real store refuses unless the live credential is still the one the
+    // caller read -- not merely that some live credential exists.
+    if (slot.current === null || slot.generation !== expectedGeneration) {
+      throw new Error('No live ChatGPT connection to rotate.')
+    }
     slot.pending = { credentials, receivedAt }
     this.savedReceivedAt.push(receivedAt)
   }
@@ -89,8 +122,13 @@ class StoreDouble {
     slot.pending = null
     return true
   }
-  async clearTokens(userId: string) {
+  async clearTokens(userId: string, expectedGeneration?: string) {
     const slot = this.slot(userId)
+    // Conditional when a generation is given, unconditional otherwise -- the
+    // real store's contract, so a stale flight cannot wipe a reconnection.
+    if (expectedGeneration !== undefined && slot.generation !== expectedGeneration) {
+      return
+    }
     slot.current = null
     slot.pending = null
     this.cleared += 1
@@ -520,6 +558,12 @@ describe('ChatGptRefreshService', () => {
         async load(userId: string) {
           return perUser.get(userId) ?? null
         },
+        async loadLive(userId: string) {
+          const credentials = perUser.get(userId) ?? null
+          return credentials === null
+            ? null
+            : { credentials, generation: `gen-${userId}` }
+        },
         async loadPending() {
           return null
         },
@@ -619,6 +663,80 @@ describe('ChatGptRefreshService', () => {
       expect(Object.keys(error)).not.toContain('cause')
       // ...and it is still reachable for a deliberate read.
       expect(error.cause).toEqual({ leaked: SECRET })
+    })
+
+    it('does not promote a stale rotation over a sign-in that happened mid-flight', async () => {
+      // The reproduction from Task 8's review, now at the service level: a
+      // refresh in flight across a disconnect AND a full reconnect used to
+      // write its stale rotation and promote it over the fresh sign-in.
+      const store = new StoreDouble()
+      store.current = expired()
+      let release: (() => void) | undefined
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const fetchImpl = (async (input: string | URL) => {
+        if (String(input) !== config.token_endpoint) throw new Error('unexpected')
+        // Hold the grant open while the user disconnects and signs in again.
+        await gate
+        return { ok: true, status: 200, json: async () => rotated() }
+      }) as unknown as typeof fetch
+
+      const flight = build(store, fetchImpl).accessTokenFor(USER)
+      await new Promise((resolve) => setImmediate(resolve))
+
+      await store.clearTokens(USER)
+      await store.save(USER, 'client-1', {
+        ...expired(),
+        accessToken: 'fresh-access',
+      })
+      release?.()
+
+      // Retryable, not `null`. `null` would mean "reconnect", and there IS a
+      // connection -- the one that just signed in. A retry reads it and
+      // proceeds correctly, which is exactly what "retryable" promises.
+      const failure = await rejection(flight)
+      expect(failure).toBeInstanceOf(ChatGptRefreshRetryableError)
+
+      // And the point of the test: nothing stale was revived.
+      expect(store.current?.accessToken).toBe('fresh-access')
+      expect(store.pending).toBeNull()
+    })
+
+    it('does not clear a sign-in that happened mid-flight when the grant is refused', async () => {
+      // The other half: the same stale flight receiving a terminal grant
+      // error used to call `clearTokens` and wipe the new sign-in.
+      const store = new StoreDouble()
+      store.current = expired()
+      let release: (() => void) | undefined
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const fetchImpl = (async (input: string | URL) => {
+        if (String(input) !== config.token_endpoint) throw new Error('unexpected')
+        await gate
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ error: 'refresh_token_expired' }),
+        }
+      }) as unknown as typeof fetch
+
+      const flight = build(store, fetchImpl).accessTokenFor(USER)
+      await new Promise((resolve) => setImmediate(resolve))
+
+      await store.clearTokens(USER)
+      await store.save(USER, 'client-1', {
+        ...expired(),
+        accessToken: 'fresh-access',
+      })
+      const clearsBefore = store.cleared
+      release?.()
+
+      await expect(flight).resolves.toBeNull()
+      // The reconnection survives: the stale flight's clear did not match.
+      expect(store.current?.accessToken).toBe('fresh-access')
+      expect(store.cleared).toBe(clearsBefore)
     })
 
     it('returns null when there is no connection at all', async () => {
@@ -967,7 +1085,10 @@ describe('ChatGptRefreshService', () => {
       store.onPromoteRead = async () => {
         if (!competeOnce) return
         competeOnce = false
-        await store.savePending(USER, competing, new Date())
+        // The competing write is a legitimate newer rotation from the SAME
+        // live credential, so it carries the current generation.
+        const live = await store.loadLive(USER)
+        await store.savePending(USER, competing, new Date(), live!.generation)
       }
       const service = build(store, fetchImpl)
 

@@ -66,6 +66,7 @@ export interface ChatGptRefreshDeps {
   store: Pick<
     ChatGptConnectionStore,
     | 'load'
+    | 'loadLive'
     | 'loadPending'
     | 'loadClientId'
     | 'savePending'
@@ -143,9 +144,15 @@ export class ChatGptRefreshService {
   }
 
   private async resolve(userId: string): Promise<string | null> {
-    const live = await this.store.load(userId)
+    // `loadLive` rather than `load`, for the generation marker: every write
+    // below is conditional on the live credential still being THIS one. A
+    // flight that started before a disconnect-and-reconnect would otherwise
+    // write its stale rotation over the fresh sign-in, or wipe it on a
+    // terminal error -- both reproduced against the real store in review.
+    const live = await this.store.loadLive(userId)
     if (live === null) return null
-    if (!isExpired(live)) return live.accessToken
+    const { credentials, generation } = live
+    if (!isExpired(credentials)) return credentials.accessToken
 
     // A rotation saved by an earlier attempt means the live refresh token has
     // already been consumed. Finish that one; never post the old token again.
@@ -153,16 +160,22 @@ export class ChatGptRefreshService {
     if (pending !== null) {
       const context = await this.context(userId)
       if (context === null) return null
-      return this.completeRotation(userId, context, pending)
+      return this.completeRotation(userId, context, pending, generation)
     }
 
     // `offline_access` was not granted: nothing to refresh with. Fail here
     // rather than post a grant that is certain to be refused.
-    if (live.refreshToken === null) return null
+    if (credentials.refreshToken === null) return null
 
     const context = await this.context(userId)
     if (context === null) return null
-    return this.rotate(userId, context, live, live.refreshToken)
+    return this.rotate(
+      userId,
+      context,
+      credentials,
+      credentials.refreshToken,
+      generation,
+    )
   }
 
   private async context(
@@ -179,6 +192,7 @@ export class ChatGptRefreshService {
     context: { clientId: string; config: OidcConfig },
     live: ChatGptCredentials,
     refreshToken: string,
+    generation: string,
   ): Promise<string | null> {
     let response: Response
     try {
@@ -208,7 +222,9 @@ export class ChatGptRefreshService {
     if (!response.ok) {
       if (await isTerminalGrantFailure(response)) {
         // The refresh token itself was refused: this connection is over.
-        await this.store.clearTokens(userId)
+        // Conditional on the generation, so a flight that started before a
+        // reconnect cannot wipe the fresh sign-in.
+        await this.store.clearTokens(userId, generation)
         return null
       }
       // Anything else (a 5xx, a rate limit) says nothing about the grant, so
@@ -221,7 +237,7 @@ export class ChatGptRefreshService {
     const credentials = readRotation(await readJson(response), live, receivedAt)
 
     try {
-      await this.store.savePending(userId, credentials, receivedAt)
+      await this.store.savePending(userId, credentials, receivedAt, generation)
     } catch (cause) {
       // The store refuses when there is no live connection, i.e. the user
       // disconnected while this refresh was in flight. That attempt is over:
@@ -237,10 +253,12 @@ export class ChatGptRefreshService {
         cause,
       )
     }
-    return this.completeRotation(userId, context, {
-      credentials,
-      receivedAt,
-    })
+    return this.completeRotation(
+      userId,
+      context,
+      { credentials, receivedAt },
+      generation,
+    )
   }
 
   /** Verifies a saved rotation and, only if that succeeds, makes it live. */
@@ -248,6 +266,8 @@ export class ChatGptRefreshService {
     userId: string,
     context: { clientId: string; config: OidcConfig },
     rotation: PendingRotation,
+    /** The live generation this flight read; every write stays conditional on it. */
+    generation: string,
   ): Promise<string | null> {
     let identity: { subject: string }
     try {
@@ -278,7 +298,9 @@ export class ChatGptRefreshService {
     // before verification). A refresh must stay the same account, so a
     // different verified subject means these tokens cannot be trusted.
     if (identity.subject !== rotation.credentials.subject) {
-      await this.store.clearTokens(userId)
+      // Conditional on the generation: a flight that started before a
+      // reconnect must not clear that reconnection's credentials.
+      await this.store.clearTokens(userId, generation)
       return null
     }
 

@@ -53,6 +53,22 @@ const credentials = (
   ...overrides,
 })
 
+/**
+ * The generation marker of whatever is live right now.
+ *
+ * `savePending` requires one, which is the point: a caller that read through
+ * the simpler `load` has nothing to pass, so the compiler stops it rather
+ * than the runtime.
+ */
+async function liveGeneration(
+  store: ChatGptConnectionStore,
+  userId: string,
+): Promise<string> {
+  const live = await store.loadLive(userId)
+  if (live === null) throw new Error('no live connection to read a generation from')
+  return live.generation
+}
+
 describe('ChatGptConnectionStore', () => {
   let prisma: LocalPrismaService
   let store: ChatGptConnectionStore
@@ -124,6 +140,7 @@ describe('ChatGptConnectionStore', () => {
         refreshToken: 'SENTINEL-ROTATED-REFRESH-6e44a8',
       }),
       RECEIVED_AT,
+      await liveGeneration(store, userId),
     )
     const row = await prisma.chatGptConnection.findUnique({ where: { userId } })
     expect(row?.pendingEncrypted).toBeTruthy()
@@ -185,7 +202,12 @@ describe('ChatGptConnectionStore', () => {
       where: { userId },
       data: { accountLabel: 'ada@example.com' },
     })
-    await store.savePending(userId, credentials({ accessToken: 'rotated' }), RECEIVED_AT)
+    await store.savePending(
+      userId,
+      credentials({ accessToken: 'rotated' }),
+      RECEIVED_AT,
+      await liveGeneration(store, userId),
+    )
 
     await store.clearTokens(userId)
 
@@ -288,6 +310,7 @@ describe('ChatGptConnectionStore', () => {
       userId,
       credentials({ accessToken: 'rotated-access', refreshToken: 'rotated-refresh' }),
       RECEIVED_AT,
+      await liveGeneration(store, userId),
     )
 
     // Before promotion the live credential is still the old one.
@@ -315,6 +338,7 @@ describe('ChatGptConnectionStore', () => {
         subject: 'sub-2',
       }),
       RECEIVED_AT,
+      await liveGeneration(store, userId),
     )
     await store.promotePending(userId)
 
@@ -346,6 +370,7 @@ describe('ChatGptConnectionStore', () => {
       userId,
       credentials({ accessToken: 'rotated-access' }),
       RECEIVED_AT,
+      await liveGeneration(store, userId),
     )
     await expect(store.promotePending(userId)).resolves.toBe(true)
   })
@@ -358,10 +383,18 @@ describe('ChatGptConnectionStore', () => {
     // `sharing` true. Reconnecting itself after an explicit disconnect is not
     // a race worth tolerating.
     await store.save(userId, 'client-1', credentials())
+    // Captured while the connection is still live; nothing matches it after
+    // the clear.
+    const staleGeneration = await liveGeneration(store, userId)
     await store.clearTokens(userId)
 
     await expect(
-      store.savePending(userId, credentials({ accessToken: 'late' }), RECEIVED_AT),
+      store.savePending(
+        userId,
+        credentials({ accessToken: 'late' }),
+        RECEIVED_AT,
+        staleGeneration,
+      ),
     ).rejects.toThrow(/no live chatgpt connection/i)
 
     const row = await prisma.chatGptConnection.findUnique({ where: { userId } })
@@ -371,6 +404,57 @@ describe('ChatGptConnectionStore', () => {
       connected: false,
       sharing: false,
     })
+  })
+
+  it('refuses a rotation whose generation predates a reconnection', async () => {
+    // The reproduced bug: `tokensEncrypted: { not: null }` alone closes the
+    // disconnect case but NOT disconnect-then-reconnect. A refresh that
+    // started before a fresh sign-in would still write its stale rotation,
+    // and the following promote would make it live over the new one.
+    await store.save(userId, 'client-1', credentials())
+    const staleGeneration = await liveGeneration(store, userId)
+
+    // The user disconnects and signs in again while that refresh is in
+    // flight.
+    await store.clearTokens(userId)
+    await store.save(
+      userId,
+      'client-1',
+      credentials({ accessToken: 'fresh-access', subject: 'sub-1' }),
+    )
+
+    await expect(
+      store.savePending(
+        userId,
+        credentials({ accessToken: 'stale-rotation' }),
+        RECEIVED_AT,
+        staleGeneration,
+      ),
+    ).rejects.toThrow(/no live chatgpt connection/i)
+
+    // The fresh sign-in is untouched and nothing is pending to promote.
+    expect((await store.load(userId))?.accessToken).toBe('fresh-access')
+    await expect(store.loadPending(userId)).resolves.toBeNull()
+    await expect(store.promotePending(userId)).resolves.toBe(false)
+  })
+
+  it('does not clear a reconnection when a stale flight asks it to', async () => {
+    // The other half of the same bug: that flight receiving a terminal grant
+    // error called `clearTokens` and wiped the new sign-in.
+    await store.save(userId, 'client-1', credentials())
+    const staleGeneration = await liveGeneration(store, userId)
+    await store.save(userId, 'client-1', credentials({ accessToken: 'fresh-access' }))
+
+    await store.clearTokens(userId, staleGeneration)
+
+    expect((await store.load(userId))?.accessToken).toBe('fresh-access')
+  })
+
+  it('still clears unconditionally when no generation is given', async () => {
+    // A user-initiated disconnect means "clear whatever is there".
+    await store.save(userId, 'client-1', credentials())
+    await store.clearTokens(userId)
+    await expect(store.load(userId)).resolves.toBeNull()
   })
 
   it('does not leave the account subject behind after a disconnect', async () => {
@@ -399,8 +483,10 @@ describe('ChatGptConnectionStore', () => {
       userId,
       credentials({ accessToken: 'first-rotation' }),
       RECEIVED_AT,
+      await liveGeneration(store, userId),
     )
 
+    const generationBeforeHook = await liveGeneration(store, userId)
     const delegate = prisma.chatGptConnection
     const realFindUnique = delegate.findUnique.bind(delegate)
     let injected = false
@@ -414,6 +500,9 @@ describe('ChatGptConnectionStore', () => {
             userId,
             credentials({ accessToken: 'second-rotation' }),
             RECEIVED_AT,
+            // Captured before the hook was installed: calling
+            // `liveGeneration` here would re-enter the hooked `findUnique`.
+            generationBeforeHook,
           )
         }
         return row
@@ -439,7 +528,12 @@ describe('ChatGptConnectionStore', () => {
     // signing-key outage can outlast the identity token without invalidating
     // the refresh token.
     await store.save(userId, 'client-1', credentials())
-    await store.savePending(userId, credentials(), RECEIVED_AT)
+    await store.savePending(
+      userId,
+      credentials(),
+      RECEIVED_AT,
+      await liveGeneration(store, userId),
+    )
 
     const pending = await store.loadPending(userId)
     expect(pending?.receivedAt).toEqual(RECEIVED_AT)
@@ -448,7 +542,12 @@ describe('ChatGptConnectionStore', () => {
 
   it('does not promote a pending value that cannot be read', async () => {
     await store.save(userId, 'client-1', credentials())
-    await store.savePending(userId, credentials({ accessToken: 'rotated-access' }), RECEIVED_AT)
+    await store.savePending(
+      userId,
+      credentials({ accessToken: 'rotated-access' }),
+      RECEIVED_AT,
+      await liveGeneration(store, userId),
+    )
     const foreign = storeOver(prisma, generateAiKeyEncryptionSecret())
 
     await foreign.promotePending(userId)
@@ -471,7 +570,12 @@ describe('ChatGptConnectionStore', () => {
 
   it('keeps a null refresh token null through a pending rotation and its promotion', async () => {
     await store.save(userId, 'client-1', credentials())
-    await store.savePending(userId, credentials({ refreshToken: null }), RECEIVED_AT)
+    await store.savePending(
+      userId,
+      credentials({ refreshToken: null }),
+      RECEIVED_AT,
+      await liveGeneration(store, userId),
+    )
     expect((await store.loadPending(userId))?.credentials.refreshToken).toBeNull()
 
     await store.promotePending(userId)
@@ -481,7 +585,12 @@ describe('ChatGptConnectionStore', () => {
 
   it('leaves the live credential intact when a rotation is saved but not promoted', async () => {
     await store.save(userId, 'client-1', credentials())
-    await store.savePending(userId, credentials({ accessToken: 'rotated-access' }), RECEIVED_AT)
+    await store.savePending(
+      userId,
+      credentials({ accessToken: 'rotated-access' }),
+      RECEIVED_AT,
+      await liveGeneration(store, userId),
+    )
     const row = await prisma.chatGptConnection.findUnique({ where: { userId } })
     expect(row?.pendingEncrypted).toBeTruthy()
     expect((await store.load(userId))?.accessToken).toBe(ACCESS)
@@ -493,7 +602,12 @@ describe('ChatGptConnectionStore', () => {
 
   it('supersedes a pending rotation when a fresh sign-in is saved', async () => {
     await store.save(userId, 'client-1', credentials())
-    await store.savePending(userId, credentials({ accessToken: 'stale-rotation' }), RECEIVED_AT)
+    await store.savePending(
+      userId,
+      credentials({ accessToken: 'stale-rotation' }),
+      RECEIVED_AT,
+      await liveGeneration(store, userId),
+    )
 
     await store.save(userId, 'client-1', credentials({ accessToken: 'fresh-access' }))
 
