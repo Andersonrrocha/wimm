@@ -691,13 +691,33 @@ describe('startCallbackListener', () => {
     await expect(pending).resolves.toEqual({ code: 'c-1', clientId: 'abc123' })
   })
 
+  // DO NOT probe `0.0.0.0` here. An earlier draft of this plan did, and the
+  // test was not merely vacuous but INVERTED: on macOS (BSD semantics) a
+  // connection to 0.0.0.0 reaches a server bound to 127.0.0.1, so the
+  // assertion failed against the CORRECT implementation and could not
+  // detect the mutation at all. Measured on this host:
+  //
+  //   server bound 127.0.0.1 -> probe 0.0.0.0        = CONNECTED  (!)
+  //   server bound 127.0.0.1 -> probe 192.168.0.106  = ECONNREFUSED
+  //   server bound 0.0.0.0   -> probe 192.168.0.106  = CONNECTED
+  //
+  // The machine's own non-loopback address is what discriminates.
   it('binds only the loopback interface, not every interface', async () => {
+    const { networkInterfaces } = await import('node:os')
+    const external = Object.values(networkInterfaces())
+      .flat()
+      .find((i) => i && i.family === 'IPv4' && !i.internal)?.address
+    if (!external) return // nothing to prove on a host with no such interface
+
     const listener = await startCallbackListener()
     const port = Number(new URL(listener.redirectUri).port)
     const { createConnection } = await import('node:net')
     const reachableExternally = await new Promise<boolean>((resolve) => {
-      const socket = createConnection({ host: '0.0.0.0', port })
-      socket.on('connect', () => { socket.destroy(); resolve(true) })
+      const socket = createConnection({ host: external, port })
+      socket.on('connect', () => {
+        socket.destroy()
+        resolve(true)
+      })
       socket.on('error', () => resolve(false))
     })
     listener.close()
@@ -817,7 +837,14 @@ Expected: all passing.
 
 - [ ] **Step 5: Prove the loopback bind is real, not a string**
 
-Mutate `server.listen(0, '127.0.0.1', resolve)` to `server.listen(0, '0.0.0.0', resolve)`. The "binds only the loopback interface" test must FAIL; revert and it must PASS. A hostname assertion on `redirectUri` alone proves nothing about the bind, which is exactly why `apps/desktop/src/main/local-api.ts` carries `assertBoundToLoopback` — see its doc comment.
+A hostname assertion on `redirectUri` proves nothing about the bind — which is why `apps/desktop/src/main/local-api.ts` carries `assertBoundToLoopback`. **Carry the same guard here:** after `listen` resolves, read `server.address()` and refuse to continue unless the address the OS actually bound is `127.0.0.1`. Trust the OS, not the argument passed in.
+
+With both the guard and the test in place, mutating the bind address to `'0.0.0.0'` produces two distinct, expected results:
+
+- **Guard in place:** every test in the suite fails, because `startCallbackListener` now throws at bind. That is the production guard firing, and it is the outcome that matters.
+- **Guard neutralised** (comment out its condition, to isolate the test): exactly **one** test fails — the loopback one. That is what proves the test itself discriminates rather than passing vacuously.
+
+Run both. Reporting only the first would leave the test unproven; reporting only the second would leave the guard unproven.
 
 - [ ] **Step 6: Commit**
 
@@ -1734,6 +1761,8 @@ describe('ChatGpt controller (behavioral, over the real local composition)', () 
   })
 })
 ```
+
+**Carry-over from Task 5.** A denied consent redirects back with `error=access_denied` and **no** `code`, so the listener surfaces it as a missing-code failure and the authorization server's own reason is lost. Read `error`/`error_description` from the callback in this flow and map a denial to its own message — "you declined" is not "something went wrong". Also accepted knowingly from Task 5: because the listener closes on the first request, any local process (or a web page in the user's browser) can end a sign-in attempt with one request to the port. It cannot forge a success without the armed `state`, and keeping the listener open after a bad request would be the worse trade.
 
 **Carry-over from Task 2 that this task must resolve.** `ImportsService` now gates AI work on the user's `aiCategorizationMode`, which defaults to `OFF`. No task in this plan currently sets that mode, so a user who connects ChatGPT but never changes the mode would be silently skipped once `ImportsService` is routed to this provider. Decide it here, explicitly, and state the decision in the connect flow's doc comment: either a successful connect sets the mode, or the gate must also treat a live ChatGPT connection as consent. Do not leave it implicit — the gate is harmless today only because this provider is unreachable from `ImportsService`.
 
