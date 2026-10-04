@@ -43,6 +43,7 @@
 | `apps/api/src/ai/local-only/chatgpt-connection.store.ts` | encrypted persistence + pending rotation |
 | `apps/api/src/ai/local-only/chatgpt-refresh.service.ts` | single-flight refresh |
 | `apps/api/src/ai/local-only/chatgpt-oauth-provider.ts` | `AiProvider` impl (replaces the stub) |
+| `apps/api/src/ai/local-only/chatgpt-connect-flow.ts` | composes discovery → listener → browser → exchange → store |
 | `apps/api/src/ai/local-only/chatgpt.controller.ts` | connect / status / disconnect |
 | `apps/api/src/ai/local-only/local-only-ai.module.ts` | wire the above (modify) |
 | `apps/desktop/src/main/chatgpt-browser.ts` | `openBrowser` via `shell.openExternal` |
@@ -973,7 +974,9 @@ git commit -m "feat(ai): exchange the ChatGPT code and verify the id_token"
 
 **Interfaces:**
 - Consumes: `ChatGptCredentials` (Task 6), the `chatGptConnection` delegate (Task 1), `encryptWithAiKey`/`decryptWithAiKey` from `../ai-key-crypto`
-- Produces: `ChatGptConnectionStore` with `load(userId)`, `save(userId, credentials)`, `savePending(userId, credentials)`, `promotePending(userId)`, `clearTokens(userId)`, `status(userId)`
+- Produces: `ChatGptConnectionStore` with `load(userId)`, `loadPending(userId)`, `loadClientId(userId)`, `save(userId, clientId, credentials)`, `savePending(userId, credentials)`, `promotePending(userId)`, `clearTokens(userId)`, `status(userId)`
+
+  `save` takes `clientId` separately from the credentials because the durable client ID outlives them: `clearTokens` must null the tokens while retaining it.
 
 **Requirements:**
 - Tokens are encrypted with the per-profile secret, exactly as `AiKeyCrypto` already does for the BYOK key.
@@ -981,7 +984,161 @@ git commit -m "feat(ai): exchange the ChatGPT code and verify the id_token"
 - `clearTokens` nulls `tokensEncrypted` and `pendingEncrypted` but **retains `clientId` and `accountLabel`**.
 - `status` never returns a token — only `{ connected, sharing, accountLabel, expiresAt }`.
 
-- [ ] **Step 1: Write the failing test** — cover: round-trip through encryption; ciphertext on disk is not the plaintext token; `load` returns `null` for a row encrypted under a different secret; `clearTokens` keeps `clientId`; `status` output contains no token substring; `promotePending` moves pending to current and clears pending.
+- [ ] **Step 1: Write the failing test**
+
+A real SQLite file from the committed baseline and the real crypto, not a mocked Prisma: a double would prove the store calls methods, not that a token survives a round trip or that what lands on disk is ciphertext.
+
+```ts
+// apps/api/src/ai/local-only/chatgpt-connection.store.spec.ts
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+// `@types/better-sqlite3` uses `export =`; import-equals is required for the
+// runtime value to resolve, same as `local-route-posture.spec.ts`.
+import Database = require('better-sqlite3')
+import { LocalPrismaService } from '../../prisma/local/local-prisma.service'
+import { generateAiKeyEncryptionSecret } from '../../prisma/local/profile-secret'
+import { ChatGptConnectionStore } from './chatgpt-connection.store'
+import type { ChatGptCredentials } from './chatgpt-token-exchange'
+
+const ROOT = '/tmp/wimm-chatgpt-connection-store-spec'
+const BASELINE = join(
+  __dirname,
+  '../../../prisma/migrations-sqlite/0000_baseline/migration.sql',
+)
+
+function freshDatabaseFile(): string {
+  mkdirSync(ROOT, { recursive: true })
+  const file = join(ROOT, `${randomUUID()}.db`)
+  const db = new Database(file)
+  db.exec(readFileSync(BASELINE, 'utf8'))
+  db.close()
+  return file
+}
+
+const ACCESS = 'access-token-value'
+const REFRESH = 'refresh-token-value'
+const SCOPES = 'openid offline_access chatgpt.tokens.use.direct'
+
+const credentials = (
+  overrides: Partial<ChatGptCredentials> = {},
+): ChatGptCredentials => ({
+  accessToken: ACCESS,
+  refreshToken: REFRESH,
+  idToken: 'id-token-value',
+  expiresAt: new Date(Date.now() + 3_600_000),
+  scopes: SCOPES,
+  subject: 'sub-1',
+  sharing: true,
+  ...overrides,
+})
+
+describe('ChatGptConnectionStore', () => {
+  let prisma: LocalPrismaService
+  let store: ChatGptConnectionStore
+  let userId: string
+  const secret = generateAiKeyEncryptionSecret()
+
+  beforeEach(async () => {
+    prisma = new LocalPrismaService(freshDatabaseFile())
+    await prisma.onModuleInit()
+    userId = randomUUID()
+    await prisma.user.create({
+      data: {
+        id: userId,
+        email: `${userId}@example.com`,
+        username: userId,
+        passwordHash: 'irrelevant-hash',
+      },
+    })
+    store = new ChatGptConnectionStore(prisma, secret)
+  })
+
+  afterEach(async () => {
+    await prisma.onModuleDestroy()
+  })
+
+  afterAll(() => {
+    rmSync(ROOT, { recursive: true, force: true })
+  })
+
+  it('round-trips credentials through encryption', async () => {
+    await store.save(userId, 'client-1', credentials())
+    const loaded = await store.load(userId)
+    expect(loaded?.accessToken).toBe(ACCESS)
+    expect(loaded?.refreshToken).toBe(REFRESH)
+    expect(loaded?.scopes).toBe(SCOPES)
+  })
+
+  it('writes ciphertext, never the plaintext tokens', async () => {
+    await store.save(userId, 'client-1', credentials())
+    const row = await prisma.chatGptConnection.findUnique({ where: { userId } })
+    expect(row?.tokensEncrypted).toBeTruthy()
+    expect(row!.tokensEncrypted).not.toContain(ACCESS)
+    expect(row!.tokensEncrypted).not.toContain(REFRESH)
+    expect(row!.tokensEncrypted).not.toContain('id-token-value')
+  })
+
+  it('returns null, not a throw, when the row was encrypted under another secret', async () => {
+    await store.save(userId, 'client-1', credentials())
+    const foreign = new ChatGptConnectionStore(
+      prisma,
+      generateAiKeyEncryptionSecret(),
+    )
+    await expect(foreign.load(userId)).resolves.toBeNull()
+  })
+
+  it('keeps clientId and accountLabel when tokens are cleared', async () => {
+    await store.save(userId, 'client-1', credentials())
+    await store.clearTokens(userId)
+    const row = await prisma.chatGptConnection.findUnique({ where: { userId } })
+    expect(row?.clientId).toBe('client-1')
+    expect(row?.tokensEncrypted).toBeNull()
+    expect(row?.pendingEncrypted).toBeNull()
+    await expect(store.load(userId)).resolves.toBeNull()
+  })
+
+  it('never exposes a token through status()', async () => {
+    await store.save(userId, 'client-1', credentials())
+    const status = await store.status(userId)
+    expect(status).toMatchObject({ connected: true, sharing: true })
+    const serialized = JSON.stringify(status)
+    for (const secretValue of [ACCESS, REFRESH, 'id-token-value']) {
+      expect(serialized).not.toContain(secretValue)
+    }
+  })
+
+  it('promotes a pending rotation and clears the pending slot', async () => {
+    await store.save(userId, 'client-1', credentials())
+    await store.savePending(
+      userId,
+      credentials({ accessToken: 'rotated-access', refreshToken: 'rotated-refresh' }),
+    )
+
+    // Before promotion the live credential is still the old one.
+    expect((await store.load(userId))?.accessToken).toBe(ACCESS)
+
+    await store.promotePending(userId)
+
+    expect((await store.load(userId))?.accessToken).toBe('rotated-access')
+    const row = await prisma.chatGptConnection.findUnique({ where: { userId } })
+    expect(row?.pendingEncrypted).toBeNull()
+  })
+
+  it('leaves the live credential intact when a rotation is saved but not promoted', async () => {
+    await store.save(userId, 'client-1', credentials())
+    await store.savePending(userId, credentials({ accessToken: 'rotated-access' }))
+    const row = await prisma.chatGptConnection.findUnique({ where: { userId } })
+    expect(row?.pendingEncrypted).toBeTruthy()
+    expect((await store.load(userId))?.accessToken).toBe(ACCESS)
+    await expect(store.loadPending(userId)).resolves.toMatchObject({
+      accessToken: 'rotated-access',
+    })
+  })
+})
+```
+
+**Why the secret is a constructor argument and not `ConfigService`:** `ai-key-crypto.ts` exports `deriveAiKeyEncryptionKey`/`encryptWithAiKey`/`decryptWithAiKey` as standalone functions precisely so callers outside the `AiKeyCrypto` class can use them (its doc comment records `profile-secret.ts`'s migration path as the reason). The store takes the same `aiKeyEncryptionSecret` string that `AppLocalModule.forRoot` already receives, so nothing new has to be configured.
 
 - [ ] **Step 2: Run it and watch it fail**
 
@@ -1026,7 +1183,230 @@ git commit -m "feat(ai): store ChatGPT credentials under the per-profile secret"
 - **A refresh response may omit `scope`.** Fall back to the stored scopes; do not treat the omission as a scope downgrade.
 - **Pending rotation:** persist rotated credentials via `savePending` *before* verifying the new `id_token`; `promotePending` only after verification succeeds. If verification fails because the signing-key service is unavailable, leave the pending state in place and return a retryable error — a later call, including after a restart, resumes from it rather than replaying a consumed refresh token.
 
-- [ ] **Step 1: Write the failing test** — cover: a valid token near expiry triggers exactly one network refresh for ten concurrent callers; a response omitting `scope` keeps the stored scopes; verification failure leaves `pendingEncrypted` populated and the old row intact; a second call after that failure resumes from pending without a second refresh grant; a revoked refresh token clears tokens and returns `null`.
+- [ ] **Step 1: Write the failing test**
+
+The store is doubled here (Task 7 already proves the real one against a real database); what this spec must prove is *call discipline* — how many network refreshes happen, and what survives a failure.
+
+```ts
+// apps/api/src/ai/local-only/chatgpt-refresh.service.spec.ts
+import { ChatGptRefreshService } from './chatgpt-refresh.service'
+import type { ChatGptCredentials } from './chatgpt-token-exchange'
+import type { OidcConfig } from './chatgpt-oidc'
+
+const config: OidcConfig = {
+  issuer: 'https://auth.openai.com',
+  authorization_endpoint: 'https://auth.openai.com/authorize',
+  token_endpoint: 'https://auth.openai.com/oauth/token',
+  jwks_uri: 'https://auth.openai.com/.well-known/jwks.json',
+  revocation_endpoint: 'https://auth.openai.com/oauth/revoke',
+}
+
+const SCOPES = 'openid offline_access chatgpt.tokens.use.direct'
+const USER = 'user-1'
+
+/** Minimal in-memory stand-in for `ChatGptConnectionStore`. */
+class StoreDouble {
+  current: ChatGptCredentials | null = null
+  pending: ChatGptCredentials | null = null
+  clientId: string | null = 'client-1'
+  cleared = 0
+
+  async load() { return this.current }
+  async loadPending() { return this.pending }
+  async loadClientId() { return this.clientId }
+  async save(_u: string, _c: string, credentials: ChatGptCredentials) {
+    this.current = credentials
+    this.pending = null
+  }
+  async savePending(_u: string, credentials: ChatGptCredentials) {
+    this.pending = credentials
+  }
+  async promotePending() {
+    if (this.pending) this.current = this.pending
+    this.pending = null
+  }
+  async clearTokens() {
+    this.current = null
+    this.pending = null
+    this.cleared += 1
+  }
+}
+
+const expired = (): ChatGptCredentials => ({
+  accessToken: 'old-access',
+  refreshToken: 'old-refresh',
+  idToken: 'old-id',
+  // Already past: forces a refresh on the next access.
+  expiresAt: new Date(Date.now() - 1_000),
+  scopes: SCOPES,
+  subject: 'sub-1',
+  sharing: true,
+})
+
+/** Counts token-endpoint POSTs so single-flight is measured, not assumed. */
+function tokenEndpointSpy(
+  respond: (body: URLSearchParams) => { ok: boolean; body: unknown },
+) {
+  const calls: URLSearchParams[] = []
+  const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url !== config.token_endpoint) {
+      throw new Error(`unexpected fetch to ${url}`)
+    }
+    const body = new URLSearchParams(String(init?.body))
+    calls.push(body)
+    const { ok, body: payload } = respond(body)
+    return { ok, status: ok ? 200 : 400, json: async () => payload }
+  }) as unknown as typeof fetch
+  return { calls, fetchImpl }
+}
+
+const build = (
+  store: StoreDouble,
+  fetchImpl: typeof fetch,
+  verifyIdentity: () => Promise<{ subject: string }> = async () => ({ subject: 'sub-1' }),
+) =>
+  new ChatGptRefreshService({
+    store: store as never,
+    discover: async () => config,
+    fetchImpl,
+    verifyIdentity,
+  })
+
+describe('ChatGptRefreshService', () => {
+  it('refreshes once for many concurrent callers (single-flight)', async () => {
+    const store = new StoreDouble()
+    store.current = expired()
+    const { calls, fetchImpl } = tokenEndpointSpy(() => ({
+      ok: true,
+      body: {
+        access_token: 'new-access',
+        refresh_token: 'new-refresh',
+        id_token: 'new-id',
+        expires_in: 3600,
+        scope: SCOPES,
+      },
+    }))
+    const service = build(store, fetchImpl)
+
+    const tokens = await Promise.all(
+      Array.from({ length: 10 }, () => service.accessTokenFor(USER)),
+    )
+
+    expect(calls).toHaveLength(1)
+    expect(new Set(tokens)).toEqual(new Set(['new-access']))
+  })
+
+  it('sends the documented refresh grant fields', async () => {
+    const store = new StoreDouble()
+    store.current = expired()
+    const { calls, fetchImpl } = tokenEndpointSpy(() => ({
+      ok: true,
+      body: { access_token: 'a', refresh_token: 'r', id_token: 'i', expires_in: 60, scope: SCOPES },
+    }))
+    await build(store, fetchImpl).accessTokenFor(USER)
+
+    expect(Object.fromEntries(calls[0]!)).toMatchObject({
+      grant_type: 'refresh_token',
+      client_id: 'client-1',
+      refresh_token: 'old-refresh',
+      resource: 'https://api.openai.com/v1',
+    })
+  })
+
+  it('keeps the stored scopes when the response omits scope', async () => {
+    const store = new StoreDouble()
+    store.current = expired()
+    const { fetchImpl } = tokenEndpointSpy(() => ({
+      ok: true,
+      // No `scope` key at all -- OAuth may omit it when nothing changed.
+      body: { access_token: 'a', refresh_token: 'r', id_token: 'i', expires_in: 60 },
+    }))
+    await build(store, fetchImpl).accessTokenFor(USER)
+
+    expect(store.current?.scopes).toBe(SCOPES)
+    expect(store.current?.sharing).toBe(true)
+  })
+
+  it('leaves the rotation pending and the old row intact when verification fails', async () => {
+    const store = new StoreDouble()
+    const before = expired()
+    store.current = before
+    const { calls, fetchImpl } = tokenEndpointSpy(() => ({
+      ok: true,
+      body: { access_token: 'new-access', refresh_token: 'new-refresh', id_token: 'new-id', expires_in: 60, scope: SCOPES },
+    }))
+    const service = build(store, fetchImpl, async () => {
+      throw new Error('identity verification unavailable')
+    })
+
+    await expect(service.accessTokenFor(USER)).rejects.toThrow(/verification/i)
+
+    expect(store.pending?.accessToken).toBe('new-access')
+    expect(store.current).toBe(before)
+    expect(store.cleared).toBe(0)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('resumes from the pending rotation without consuming the refresh token twice', async () => {
+    const store = new StoreDouble()
+    store.current = expired()
+    const { calls, fetchImpl } = tokenEndpointSpy(() => ({
+      ok: true,
+      body: { access_token: 'new-access', refresh_token: 'new-refresh', id_token: 'new-id', expires_in: 60, scope: SCOPES },
+    }))
+
+    let verifyShouldFail = true
+    const service = build(store, fetchImpl, async () => {
+      if (verifyShouldFail) throw new Error('identity verification unavailable')
+      return { subject: 'sub-1' }
+    })
+
+    await expect(service.accessTokenFor(USER)).rejects.toThrow()
+    verifyShouldFail = false
+
+    await expect(service.accessTokenFor(USER)).resolves.toBe('new-access')
+
+    // The second call verified the saved pending state; it did NOT post a
+    // second refresh grant with an already-consumed refresh token.
+    expect(calls).toHaveLength(1)
+    expect(store.pending).toBeNull()
+  })
+
+  it('clears the connection and returns null when the refresh token is rejected', async () => {
+    const store = new StoreDouble()
+    store.current = expired()
+    const { fetchImpl } = tokenEndpointSpy(() => ({
+      ok: false,
+      body: { error: 'invalid_grant' },
+    }))
+
+    await expect(build(store, fetchImpl).accessTokenFor(USER)).resolves.toBeNull()
+    expect(store.cleared).toBe(1)
+  })
+
+  it('does not refresh a token that is still valid', async () => {
+    const store = new StoreDouble()
+    store.current = { ...expired(), expiresAt: new Date(Date.now() + 3_600_000), accessToken: 'still-good' }
+    const { calls, fetchImpl } = tokenEndpointSpy(() => ({ ok: true, body: {} }))
+
+    await expect(build(store, fetchImpl).accessTokenFor(USER)).resolves.toBe('still-good')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('returns null when there is no connection at all', async () => {
+    const store = new StoreDouble()
+    store.current = null
+    store.clientId = null
+    const { calls, fetchImpl } = tokenEndpointSpy(() => ({ ok: true, body: {} }))
+
+    await expect(build(store, fetchImpl).accessTokenFor(USER)).resolves.toBeNull()
+    expect(calls).toHaveLength(0)
+  })
+})
+```
+
+**Constructor shape:** `ChatGptRefreshService` takes its collaborators as one object (`{ store, discover, fetchImpl, verifyIdentity }`) so the spec can substitute each without a DI container. In `local-only-ai.module.ts`, wire it with a factory that supplies the real store, `discoverOidcConfig`, global `fetch`, and `verifyIdentity` from Task 6.
 
 - [ ] **Step 2: Run it and watch it fail**
 
@@ -1129,10 +1509,14 @@ git commit -m "feat(ai): implement the ChatGPT plan-usage provider"
 ## Task 10: Connect / status / disconnect routes
 
 **Files:**
+- Create: `apps/api/src/ai/local-only/chatgpt-connect-flow.ts`
 - Create: `apps/api/src/ai/local-only/chatgpt.controller.ts`
 - Modify: `apps/api/src/ai/local-only/local-only-ai.module.ts`
+- Modify: `apps/api/src/app.local.module.ts` — add `openBrowser` to `AppLocalModuleOptions`
 - Test: `apps/api/src/ai/local-only/chatgpt.controller.spec.ts`
 - Verify: `apps/api/src/profile/local-route-posture.spec.ts` picks the new routes up automatically
+
+**Ordering note:** this task introduces the `openBrowser` option because it is the consumer of it; Task 11 supplies the real `shell.openExternal` implementation and adds the compose-time refusal. Declaring the option here is what lets this task's spec pass `openBrowser: async () => undefined` without depending on a later task.
 
 **Interfaces:**
 - Produces: `POST /api/ai/chatgpt/connect`, `GET /api/ai/chatgpt/status`, `POST /api/ai/chatgpt/disconnect`
@@ -1143,7 +1527,169 @@ git commit -m "feat(ai): implement the ChatGPT plan-usage provider"
 - Validate every input with `class-validator`; keep controllers thin with the logic in the services from Tasks 3-8.
 - The existing `SessionTokenGuard` posture must cover these routes; `local-route-posture.spec.ts` walks the real Express stack, so any route added to `AppLocalModule` is covered automatically.
 
-- [ ] **Step 1: Write the failing test** — assert the status payload has no `accessToken`/`refreshToken`/`idToken` key at any depth, and that `disconnect` leaves `status.connected === false` while a subsequent `connect` reuses the stored `clientId`.
+- [ ] **Step 1: Write the failing test**
+
+Boots the real local composition over a real SQLite file, the same way `local-route-posture.spec.ts` does, and overrides only the one collaborator that would otherwise open a browser and wait for a human. Note the **unprefixed** paths: these specs do not call `setGlobalPrefix`, matching `app.local.module.spec.ts`.
+
+```ts
+// apps/api/src/ai/local-only/chatgpt.controller.spec.ts
+import { INestApplication, ValidationPipe } from '@nestjs/common'
+import { Test, TestingModule } from '@nestjs/testing'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import type { AddressInfo } from 'node:net'
+import { join } from 'node:path'
+import Database = require('better-sqlite3')
+import { AppLocalModule } from '../../app.local.module'
+import { LocalPrismaService } from '../../prisma/local/local-prisma.service'
+import { generateAiKeyEncryptionSecret } from '../../prisma/local/profile-secret'
+import { generateSessionToken, SESSION_TOKEN_HEADER } from '../../profile/session-token'
+import { ChatGptConnectFlow } from './chatgpt-connect-flow'
+
+const ROOT = '/tmp/wimm-chatgpt-controller-spec'
+const BASELINE = join(
+  __dirname,
+  '../../../prisma/migrations-sqlite/0000_baseline/migration.sql',
+)
+const SECRET_KEYS = ['accessToken', 'refreshToken', 'idToken', 'access_token', 'refresh_token', 'id_token']
+
+function freshDatabaseFile(): string {
+  mkdirSync(ROOT, { recursive: true })
+  const file = join(ROOT, `${randomUUID()}.db`)
+  const db = new Database(file)
+  db.exec(readFileSync(BASELINE, 'utf8'))
+  db.close()
+  return file
+}
+
+async function seedUser(file: string): Promise<string> {
+  const seeding = new LocalPrismaService(file)
+  await seeding.onModuleInit()
+  try {
+    const id = randomUUID()
+    await seeding.user.create({
+      data: {
+        id,
+        email: 'chatgpt-controller-spec@example.com',
+        username: 'chatgpt-controller-spec',
+        passwordHash: 'irrelevant-hash',
+      },
+    })
+    return id
+  } finally {
+    await seeding.onModuleDestroy()
+  }
+}
+
+/** Recursively assert no credential-shaped key appears anywhere. */
+function assertNoCredentialKeys(value: unknown): void {
+  if (Array.isArray(value)) return value.forEach(assertNoCredentialKeys)
+  if (value && typeof value === 'object') {
+    for (const [key, nested] of Object.entries(value)) {
+      expect(SECRET_KEYS).not.toContain(key)
+      assertNoCredentialKeys(nested)
+    }
+  }
+}
+
+describe('ChatGpt controller (behavioral, over the real local composition)', () => {
+  let app: INestApplication
+  let baseUrl: string
+  const sessionToken = generateSessionToken()
+  const aiKeyEncryptionSecret = generateAiKeyEncryptionSecret()
+  const flow = {
+    connected: [] as string[],
+    async connect(userId: string) {
+      this.connected.push(userId)
+      return { connected: true, sharing: true, accountLabel: 'ada@example.com', expiresAt: null }
+    },
+  }
+
+  beforeAll(async () => {
+    const file = freshDatabaseFile()
+    await seedUser(file)
+
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      imports: [
+        AppLocalModule.forRoot({
+          databaseFile: file,
+          sessionToken,
+          aiKeyEncryptionSecret,
+          openBrowser: async () => undefined,
+        }),
+      ],
+    })
+      // The only override: the real flow opens a system browser and waits
+      // for a human. Its pieces are proven in Tasks 3-8.
+      .overrideProvider(ChatGptConnectFlow)
+      .useValue(flow)
+      .compile()
+
+    app = moduleRef.createNestApplication({ logger: false })
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+        transformOptions: { enableImplicitConversion: true },
+      }),
+    )
+    const server = await app.listen(0, '127.0.0.1')
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  })
+
+  afterAll(async () => {
+    await app.close()
+    rmSync(ROOT, { recursive: true, force: true })
+  })
+
+  const call = (path: string, method = 'GET', withToken = true) =>
+    fetch(`${baseUrl}${path}`, {
+      method,
+      headers: withToken ? { [SESSION_TOKEN_HEADER]: sessionToken } : {},
+    })
+
+  it('reports disconnected before any connection exists', async () => {
+    const response = await call('/ai/chatgpt/status')
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ connected: false, sharing: false })
+  })
+
+  it('never returns a credential from status', async () => {
+    const body: unknown = await (await call('/ai/chatgpt/status')).json()
+    assertNoCredentialKeys(body)
+    expect(JSON.stringify(body)).not.toMatch(/Bearer|eyJ/)
+  })
+
+  it('returns status only from connect, and never a credential', async () => {
+    const response = await call('/ai/chatgpt/connect', 'POST')
+    expect(response.status).toBeLessThan(400)
+    const body: unknown = await response.json()
+    expect(body).toMatchObject({ connected: true, sharing: true })
+    assertNoCredentialKeys(body)
+    expect(flow.connected).toHaveLength(1)
+  })
+
+  it('reports disconnected after disconnect', async () => {
+    expect((await call('/ai/chatgpt/disconnect', 'POST')).status).toBeLessThan(400)
+    await expect((await call('/ai/chatgpt/status')).json()).resolves.toMatchObject({
+      connected: false,
+    })
+  })
+
+  it('rejects every route without the session token', async () => {
+    for (const [path, method] of [
+      ['/ai/chatgpt/status', 'GET'],
+      ['/ai/chatgpt/connect', 'POST'],
+      ['/ai/chatgpt/disconnect', 'POST'],
+    ] as const) {
+      expect((await call(path, method, false)).status).toBe(401)
+    }
+  })
+})
+```
+
+**`ChatGptConnectFlow`** is the service the controller delegates to: it runs discovery, starts the listener, calls `openBrowser`, awaits the callback, exchanges, and persists. Create it in this task as a thin composition of Tasks 3-8; the controller itself must hold no logic.
 
 - [ ] **Step 2: Run it and watch it fail**
 
@@ -1175,19 +1721,106 @@ git commit -m "feat(ai): add ChatGPT connect, status and disconnect routes"
 **Files:**
 - Create: `apps/desktop/src/main/chatgpt-browser.ts`
 - Modify: `apps/desktop/src/main/local-api.ts` (pass `openBrowser` into `AppLocalModule.forRoot`)
-- Modify: `apps/api/src/app.local.module.ts` (accept `openBrowser` in `AppLocalModuleOptions`)
+- Modify: `apps/api/src/app.local.module.ts` (refuse to compose without `openBrowser`)
+- Modify: `apps/api/src/app.local.module.spec.ts`
 - Test: `apps/desktop/src/main/chatgpt-browser.spec.ts`
 
 **Interfaces:**
-- Produces: `openChatGptAuthorizeUrl(url: string): Promise<void>`
-- Consumes: `AppLocalModuleOptions` gains `openBrowser: (url: string) => Promise<void>`
+- Consumes: `AppLocalModuleOptions.openBrowser`, declared in Task 10
+- Produces: `openChatGptAuthorizeUrl(url: string): Promise<void>`, passed in as that option from `local-api.ts`
 
 **Requirements:**
 - `shell.openExternal` only. **No `BrowserWindow`.**
 - Refuse any URL whose origin is not the discovered issuer's origin. An `openExternal` that forwards an arbitrary string is a navigation primitive handed to whatever can reach it.
 - `AppLocalModule.forRoot` must follow the existing assert-then-refuse contract: refuse to compose when `openBrowser` is missing, the same way `assertUsableSessionToken` and `assertUsableAiKeyEncryptionSecret` already do, so a misconfiguration is a boot failure that names itself.
 
-- [ ] **Step 1: Write the failing test** — assert `shell.openExternal` is called for an `https://auth.openai.com/...` URL, that a `file://`, `javascript:` or other-origin URL is refused without calling it, and that `BrowserWindow` is never constructed.
+- [ ] **Step 1: Write the failing test**
+
+`electron` cannot be imported outside a real Electron process, so this follows `updater.spec.ts` exactly: `jest.resetModules()` plus **`jest.doMock`, never the hoisted `jest.mock`**, then `require` the module under test.
+
+```ts
+// apps/desktop/src/main/chatgpt-browser.spec.ts
+type BrowserModule = typeof import('./chatgpt-browser')
+
+function load() {
+  jest.resetModules()
+  const opened: string[] = []
+  // Mutable counter shared with the mock below; read through a method so the
+  // test observes the live value rather than a copy taken at load time.
+  const constructed = { count: 0 }
+
+  jest.doMock('electron', () => ({
+    shell: {
+      openExternal: async (url: string) => {
+        opened.push(url)
+      },
+    },
+    // Present so that constructing one is observable rather than an
+    // undefined crash -- the point is proving it never happens.
+    BrowserWindow: class {
+      constructor() {
+        constructed.count += 1
+      }
+    },
+  }))
+
+  const mod = require('./chatgpt-browser') as BrowserModule
+  return {
+    openChatGptAuthorizeUrl: mod.openChatGptAuthorizeUrl,
+    opened,
+    browserWindowsConstructed: () => constructed.count,
+  }
+}
+
+describe('openChatGptAuthorizeUrl', () => {
+  it('opens an issuer-origin URL in the system browser', async () => {
+    const harness = load()
+    const url = 'https://auth.openai.com/authorize?client_id=dynamic_agent_client&state=s'
+    await harness.openChatGptAuthorizeUrl(url)
+    expect(harness.opened).toEqual([url])
+  })
+
+  it('never constructs a BrowserWindow', async () => {
+    const harness = load()
+    await harness.openChatGptAuthorizeUrl('https://auth.openai.com/authorize')
+    expect(harness.browserWindowsConstructed()).toBe(0)
+  })
+
+  it.each([
+    'file:///etc/passwd',
+    'javascript:alert(1)',
+    'https://auth.openai.com.evil.example/authorize',
+    'https://evil.example/authorize',
+    'http://auth.openai.com/authorize',
+    'not-a-url',
+  ])('refuses %s without opening anything', async (hostile) => {
+    const harness = load()
+    await expect(harness.openChatGptAuthorizeUrl(hostile)).rejects.toThrow()
+    expect(harness.opened).toEqual([])
+  })
+})
+```
+
+Note `https://auth.openai.com.evil.example` and plain `http://`: a naive `startsWith('https://auth.openai.com')` check passes the first and a naive hostname check passes the second. Compare the parsed `origin` against `https://auth.openai.com` exactly.
+
+`AppLocalModule.forRoot` must also refuse to compose without `openBrowser`. Add that to `app.local.module.spec.ts` alongside the existing session-token and secret refusals:
+
+```ts
+it('refuses to compose without an openBrowser callback', async () => {
+  await expect(
+    Test.createTestingModule({
+      imports: [
+        AppLocalModule.forRoot({
+          databaseFile: freshDatabaseFile('no-open-browser'),
+          sessionToken,
+          aiKeyEncryptionSecret,
+          // `openBrowser` deliberately omitted.
+        } as never),
+      ],
+    }).compile(),
+  ).rejects.toThrow(/openBrowser/)
+})
+```
 
 - [ ] **Step 2: Run it and watch it fail**
 
@@ -1222,43 +1855,187 @@ git commit -m "feat(desktop): open the ChatGPT authorize URL in the system brows
 
 ---
 
-## Task 12: Renderer UI and every failure message in `en` + `pt`
+## Task 12: Failure-state mapping, locales, and the connection UI
 
 **Files:**
+- Create: `apps/desktop/src/renderer/lib/chatgpt-connection-state.ts`
+- Test: `apps/desktop/src/renderer/lib/chatgpt-connection-state.spec.ts`
+- Create: `apps/desktop/src/renderer/lib/locale-parity.spec.ts`
+- Modify: `apps/desktop/src/renderer/i18n/locales/en.json`, `.../pt.json`
 - Create: `apps/desktop/src/renderer/components/settings/ChatGptConnection.tsx`
 - Modify: the settings screen that hosts AI preferences
-- Modify: the `i18next` resource files for `en` and `pt`
-- Test: `apps/desktop/src/renderer/.../ChatGptConnection.spec.tsx`
 
-**Requirements:**
-- React Query for the status call; the single shared `axios` instance — do not add a second.
-- Components from `renderer/components/ui/`; tokens only from `renderer/styles/theme.css`. No hardcoded colours.
-- One distinct message per row of the design's failure table: never connected (an invitation, not an error), `sharing` false, weekly per-app cap reached, access revoked, tokens undecryptable on this machine, offline. Collapsing these into "AI unavailable" is the conflation this project has already fixed three times elsewhere.
-- **The renderer must never receive a token.** Assert it.
+**Interfaces:**
+- Produces: `describeChatGptState(input: { connected: boolean; sharing: boolean; online: boolean; errorCode?: string }): { messageKey: string; retryable: boolean; tone: 'invite' | 'info' | 'error' }`
 
-- [ ] **Step 1: Write the failing test** — render each failure state and assert a distinct message; assert no response payload the component receives contains a token key.
+**Why the logic is extracted instead of tested through the component:** `apps/desktop/jest.config.js` sets `testEnvironment: 'node'`, its `roots` are `src/main` and `src/renderer/lib` only, and `testMatch` is `**/*.spec.ts` — not `.tsx`. Its own doc comment records that component-level testing (jsdom, React Testing Library) "remains future scope, not something this change introduces." Adding jsdom and RTL would be two new top-level dependencies, which `AGENTS.md` requires asking about, and a test-infrastructure change this feature does not need. So all the decision logic lives in `renderer/lib/` where the existing harness already reaches it (`api-mode.spec.ts`, `csv-mapping-format.spec.ts`, `local-api-adapter.spec.ts` are the precedent), and the component becomes a thin renderer of its output.
 
-- [ ] **Step 2: Run it and watch it fail**
+**This is stated rather than hidden:** `ChatGptConnection.tsx` itself carries no automated test under this plan, exactly as every other renderer component in this repository currently does. If component tests are wanted, that is its own task with its own dependency decision.
 
-```bash
-pnpm --filter @wimm/desktop test -- ChatGptConnection
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// apps/desktop/src/renderer/lib/chatgpt-connection-state.spec.ts
+import { describeChatGptState } from './chatgpt-connection-state'
+
+const base = { connected: true, sharing: true, online: true }
+
+describe('describeChatGptState', () => {
+  it('invites connection rather than reporting an error when never connected', () => {
+    const state = describeChatGptState({ ...base, connected: false, sharing: false })
+    expect(state.tone).toBe('invite')
+    expect(state.messageKey).toBe('ai.chatgpt.notConnected')
+  })
+
+  it('says the plan does not include sharing, and that retrying will not help', () => {
+    const state = describeChatGptState({ ...base, sharing: false })
+    expect(state.messageKey).toBe('ai.chatgpt.sharingNotEnabled')
+    expect(state.retryable).toBe(false)
+  })
+
+  it('keeps the app usable when offline', () => {
+    const state = describeChatGptState({ ...base, online: false })
+    expect(state.messageKey).toBe('ai.chatgpt.offline')
+    expect(state.tone).toBe('info')
+    expect(state.retryable).toBe(true)
+  })
+
+  // The real API error codes, with the retryability the API itself defines.
+  it.each([
+    ['subscription_sharing_user_not_eligible', 'ai.chatgpt.notEligible', false],
+    ['subscription_sharing_usage_limit_exceeded', 'ai.chatgpt.limitReached', false],
+    ['subscription_sharing_usage_unavailable', 'ai.chatgpt.usageUnavailable', true],
+    ['subscription_sharing_unsupported_capability', 'ai.chatgpt.unsupportedCapability', false],
+    ['subscription_sharing_route_not_supported', 'ai.chatgpt.routeNotSupported', false],
+    ['subscription_sharing_invalid_user', 'ai.chatgpt.invalidUser', false],
+    ['subscription_sharing_user_unavailable', 'ai.chatgpt.userUnavailable', true],
+  ])('maps %s to its own message', (errorCode, messageKey, retryable) => {
+    const state = describeChatGptState({ ...base, errorCode })
+    expect(state.messageKey).toBe(messageKey)
+    expect(state.retryable).toBe(retryable)
+  })
+
+  it('gives every distinct cause a distinct message', () => {
+    const inputs = [
+      { ...base, connected: false, sharing: false },
+      { ...base, sharing: false },
+      { ...base, online: false },
+      { ...base, errorCode: 'subscription_sharing_user_not_eligible' },
+      { ...base, errorCode: 'subscription_sharing_usage_limit_exceeded' },
+      { ...base, errorCode: 'subscription_sharing_usage_unavailable' },
+      { ...base, errorCode: 'subscription_sharing_unsupported_capability' },
+      { ...base, errorCode: 'subscription_sharing_route_not_supported' },
+      { ...base, errorCode: 'subscription_sharing_invalid_user' },
+      { ...base, errorCode: 'subscription_sharing_user_unavailable' },
+    ]
+    const keys = inputs.map((input) => describeChatGptState(input).messageKey)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  it('falls back to a generic message for an unknown error code', () => {
+    const state = describeChatGptState({ ...base, errorCode: 'something_new_from_openai' })
+    expect(state.messageKey).toBe('ai.chatgpt.unknownError')
+    expect(state.retryable).toBe(true)
+  })
+
+  it('reports a healthy connection', () => {
+    expect(describeChatGptState(base).messageKey).toBe('ai.chatgpt.connected')
+  })
+})
 ```
 
-- [ ] **Step 3: Implement** the component and add both locales.
+The distinct-message test is the one that matters: it is what stops a later refactor from quietly collapsing seven causes into "AI unavailable", which the design document names as a conflation this project has already fixed three times elsewhere.
 
-- [ ] **Step 4: Assert locale parity**
+```ts
+// apps/desktop/src/renderer/lib/locale-parity.spec.ts
+import en from '../i18n/locales/en.json'
+import pt from '../i18n/locales/pt.json'
 
-```bash
-pnpm --filter @wimm/desktop test -- ChatGptConnection && pnpm --filter @wimm/desktop lint
+/** Every leaf key path, so a nested key cannot drift unnoticed. */
+function keyPaths(value: unknown, prefix = ''): string[] {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return [prefix]
+  }
+  return Object.entries(value).flatMap(([key, nested]) =>
+    keyPaths(nested, prefix ? `${prefix}.${key}` : key),
+  )
+}
+
+describe('locale parity', () => {
+  it('defines exactly the same keys in en and pt', () => {
+    const inEn = new Set(keyPaths(en))
+    const inPt = new Set(keyPaths(pt))
+    expect([...inEn].filter((key) => !inPt.has(key))).toEqual([])
+    expect([...inPt].filter((key) => !inEn.has(key))).toEqual([])
+  })
+
+  it('leaves no value empty in either locale', () => {
+    for (const [name, bundle] of [['en', en], ['pt', pt]] as const) {
+      for (const path of keyPaths(bundle)) {
+        const value = path
+          .split('.')
+          .reduce<unknown>((node, key) => (node as Record<string, unknown>)[key], bundle)
+        expect(typeof value === 'string' && value.trim().length > 0).toBe(true)
+        if (typeof value !== 'string' || !value.trim()) {
+          throw new Error(`${name} has an empty value at ${path}`)
+        }
+      }
+    }
+  })
+})
 ```
 
-Every key added to `en` must exist in `pt`. If the repo has no parity test for locales, add one in this task asserting the two key sets are identical.
+This parity spec guards every existing key too, not just the ones this task adds. If it fails on pre-existing drift, fix the drift — that is a real defect, not noise from this task.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 2: Run both and watch them fail**
+
+```bash
+pnpm --filter @wimm/desktop test -- chatgpt-connection-state locale-parity
+```
+
+Expected: FAIL — `./chatgpt-connection-state` cannot be resolved. If `locale-parity` fails on existing keys, record what it found before fixing.
+
+- [ ] **Step 3: Confirm `resolveJsonModule` is on, or turn it on**
+
+```bash
+grep -n "resolveJsonModule" apps/desktop/tsconfig.spec.json apps/desktop/tsconfig*.json
+```
+
+The parity spec imports JSON. If `resolveJsonModule` is absent from `tsconfig.spec.json`, add `"resolveJsonModule": true` to it — that file is spec-only and does not drive the electron-vite build.
+
+- [ ] **Step 4: Implement the mapping and add both locales**
+
+`describeChatGptState` is a pure function: a lookup table from error code to `{ messageKey, retryable }`, with `connected`/`sharing`/`online` checked first. Add every `ai.chatgpt.*` key to **both** `en.json` and `pt.json`.
+
+- [ ] **Step 5: Run the tests**
+
+```bash
+pnpm --filter @wimm/desktop test -- chatgpt-connection-state locale-parity
+```
+
+Expected: all passing, including the ten-distinct-messages assertion.
+
+- [ ] **Step 6: Build the component on top of it**
+
+`ChatGptConnection.tsx`: React Query for `GET /api/ai/chatgpt/status` through the single existing `axios` instance (do not add a second); components from `renderer/components/ui/`; colours only via tokens from `renderer/styles/theme.css`. Render `describeChatGptState(...)`'s `messageKey` through `useTranslation`, and show a retry affordance only when `retryable` is true.
+
+- [ ] **Step 7: Verify the renderer never receives a credential**
+
+```bash
+grep -rnE "accessToken|refreshToken|idToken" apps/desktop/src/renderer || echo "clean: no credential field named in the renderer"
+```
+
+Expected: `clean: ...`. The API's status payload has no such field (Task 10 asserts this recursively); this check catches a renderer that reaches for one anyway.
+
+- [ ] **Step 8: Lint and commit**
+
+```bash
+pnpm --filter @wimm/desktop lint && pnpm --filter @wimm/desktop test
+```
 
 ```bash
 git add apps/desktop/src
-git commit -m "feat(desktop): add the ChatGPT connection UI with en and pt strings"
+git commit -m "feat(desktop): map ChatGPT failure states and add the connection UI"
 ```
 
 ---
