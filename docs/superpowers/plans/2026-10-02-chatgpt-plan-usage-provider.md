@@ -1615,6 +1615,22 @@ git commit -m "feat(ai): store ChatGPT credentials under the per-profile secret"
 - **A stored `refreshToken` of `null` means this connection cannot be refreshed.** Return `null` immediately rather than posting a grant with no token.
 - **Pending rotation:** persist rotated credentials via `savePending` *before* verifying the new `id_token`; `promotePending` only after verification succeeds. If verification fails because the signing-key service is unavailable, leave the pending state in place and return a retryable error — a later call, including after a restart, resumes from it rather than replaying a consumed refresh token.
 - **Check `promotePending`'s return value.** It is `false` when its compare-and-swap lost, which leaves the OLD credentials live. Treating that as success means the next refresh replays an already-consumed token, and a server that detects reuse may revoke the whole grant. On `false`, re-read rather than assuming.
+### Decisions taken during Task 8, each with its reason
+
+Confirmed from the implementation, rather than left implicit:
+
+- **An omitted `refresh_token` keeps the stored one.** RFC 6749 §6 makes reissuing optional; the old token stays valid when no new one is sent.
+- **A verified subject different from the stored one clears the connection and returns `null`.** A refresh must stay the same account. The pending rotation carries the stored subject provisionally, which is what makes the comparison possible.
+- **Every network call has a 30-second timeout, including the JWKS fetch.** This matters *because* of single-flight: every concurrent caller for a user shares one promise, so a single hung POST would block all of them indefinitely.
+- **Only `invalid_grant` clears the connection.** A 5xx or an unreachable endpoint leaves it alone — disconnecting users during an OpenAI outage would be the wrong failure.
+- **Expiry carries a 60-second skew.** Without it a token with seconds left passes the check, the categorize request starts, and the token dies in flight: a 401 and a wasted round trip. The skew covers request latency; it cannot cover disagreement about the time between this machine and OpenAI, which is why Task 9 must also retry.
+- **A refresh response with no `id_token` is rejected**, even though the refresh token has already been consumed by then. This is deliberately *not* treated like an omitted `scope` or `refresh_token`: OpenAI's own reference implementation reads `data.id_token` with no handling for its absence, so the field is present in practice, and tolerating an omission would mean speculating against the only evidence available. Recorded as a risk rather than coded around.
+
+### Carry-overs into Task 9
+
+- **Treat a 401 from the Responses API as "call `accessTokenFor` again", never as "disconnected".** The expiry skew cannot cover clock disagreement with OpenAI, and a resumed rotation may hand back an access token that has already expired. One retry closes both.
+- **A genuinely invalid rotation — as opposed to one that merely cannot be verified during an outage — stays pending until the user reconnects**, because Task 6's `verifyIdentity` does not distinguish "unavailable" from "invalid". Closing this means classifying the verification failure, which is its own change.
+
 - **`savePending` throws when the connection has been disconnected.** A refresh that was in flight when the user clicked Disconnect must not resurrect it. Treat the throw as "the attempt is over", not as a retryable error.
 - **Call `verifyIdentity` with `nonce: null` and `verifyAt: <when the rotation was received>`.** Both arguments exist for this task specifically, and both were added to Task 6 after review:
   - **`nonce: null`** — a refresh has no new authorize request, so there is no nonce to compare. `null` is the only way to say that; `undefined` and `''` are refused, so "forgot to pass it" can never be mistaken for "deliberately absent". Task 6's guard would otherwise reject every refresh outright.
