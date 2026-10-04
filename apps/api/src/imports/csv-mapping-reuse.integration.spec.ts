@@ -1,6 +1,5 @@
 import { Test } from '@nestjs/testing'
-import { SourceType, toCents } from '@wimm/shared'
-import { AiKeyResolverService } from '../ai/ai-key-resolver.service'
+import { AiCategorizationMode, SourceType, toCents } from '@wimm/shared'
 import { AnthropicCategorizerService } from '../ai/anthropic-categorizer.service'
 import { CategorizationRulesService } from '../categorization-rules/categorization-rules.service'
 import { DefaultCategoriesService } from '../categories/default-categories.service'
@@ -71,6 +70,21 @@ describe('CSV mapping reuse across imports (real ImportsService + real CsvSource
         ),
       },
       transaction: { findMany: jest.fn().mockResolvedValue([]) },
+      // AI categorization OFF -- the schema default, and what this spec's
+      // user would realistically have. `ImportsService` gates on this before
+      // the leaf-category query, so the whole AI path (and the categorizer
+      // stubbed below) is skipped on the preview path. This fake IS
+      // load-bearing: without it the gate's lookup throws and the preview
+      // fails. The empty `category.findMany` below is not -- it is kept only
+      // because removing an unrelated fake is not this task's business.
+      user: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({
+            aiCategorizationMode: AiCategorizationMode.OFF,
+          }),
+      },
+      category: { findMany: jest.fn().mockResolvedValue([]) },
     }
   }
 
@@ -91,10 +105,6 @@ describe('CSV mapping reuse across imports (real ImportsService + real CsvSource
             loadSystemResolutionContext: jest.fn().mockResolvedValue({}),
             resolveCategoryIdWithSystem: jest.fn().mockReturnValue(null),
           },
-        },
-        {
-          provide: AiKeyResolverService,
-          useValue: { resolveForUser: jest.fn().mockResolvedValue(null) },
         },
         {
           provide: AnthropicCategorizerService,

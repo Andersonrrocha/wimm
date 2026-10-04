@@ -1,6 +1,12 @@
+import type { AiKeyResolverService } from './ai-key-resolver.service'
 import { AiProviderRegistry } from './ai-provider.registry'
 import { AnthropicCategorizerService } from './anthropic-categorizer.service'
 import { buildAiProviders } from './ai.module'
+
+// Dispatch only ever reads `id`; `categorizeBatch` (and with it the key
+// resolver) is never called here, so a bare stub is enough to construct the
+// real provider.
+const keys = { resolveForUser: jest.fn() } as unknown as AiKeyResolverService
 
 /**
  * Behavioral proof of `AiModule`'s own dispatch: the real Anthropic path,
@@ -13,7 +19,7 @@ import { buildAiProviders } from './ai.module'
  */
 describe('buildAiProviders (AiModule dispatch)', () => {
   it('registers the real Anthropic categorizer under id "anthropic"', () => {
-    const anthropic = new AnthropicCategorizerService()
+    const anthropic = new AnthropicCategorizerService(keys)
 
     const registry = new AiProviderRegistry(buildAiProviders(anthropic))
 
@@ -21,7 +27,7 @@ describe('buildAiProviders (AiModule dispatch)', () => {
   })
 
   it('does not register anything under a hosted-only id', () => {
-    const anthropic = new AnthropicCategorizerService()
+    const anthropic = new AnthropicCategorizerService(keys)
 
     const registry = new AiProviderRegistry(buildAiProviders(anthropic))
 

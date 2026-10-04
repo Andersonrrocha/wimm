@@ -10,13 +10,21 @@ import type {
  * Shaped directly around what `AnthropicCategorizerService.categorizeBatch`
  * already did before this contract existed -- see that class's own doc
  * comment -- rather than a speculative abstraction invented ahead of a
- * second real implementation. `AiKeyResolverService.resolveForUser` already
- * reduces both AI modes (`SERVER`, `BYOK`) down to a single opaque
- * credential string before a provider is ever called, so `apiKey` here is
- * deliberately generic: for Anthropic it is an Anthropic API key; for a
- * hosted, OAuth-backed provider it would be an OAuth access token. Neither
- * this interface nor anything that calls through it needs to know which --
- * that is the whole point of the seam.
+ * second real implementation.
+ *
+ * A provider resolves its own credential. `categorizeBatch` therefore takes a
+ * `userId` -- whose credential to resolve -- and not a pre-resolved secret.
+ * Credential lifetime is provider-specific: an Anthropic API key is static,
+ * but an OAuth access token can expire in the middle of a batch and has to be
+ * refreshed in flight. A string handed in by the caller cannot express that,
+ * because by the time the provider holds it, it is already a snapshot; only
+ * the provider, owning the credential, can notice it has gone stale and
+ * replace it. (`AiKeyResolverService.resolveForUser` is what the Anthropic
+ * provider resolves through, collapsing both AI modes -- `SERVER`, `BYOK` --
+ * to one key; it is an implementation detail of that provider, not part of
+ * this contract.) A provider with no usable credential for the user returns
+ * `[]` rather than throwing, matching how `AiKeyResolverService` already
+ * treats a missing or undecryptable key as "no key".
  *
  * `id` is a stable, lowercase, kebab-case identifier used purely for
  * registration/selection (`AiProviderRegistry`, `ai-provider.registry.ts`).
@@ -31,7 +39,7 @@ export interface AiProvider {
   readonly id: string
 
   categorizeBatch(args: {
-    apiKey: string
+    userId: string
     transactions: AiCategorizeInput[]
     candidates: AiCategorizeCandidate[]
   }): Promise<AiCategorizeResult[]>

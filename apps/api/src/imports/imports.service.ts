@@ -4,6 +4,7 @@ import {
   Logger,
 } from '@nestjs/common'
 import {
+  AiCategorizationMode,
   CategoryType,
   ImportBatchFormat,
   type ImportParserWarning,
@@ -11,7 +12,6 @@ import {
   TransactionKind,
   toCents,
 } from '@wimm/shared'
-import { AiKeyResolverService } from '../ai/ai-key-resolver.service'
 import { AnthropicCategorizerService } from '../ai/anthropic-categorizer.service'
 import { DefaultCategoriesService } from '../categories/default-categories.service'
 import { CategorizationRulesService } from '../categorization-rules/categorization-rules.service'
@@ -80,7 +80,6 @@ export class ImportsService {
     private readonly prisma: PrismaService,
     private readonly categorizationRules: CategorizationRulesService,
     private readonly defaultCategories: DefaultCategoriesService,
-    private readonly aiKeyResolver: AiKeyResolverService,
     private readonly aiCategorizer: AnthropicCategorizerService,
     private readonly csvSourceMappings: CsvSourceMappingService,
   ) {}
@@ -588,11 +587,28 @@ export class ImportsService {
   }
 
   /**
-   * If the user has AI categorization enabled, asks Claude to suggest a
-   * category for any preview row that the deterministic rule pass missed.
-   * Mutates `rows` in place by setting `aiSuggestedCategoryId` and
-   * `aiConfidence`. All errors are swallowed: AI is advisory, never blocks
-   * the import preview.
+   * Asks the AI provider to suggest a category for any preview row that the
+   * deterministic rule pass missed. Mutates `rows` in place by setting
+   * `aiSuggestedCategoryId` and `aiConfidence`.
+   *
+   * Returns early when the user's `aiCategorizationMode` is `OFF`, which is
+   * the default. That check is deliberately *ahead* of the leaf-category
+   * query below, for two reasons: that query is a real round trip carrying a
+   * per-category aggregate, and it sits outside the try/catch that makes
+   * provider failures advisory. Running it for someone who never enabled AI
+   * would both spend a query on their behalf and let a failure in it reject
+   * an import preview for a feature they did not ask for.
+   *
+   * Beyond that one gate, the provider is still handed only `userId` and
+   * resolves its own credential. Note what that does *not* cover: a user who
+   * enabled AI but whose credential is missing or unusable still reaches the
+   * query below before the provider returns nothing. That is a narrower
+   * population than the OFF default, and closing it too would mean asking
+   * the provider whether it can serve a user -- widening the very contract
+   * this change narrowed. Left open deliberately.
+   *
+   * Provider errors are swallowed: AI is advisory, never blocks the import
+   * preview.
    */
   private async enrichWithAiSuggestions(
     userId: string,
@@ -616,14 +632,34 @@ export class ImportsService {
     })
     if (candidateIndexes.length === 0) return
 
-    let apiKey: string | null
+    // AI categorization is opt-in and OFF by default. Gate on that here,
+    // before spending anything on the user's behalf -- see this method's doc
+    // comment for why this must precede the query below rather than being
+    // left to the provider. The `TODO(paywall)` above anticipates this same
+    // call site gating on the user's AI settings; this is the first half of
+    // that check.
+    let aiSettings: { aiCategorizationMode: string } | null
     try {
-      apiKey = await this.aiKeyResolver.resolveForUser(userId)
+      aiSettings = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { aiCategorizationMode: true },
+      })
     } catch (err) {
-      this.logger.warn(`AI key resolver failed: ${(err as Error).message}`)
+      // Swallowed deliberately, mirroring the credential lookup this gate
+      // replaced: that one was wrapped exactly like this, so a database
+      // error here stayed advisory instead of rejecting the preview. Losing
+      // that would contradict the promise in this method's doc comment.
+      this.logger.warn(
+        `AI mode lookup failed for user ${userId}: ${(err as Error).message}`,
+      )
       return
     }
-    if (!apiKey) return
+    if (
+      !aiSettings ||
+      aiSettings.aiCategorizationMode === AiCategorizationMode.OFF
+    ) {
+      return
+    }
 
     // Only suggest leaf categories (no children) — same constraint the
     // categorization-rules service applies, so AI matches feel native.
@@ -644,7 +680,7 @@ export class ImportsService {
 
     try {
       const results = await this.aiCategorizer.categorizeBatch({
-        apiKey,
+        userId,
         transactions: inputs,
         candidates,
       })

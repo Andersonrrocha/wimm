@@ -35,18 +35,19 @@ import type {
  * could make even if a test tried -- which is how it satisfies the
  * suite-wide "offline, no real AI API call" constraint by construction.
  *
- * Note for whoever writes the real provider: `categorizeBatch`'s current
- * signature takes an `apiKey`, inherited from the Anthropic BYOK path. Plan
- * usage has no API key -- it carries an OAuth access token instead, and the
- * open-source flow issues credentials without a client secret. Widening the
- * contract is part of that work, not of this stand-in.
+ * Note for whoever writes the real provider: `categorizeBatch` receives a
+ * `userId`, not a credential -- the provider resolves its own. Plan usage has
+ * no API key; it carries an OAuth access token instead (the open-source flow
+ * issues credentials without a client secret), which can expire mid-batch and
+ * must be refreshed in flight, so that resolution and refresh live inside the
+ * real provider (see `AiProvider`). This stand-in resolves nothing.
  */
 @Injectable()
 export class ChatGptOauthProviderStub implements AiProvider {
   readonly id = 'chatgpt-oauth' as const
 
   async categorizeBatch(_args: {
-    apiKey: string
+    userId: string
     transactions: AiCategorizeInput[]
     candidates: AiCategorizeCandidate[]
   }): Promise<AiCategorizeResult[]> {

@@ -1,5 +1,7 @@
+import { Logger } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import {
+  AiCategorizationMode,
   CategoryType,
   ImportBatchFormat,
   SourceType,
@@ -10,7 +12,6 @@ import { ImportsService } from './imports.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { DefaultCategoriesService } from '../categories/default-categories.service'
 import { CategorizationRulesService } from '../categorization-rules/categorization-rules.service'
-import { AiKeyResolverService } from '../ai/ai-key-resolver.service'
 import { AnthropicCategorizerService } from '../ai/anthropic-categorizer.service'
 import {
   CsvSourceMappingService,
@@ -27,7 +28,19 @@ describe('ImportsService', () => {
   const prismaMock = {
     source: { findFirst: jest.fn() },
     transaction: { findMany: jest.fn() },
+    category: { findMany: jest.fn() },
+    user: { findUnique: jest.fn() },
     $transaction: jest.fn(),
+  }
+
+  // The AI provider owns its own credential now, so `ImportsService` no
+  // longer gates on one -- it hands `userId` over and lets the provider
+  // decide. It does still gate on `aiCategorizationMode`, which is why
+  // `prismaMock.user.findUnique` is defaulted to an enabled mode below:
+  // without that, every AI test here would exit before the provider is
+  // reached. The OFF path has its own test.
+  const aiCategorizerMock = {
+    categorizeBatch: jest.fn(),
   }
 
   const categorizationRulesMock = {
@@ -55,6 +68,14 @@ describe('ImportsService', () => {
       type: SourceType.CREDIT_CARD,
     })
     prismaMock.transaction.findMany.mockResolvedValue([])
+    // No leaf categories by default: with nothing to suggest, the preview
+    // path never reaches the AI categorizer, so these tests stay
+    // deterministic. The "AI categorization" describe block overrides it.
+    prismaMock.category.findMany.mockResolvedValue([])
+    prismaMock.user.findUnique.mockResolvedValue({
+      aiCategorizationMode: AiCategorizationMode.BYOK,
+    })
+    aiCategorizerMock.categorizeBatch.mockResolvedValue([])
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -69,14 +90,8 @@ describe('ImportsService', () => {
           useValue: categorizationRulesMock,
         },
         {
-          // AI is opt-in (default OFF). Resolver returns null so the AI
-          // categorizer is never called and these tests stay deterministic.
-          provide: AiKeyResolverService,
-          useValue: { resolveForUser: jest.fn().mockResolvedValue(null) },
-        },
-        {
           provide: AnthropicCategorizerService,
-          useValue: { categorizeBatch: jest.fn().mockResolvedValue([]) },
+          useValue: aiCategorizerMock,
         },
         {
           provide: CsvSourceMappingService,
@@ -622,6 +637,165 @@ ${'note '.repeat(30)}
       expect(w).toBeDefined()
       expect(w!.severity).toBe('warning')
       expect(w!.rawBlock).toContain('SEM VALOR')
+    })
+  })
+
+  describe('AI categorization (provider resolves its own credential)', () => {
+    // Two rows, neither matched by a rule and neither a duplicate, so both
+    // are eligible for an AI suggestion.
+    const csvBody = [
+      'Data;Descrição;Valor',
+      '01/04/2026;Mercado Livre;-123,45',
+      '02/04/2026;Salário;1.234,56',
+    ].join('\n')
+
+    function csvFile(): Express.Multer.File {
+      return {
+        originalname: 'extrato.csv',
+        buffer: Buffer.from(csvBody, 'utf8'),
+      } as Express.Multer.File
+    }
+
+    beforeEach(() => {
+      prismaMock.category.findMany.mockResolvedValue([
+        { id: 'cat-leaf', name: 'Groceries', _count: { children: 0 } },
+        // A parent category must never be offered as a candidate.
+        { id: 'cat-parent', name: 'Food', _count: { children: 2 } },
+      ])
+    })
+
+    it('hands the provider the user id and the unmatched rows, and no credential', async () => {
+      aiCategorizerMock.categorizeBatch.mockResolvedValue([
+        { index: 0, categoryId: 'cat-leaf', confidence: 0.9 },
+      ])
+
+      const r = await service.preview('user-1', 'src-1', csvFile())
+
+      expect(aiCategorizerMock.categorizeBatch).toHaveBeenCalledTimes(1)
+      const [args] = aiCategorizerMock.categorizeBatch.mock.calls[0] as [
+        Record<string, unknown>,
+      ]
+      // `toEqual` is exact on own keys, so a surviving `apiKey` (or any
+      // other credential-shaped field) would fail here, not just a wrong
+      // `userId`.
+      expect(args).toEqual({
+        userId: 'user-1',
+        transactions: r.rows.map((row, index) => ({
+          index,
+          description: row.description,
+          amount: row.amount,
+        })),
+        candidates: [{ id: 'cat-leaf', name: 'Groceries' }],
+      })
+      expect(args).not.toHaveProperty('apiKey')
+
+      // The provider's answer is merged back onto the preview row.
+      expect(r.rows[0].aiSuggestedCategoryId).toBe('cat-leaf')
+      expect(r.rows[0].aiConfidence).toBe(0.9)
+      expect(r.rows[1].aiSuggestedCategoryId).toBeUndefined()
+    })
+
+    it('still returns the preview, and warns with only the user id and message, when the provider throws', async () => {
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined)
+      aiCategorizerMock.categorizeBatch.mockRejectedValue(
+        new Error('provider unavailable'),
+      )
+
+      try {
+        const r = await service.preview('user-1', 'src-1', csvFile())
+
+        expect(r.rows).toHaveLength(2)
+        expect(r.rows[0].aiSuggestedCategoryId).toBeUndefined()
+        expect(warn).toHaveBeenCalledWith(
+          'AI categorize failed for user user-1: provider unavailable',
+        )
+      } finally {
+        warn.mockRestore()
+      }
+    })
+
+    // Both enabled modes must reach the provider. Testing only BYOK let a
+    // gate that allow-listed BYOK alone pass review.
+    it.each([AiCategorizationMode.SERVER, AiCategorizationMode.BYOK])(
+      'runs the AI path for enabled mode %s',
+      async (mode) => {
+        prismaMock.user.findUnique.mockResolvedValue({
+          aiCategorizationMode: mode,
+        })
+        aiCategorizerMock.categorizeBatch.mockResolvedValue([])
+
+        await service.preview('user-1', 'src-1', csvFile())
+
+        expect(aiCategorizerMock.categorizeBatch).toHaveBeenCalledTimes(1)
+      },
+    )
+
+    it('looks the mode up for the requesting user, selecting only that field', async () => {
+      await service.preview('user-1', 'src-1', csvFile())
+
+      expect(prismaMock.user.findUnique).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        select: { aiCategorizationMode: true },
+      })
+    })
+
+    it('keeps the preview when the mode lookup itself throws', async () => {
+      prismaMock.user.findUnique.mockRejectedValue(new Error('db is down'))
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation()
+
+      try {
+        const r = await service.preview('user-1', 'src-1', csvFile())
+
+        // Advisory, exactly as the credential lookup this gate replaced was.
+        expect(r.rows).toHaveLength(2)
+        expect(prismaMock.category.findMany).not.toHaveBeenCalled()
+        expect(aiCategorizerMock.categorizeBatch).not.toHaveBeenCalled()
+        expect(warn).toHaveBeenCalledWith(
+          'AI mode lookup failed for user user-1: db is down',
+        )
+      } finally {
+        warn.mockRestore()
+      }
+    })
+
+    it('does no AI work for a user whose mode is OFF -- not even the candidate query', async () => {
+      prismaMock.user.findUnique.mockResolvedValue({
+        aiCategorizationMode: AiCategorizationMode.OFF,
+      })
+
+      const r = await service.preview('user-1', 'src-1', csvFile())
+
+      // The leaf-category query is the expensive half (a per-category
+      // aggregate) AND it sits outside the try/catch that makes AI
+      // advisory, so a failure in it would reject the preview. A user who
+      // never opted into AI must not reach it at all.
+      expect(prismaMock.category.findMany).not.toHaveBeenCalled()
+      expect(aiCategorizerMock.categorizeBatch).not.toHaveBeenCalled()
+
+      // ...and the preview itself is untouched by that early exit.
+      expect(r.rows).toHaveLength(2)
+      expect(r.rows[0].aiSuggestedCategoryId).toBeUndefined()
+    })
+
+    it('does no AI work when the user row cannot be found', async () => {
+      prismaMock.user.findUnique.mockResolvedValue(null)
+
+      await service.preview('user-1', 'src-1', csvFile())
+
+      expect(prismaMock.category.findMany).not.toHaveBeenCalled()
+      expect(aiCategorizerMock.categorizeBatch).not.toHaveBeenCalled()
+    })
+
+    it('does not call the provider when there is no leaf category to suggest', async () => {
+      prismaMock.category.findMany.mockResolvedValue([
+        { id: 'cat-parent', name: 'Food', _count: { children: 2 } },
+      ])
+
+      await service.preview('user-1', 'src-1', csvFile())
+
+      expect(aiCategorizerMock.categorizeBatch).not.toHaveBeenCalled()
     })
   })
 

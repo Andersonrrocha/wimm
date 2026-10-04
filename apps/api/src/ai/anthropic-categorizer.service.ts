@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { Injectable, Logger } from '@nestjs/common'
+import { AiKeyResolverService } from './ai-key-resolver.service'
 import type { AiProvider } from './ai-provider.interface'
 import type {
   AiCategorizeCandidate,
@@ -23,11 +24,16 @@ const MIN_CONFIDENCE = 0.6
  * Failure mode: callers wrap in try/catch — anything thrown here means the
  * row stays unmatched, no badge in the UI, no error to the user.
  *
- * `implements AiProvider` (Stage 3 of the desktop completion program) is the
- * only change this class carries for the contract: `categorizeBatch`'s
- * signature already matched `AiProvider` exactly, so nothing about its
- * behavior moved -- `id` is new, but it is a plain constant nothing reads
- * except `AiProviderRegistry` (`ai-provider.registry.ts`).
+ * Credential: this provider resolves its own Anthropic key, per call, through
+ * `AiKeyResolverService` -- `categorizeBatch` takes a `userId`, not a key (see
+ * `AiProvider`). When the user has no usable key (AI off, BYOK without a
+ * stored key, SERVER without `ANTHROPIC_API_KEY`, or a key that no longer
+ * decrypts) it returns `[]` without building a client or touching the
+ * network, the same "no key means skip AI" the resolver already applies
+ * instead of throwing.
+ *
+ * `id` is a plain constant nothing reads except `AiProviderRegistry`
+ * (`ai-provider.registry.ts`).
  */
 @Injectable()
 export class AnthropicCategorizerService implements AiProvider {
@@ -35,8 +41,10 @@ export class AnthropicCategorizerService implements AiProvider {
 
   readonly id = 'anthropic' as const
 
+  constructor(private readonly keys: AiKeyResolverService) {}
+
   async categorizeBatch(args: {
-    apiKey: string
+    userId: string
     transactions: AiCategorizeInput[]
     candidates: AiCategorizeCandidate[]
   }): Promise<AiCategorizeResult[]> {
@@ -44,7 +52,10 @@ export class AnthropicCategorizerService implements AiProvider {
       return []
     }
 
-    const client = new Anthropic({ apiKey: args.apiKey })
+    const apiKey = await this.keys.resolveForUser(args.userId)
+    if (!apiKey) return []
+
+    const client = new Anthropic({ apiKey })
 
     const candidateById = new Map(args.candidates.map((c) => [c.id, c]))
 
