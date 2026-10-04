@@ -49,4 +49,31 @@ describe('createAuthorizeRequest', () => {
     expect(a.nonce).not.toBe(b.nonce)
     expect(a.verifier.length).toBeGreaterThanOrEqual(43)
   })
+
+  it('derives the three values independently of one another', () => {
+    const request = createAuthorizeRequest(base)
+    expect(request.state).not.toBe(request.verifier)
+    expect(request.nonce).not.toBe(request.verifier)
+    expect(request.state).not.toBe(request.nonce)
+  })
+
+  it('never puts the PKCE verifier anywhere in the authorize URL', () => {
+    const request = createAuthorizeRequest(base)
+
+    // The verifier is the one value that must not leave this process: it is
+    // the proof redeemed at the token endpoint. Sending it as `state` or
+    // `nonce` -- which the across-calls test above cannot detect, since
+    // those stay distinct between calls either way -- would put it in the
+    // authorize URL, the user's browser history, and every log between here
+    // and OpenAI, defeating PKCE entirely. Assert on the whole URL rather
+    // than on named parameters, so a future parameter cannot leak it either.
+    const url = new URL(request.url)
+    for (const [name, value] of url.searchParams) {
+      expect({ name, leaksVerifier: value === request.verifier }).toEqual({
+        name,
+        leaksVerifier: false,
+      })
+    }
+    expect(request.url).not.toContain(request.verifier)
+  })
 })
