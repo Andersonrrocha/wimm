@@ -1,6 +1,9 @@
 import { generateKeyPairSync, type KeyObject } from 'crypto'
 import { JwtService } from '@nestjs/jwt'
 import {
+  CHATGPT_SCOPES,
+} from './chatgpt-oidc'
+import {
   exchangeCode,
   isSharingGranted,
   verifyIdentity,
@@ -52,6 +55,145 @@ describe('exchangeCode', () => {
       grant_type: 'authorization_code', client_id: 'client-1',
       code: 'c', code_verifier: 'v', resource: 'https://api.openai.com/v1',
     })
+  })
+
+  const exchange = (tokenBody: unknown) =>
+    exchangeCode({
+      config,
+      clientId: 'client-1',
+      code: 'c',
+      verifier: 'v',
+      redirectUri: 'http://127.0.0.1:1/auth/callback',
+      nonce: 'n-1',
+      fetchImpl: fetchStub(tokenBody),
+    })
+
+  describe('an omitted scope (RFC 6749 makes it optional)', () => {
+    // Reading an omission as "no scopes" breaks the HAPPY path, which is why
+    // these matter more than they look: `sharing` would be false on a
+    // perfectly good connection, and the offline_access requirement below
+    // would be skipped so a missing refresh token would pass unnoticed.
+    const withoutScope = (idToken: string) => ({
+      access_token: 'access-value',
+      refresh_token: 'refresh-value',
+      id_token: idToken,
+      expires_in: 3600,
+      // `scope` deliberately absent.
+    })
+
+    it('falls back to the requested scopes', async () => {
+      const result = await exchange(withoutScope(signIdToken({ nonce: 'n-1' })))
+      expect(result.scopes).toBe(CHATGPT_SCOPES)
+    })
+
+    it('still reports sharing as granted', async () => {
+      const result = await exchange(withoutScope(signIdToken({ nonce: 'n-1' })))
+      expect(result.sharing).toBe(true)
+    })
+
+    it('still requires a refresh token, because offline_access was requested', async () => {
+      const { refresh_token: _dropped, ...noRefresh } = withoutScope(
+        signIdToken({ nonce: 'n-1' }),
+      )
+      await expect(exchange(noRefresh)).rejects.toThrow(/refresh/i)
+    })
+
+    it('treats an empty-string scope the same as an absent one', async () => {
+      const result = await exchange({
+        ...withoutScope(signIdToken({ nonce: 'n-1' })),
+        scope: '',
+      })
+      expect(result.scopes).toBe(CHATGPT_SCOPES)
+    })
+  })
+
+  it('returns a null refresh token, not an empty string, when offline_access is not granted', async () => {
+    // `''` would flow into a refresh grant as a real-looking value and fail
+    // at the server rather than here.
+    const result = await exchange({
+      access_token: 'access-value',
+      id_token: signIdToken({ nonce: 'n-1' }),
+      expires_in: 3600,
+      scope: 'openid profile email',
+    })
+    expect(result.refreshToken).toBeNull()
+    expect(result.sharing).toBe(false)
+  })
+
+  it('enforces the issuer, not merely the signature', async () => {
+    // Named for the property, rather than relying on it being caught
+    // incidentally by a leak-table scenario.
+    const foreignIssuer = new JwtService().sign(
+      {
+        iss: 'https://auth.evil.example',
+        aud: 'client-1',
+        sub: 'user-sub',
+        nonce: 'n-1',
+      },
+      { privateKey, algorithm: 'RS256', keyid: 'k1', expiresIn: '5m' },
+    )
+    await expect(
+      exchange({
+        access_token: 'access-value',
+        refresh_token: 'refresh-value',
+        id_token: foreignIssuer,
+        expires_in: 3600,
+        scope: CHATGPT_SCOPES,
+      }),
+    ).rejects.toThrow()
+  })
+
+  it('re-fetches a signing key after a verification failure, so a reused kid recovers', async () => {
+    // The cache is keyed by `kid`, so an ordinary rotation to a NEW kid is a
+    // miss and re-fetches anyway. This covers the one case where the drop is
+    // load-bearing: the issuer reusing a kid for new key material. Without
+    // the drop, the stale key would be cached and every later attempt would
+    // fail until the user quit the app.
+    const other = generateKeyPairSync('rsa', { modulusLength: 2048 })
+    let served: KeyObject = other.publicKey
+    let jwksCalls = 0
+    const rotating = (async (input: string | URL) => {
+      const url = String(input)
+      if (url === config.jwks_uri) {
+        jwksCalls += 1
+        return {
+          ok: true,
+          json: async () => ({
+            keys: [{ ...served.export({ format: 'jwk' }), kid: 'k1', alg: 'RS256' }],
+          }),
+        }
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          access_token: 'access-value',
+          refresh_token: 'refresh-value',
+          id_token: signIdToken({ nonce: 'n-1' }),
+          expires_in: 3600,
+          scope: CHATGPT_SCOPES,
+        }),
+      }
+    }) as unknown as typeof fetch
+
+    const call = () =>
+      exchangeCode({
+        config,
+        clientId: 'client-1',
+        code: 'c',
+        verifier: 'v',
+        redirectUri: 'http://127.0.0.1:1/auth/callback',
+        nonce: 'n-1',
+        fetchImpl: rotating,
+      })
+
+    // First attempt: the served key does not match the signing key.
+    await expect(call()).rejects.toThrow()
+    expect(jwksCalls).toBe(1)
+
+    // The issuer now serves the right material under the same kid.
+    served = publicKey
+    await expect(call()).resolves.toMatchObject({ subject: 'user-sub' })
+    expect(jwksCalls).toBe(2)
   })
 
   it('rejects an id_token whose nonce does not match', async () => {

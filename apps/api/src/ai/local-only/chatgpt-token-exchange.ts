@@ -1,6 +1,10 @@
 import { createPublicKey } from 'crypto'
 import { JwtService } from '@nestjs/jwt'
-import { CHATGPT_RESOURCE, type OidcConfig } from './chatgpt-oidc'
+import {
+  CHATGPT_RESOURCE,
+  CHATGPT_SCOPES,
+  type OidcConfig,
+} from './chatgpt-oidc'
 
 export const SHARING_SCOPE = 'chatgpt.tokens.use.direct'
 
@@ -17,7 +21,13 @@ export function isSharingGranted(scopes: string): boolean {
 
 export interface ChatGptCredentials {
   accessToken: string
-  refreshToken: string
+  /**
+   * `null` when `offline_access` was not granted, meaning this connection
+   * cannot be refreshed and will need a fresh sign-in when it expires.
+   * Deliberately not `''`: an empty string would flow into a refresh grant
+   * as a real-looking value and fail at the server instead of here.
+   */
+  refreshToken: string | null
   idToken: string
   expiresAt: Date
   scopes: string
@@ -167,7 +177,16 @@ export async function exchangeCode(args: {
   if (typeof data.id_token !== 'string' || !data.id_token) {
     throw new Error('ChatGPT token exchange returned no identity token.')
   }
-  const scopes = typeof data.scope === 'string' ? data.scope : ''
+  // RFC 6749 section 5.1 makes `scope` OPTIONAL in a token response when it
+  // is identical to what was requested. Reading an omission as "no scopes"
+  // is exactly backwards and breaks the happy path twice over: `sharing`
+  // would be false, telling the user their plan lacks a capability it just
+  // granted, and the `offline_access` requirement below would be skipped so
+  // a missing refresh token would pass unnoticed. An omission means "what
+  // you asked for". Task 8 already applies the same fallback on refresh;
+  // this keeps the two consistent.
+  const scopes =
+    typeof data.scope === 'string' && data.scope ? data.scope : CHATGPT_SCOPES
   const needsRefresh = scopes.split(/\s+/).includes('offline_access')
   if (
     needsRefresh &&
@@ -193,7 +212,10 @@ export async function exchangeCode(args: {
 
   return {
     accessToken: data.access_token,
-    refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token : '',
+    refreshToken:
+      typeof data.refresh_token === 'string' && data.refresh_token
+        ? data.refresh_token
+        : null,
     idToken: data.id_token,
     expiresAt: new Date(Date.now() + expiresInSeconds * 1000),
     scopes,
