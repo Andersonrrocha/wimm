@@ -1615,6 +1615,12 @@ git commit -m "feat(ai): store ChatGPT credentials under the per-profile secret"
 - **A stored `refreshToken` of `null` means this connection cannot be refreshed.** Return `null` immediately rather than posting a grant with no token.
 - **Pending rotation:** persist rotated credentials via `savePending` *before* verifying the new `id_token`; `promotePending` only after verification succeeds. If verification fails because the signing-key service is unavailable, leave the pending state in place and return a retryable error — a later call, including after a restart, resumes from it rather than replaying a consumed refresh token.
 - **Check `promotePending`'s return value.** It is `false` when its compare-and-swap lost, which leaves the OLD credentials live. Treating that as success means the next refresh replays an already-consumed token, and a server that detects reuse may revoke the whole grant. On `false`, re-read rather than assuming.
+- **`savePending` throws when the connection has been disconnected.** A refresh that was in flight when the user clicked Disconnect must not resurrect it. Treat the throw as "the attempt is over", not as a retryable error. **A store failure that is *not* a disconnect is different**: re-read before answering, because replying `null` to a database error tells the caller "reconnect" about a connection that is still there.
+- **Call `verifyIdentity` with `nonce: null` and `verifyAt: <when the rotation was received>`.** Both arguments exist for this task specifically, and both were added to Task 6 after review:
+  - **`nonce: null`** — a refresh has no new authorize request, so there is no nonce to compare. `null` is the only way to say that; `undefined` and `''` are refused, so "forgot to pass it" can never be mistaken for "deliberately absent". Task 6's guard would otherwise reject every refresh outright.
+  - **`verifyAt`** — store the receipt time alongside the pending rotation and verify against it. A signing-key outage can outlast the identity token *without* invalidating the refresh token, so verifying a resumed rotation against the current clock fails permanently, on a refresh token that has already been consumed. That is precisely the "account that silently cannot reconnect" this pending-state design exists to prevent, and it is the subtlety the reference implementation encodes as `receivedAt`.
+- **Pass the bounded `fetch` into discovery too.** `discoverOidcConfig(fetchImpl?)` takes one. Calling `this.discover()` with no argument leaves discovery unbounded, and a discovery that never settles wedges that user permanently: the first call never resolves, every later caller joins the same single-flight promise, and the entry is released only by a process restart.
+
 ### Decisions taken during Task 8, each with its reason
 
 Confirmed from the implementation, rather than left implicit:
@@ -1622,7 +1628,7 @@ Confirmed from the implementation, rather than left implicit:
 - **An omitted `refresh_token` keeps the stored one.** RFC 6749 §6 makes reissuing optional; the old token stays valid when no new one is sent.
 - **A verified subject different from the stored one clears the connection and returns `null`.** A refresh must stay the same account. The pending rotation carries the stored subject provisionally, which is what makes the comparison possible.
 - **Every network call has a 30-second timeout, including the JWKS fetch.** This matters *because* of single-flight: every concurrent caller for a user shares one promise, so a single hung POST would block all of them indefinitely.
-- **Only `invalid_grant` clears the connection.** A 5xx or an unreachable endpoint leaves it alone — disconnecting users during an OpenAI outage would be the wrong failure.
+- **Six codes clear the connection, not one.** `invalid_grant`, `invalid_refresh_token`, `token_expired`, `refresh_token_expired`, `refresh_token_invalidated`, `refresh_token_reused` — the exact set OpenAI's reference implementation applies to refresh grants, and explicitly *not* to the authorization-code exchange or to a plain 401. An earlier version matched only `invalid_grant`, which left the other five classified as retryable: the connection would never clear, never report "reconnect", and every later call would post the same dead token forever with no automatic way out. Matching is exact, on `error` as a string or `error.code`, so a description that merely contains a code does not count. A 5xx or an unreachable endpoint still leaves the connection alone — disconnecting users during an OpenAI outage would be the wrong failure.
 - **Expiry carries a 60-second skew.** Without it a token with seconds left passes the check, the categorize request starts, and the token dies in flight: a 401 and a wasted round trip. The skew covers request latency; it cannot cover disagreement about the time between this machine and OpenAI, which is why Task 9 must also retry.
 - **A refresh response with no `id_token` is rejected**, even though the refresh token has already been consumed by then. This is deliberately *not* treated like an omitted `scope` or `refresh_token`: OpenAI's own reference implementation reads `data.id_token` with no handling for its absence, so the field is present in practice, and tolerating an omission would mean speculating against the only evidence available. Recorded as a risk rather than coded around.
 
@@ -1631,10 +1637,6 @@ Confirmed from the implementation, rather than left implicit:
 - **Treat a 401 from the Responses API as "call `accessTokenFor` again", never as "disconnected".** The expiry skew cannot cover clock disagreement with OpenAI, and a resumed rotation may hand back an access token that has already expired. One retry closes both.
 - **A genuinely invalid rotation — as opposed to one that merely cannot be verified during an outage — stays pending until the user reconnects**, because Task 6's `verifyIdentity` does not distinguish "unavailable" from "invalid". Closing this means classifying the verification failure, which is its own change.
 
-- **`savePending` throws when the connection has been disconnected.** A refresh that was in flight when the user clicked Disconnect must not resurrect it. Treat the throw as "the attempt is over", not as a retryable error.
-- **Call `verifyIdentity` with `nonce: null` and `verifyAt: <when the rotation was received>`.** Both arguments exist for this task specifically, and both were added to Task 6 after review:
-  - **`nonce: null`** — a refresh has no new authorize request, so there is no nonce to compare. `null` is the only way to say that; `undefined` and `''` are refused, so "forgot to pass it" can never be mistaken for "deliberately absent". Task 6's guard would otherwise reject every refresh outright.
-  - **`verifyAt`** — store the receipt time alongside the pending rotation and verify against it. A signing-key outage can outlast the identity token *without* invalidating the refresh token, so verifying a resumed rotation against the current clock fails permanently, on a refresh token that has already been consumed. That is precisely the "account that silently cannot reconnect" this pending-state design exists to prevent, and it is the subtlety the reference implementation encodes as `receivedAt`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1935,6 +1937,30 @@ Remove the in-flight map and re-run: the ten-concurrent-callers test must FAIL w
 git add apps/api/src/ai/local-only/chatgpt-refresh.service.ts apps/api/src/ai/local-only/chatgpt-refresh.service.spec.ts
 git commit -m "feat(ai): refresh ChatGPT tokens single-flight with pending rotation"
 ```
+
+---
+
+## Follow-ups scheduled before Task 9
+
+Two pieces of work that reviews identified, reproduced, and deliberately did not patch into the task that found them. They are scheduled rather than noted, and the controller runs them directly — they are not task-brief numbered tasks.
+
+### F1. Tie a rotation to the credential generation it started from
+
+**Why:** reproduced against the real store by Task 8's review. A refresh that is in flight across a disconnect *and a full reconnect* is not stopped: the real `savePending` only requires that *some* live connection exists, so the stale rotation is promoted over the fresh sign-in. The same flight receiving a terminal grant error calls `clearTokens` and wipes the new sign-in. Task 7's review found the disconnect-only half of this; Task 8's review found the reconnect half and reproduced both.
+
+**Severity, stated honestly:** the window is a few hundred milliseconds, or up to the 30-second timeout if the endpoint hangs, and it needs a disconnect plus a complete OAuth sign-in inside that window. Very hard to hit. The outcome is a silently different or downgraded account, which for a personal-finance app is not a tolerable "rare".
+
+**Shape of the fix:** the store, not the service. `savePending` and `clearTokens` become conditional on the live blob still being the one the flight read — the same compare-and-swap `promotePending` already uses and that is already proven by a forced-interleaving test. That needs the live ciphertext to reach the caller as an opaque generation token, e.g. `load` returning `{ credentials, generation }`, with `savePending(userId, credentials, receivedAt, expectedGeneration)`.
+
+**Must carry a forced-interleaving test**, because a sequential suite cannot distinguish a conditional write from an unconditional one — Task 7's compare-and-swap passed every test with the clause deleted.
+
+### F2. De-duplicate what Tasks 6 and 8 now both carry
+
+**Why:** `MAX_EXPIRES_IN_SECONDS`, the `expires_in` clamp, the JSON-parse wrapper, the scope fallback and the `isSharingGranted` call exist in both `chatgpt-token-exchange.ts` and `chatgpt-refresh.service.ts`. `AGENTS.md` says to abstract on the second duplication, and this is the second.
+
+**Why it was not done in Task 8:** the implementer declined to edit a file that had already been reviewed, which was the right call. `AGENTS.md` also says never to mix a refactor with a feature change.
+
+**Shape:** extract into a shared module inside `ai/local-only/`, as its own `refactor(ai)` commit with no behaviour change — the existing tests of both files must pass untouched, which is what makes it a refactor rather than a rewrite.
 
 ---
 

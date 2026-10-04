@@ -54,9 +54,13 @@ export class ChatGptRefreshRetryableError extends Error {
 
 /**
  * Collaborators arrive as one object so a spec can substitute each without a
- * DI container. `local-only-ai.module.ts` supplies the real ones with a
- * factory (the store takes a plain-string secret, so Nest cannot resolve it
- * by type anyway).
+ * DI container.
+ *
+ * **Nothing wires this into Nest yet.** `local-only-ai.module.ts` still holds
+ * only the stub provider, and the wiring has to be a `useFactory`, because
+ * `ChatGptConnectionStore` takes a plain-string secret that Nest cannot
+ * resolve by type. Task 9's provider is the first consumer and owns that
+ * factory; until it exists, this service is reachable only from its spec.
  */
 export interface ChatGptRefreshDeps {
   store: Pick<
