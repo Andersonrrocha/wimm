@@ -1353,6 +1353,7 @@ git commit -m "feat(ai): exchange the ChatGPT code and verify the id_token"
 - `load` on an undecryptable row returns `null` rather than throwing — matching how `AiKeyResolverService` treats a decrypt failure as "no key", which is what makes an exported profile degrade instead of crash.
 - `clearTokens` nulls `tokensEncrypted` and `pendingEncrypted` but **retains `clientId` and `accountLabel`**.
 - `status` never returns a token — only `{ connected, sharing, accountLabel, expiresAt }`.
+- **`refreshToken` is `string | null`** (Task 6). Persist and return `null` as `null`; never coerce it to `''`. A connection with a null refresh token is usable until it expires and then needs a fresh sign-in.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1495,6 +1496,16 @@ describe('ChatGptConnectionStore', () => {
     expect(row?.pendingEncrypted).toBeNull()
   })
 
+  it('round-trips a null refresh token as null, not as an empty string', async () => {
+    // Task 6 returns `refreshToken: null` when `offline_access` was not
+    // granted. It must survive the JSON round trip as null: coerced to `''`
+    // it would later be handed to a refresh grant as a real-looking value
+    // and fail at the authorization server instead of here.
+    await store.save(userId, 'client-1', credentials({ refreshToken: null }))
+    const loaded = await store.load(userId)
+    expect(loaded?.refreshToken).toBeNull()
+  })
+
   it('leaves the live credential intact when a rotation is saved but not promoted', async () => {
     await store.save(userId, 'client-1', credentials())
     await store.savePending(userId, credentials({ accessToken: 'rotated-access' }))
@@ -1550,7 +1561,8 @@ git commit -m "feat(ai): store ChatGPT credentials under the per-profile secret"
 **Requirements:**
 - **Single-flight per user.** Several categorize calls in one import batch must share one in-flight refresh. Follow the desktop renderer's existing single-flight-with-queue interceptor pattern; do not invent a second one.
 - `grant_type=refresh_token` with `client_id`, `refresh_token`, `resource`.
-- **A refresh response may omit `scope`.** Fall back to the stored scopes; do not treat the omission as a scope downgrade.
+- **A refresh response may omit `scope`.** Fall back to the stored scopes; do not treat the omission as a scope downgrade. Task 6 applies the same RFC 6749 §5.1 fallback on the initial exchange — keep the two consistent.
+- **A stored `refreshToken` of `null` means this connection cannot be refreshed.** Return `null` immediately rather than posting a grant with no token.
 - **Pending rotation:** persist rotated credentials via `savePending` *before* verifying the new `id_token`; `promotePending` only after verification succeeds. If verification fails because the signing-key service is unavailable, leave the pending state in place and return a retryable error — a later call, including after a restart, resumes from it rather than replaying a consumed refresh token.
 
 - [ ] **Step 1: Write the failing test**
@@ -1604,7 +1616,7 @@ class StoreDouble {
 
 const expired = (): ChatGptCredentials => ({
   accessToken: 'old-access',
-  refreshToken: 'old-refresh',
+  refreshToken: 'old-refresh' as string | null,
   idToken: 'old-id',
   // Already past: forces a refresh on the next access.
   expiresAt: new Date(Date.now() - 1_000),
@@ -1761,6 +1773,18 @@ describe('ChatGptRefreshService', () => {
     const { calls, fetchImpl } = tokenEndpointSpy(() => ({ ok: true, body: {} }))
 
     await expect(build(store, fetchImpl).accessTokenFor(USER)).resolves.toBe('still-good')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('returns null without attempting a grant when the stored refresh token is null', async () => {
+    // Task 6 yields `refreshToken: null` when `offline_access` was not
+    // granted. Posting a refresh grant with no token would be a guaranteed
+    // round trip to a 400; fail locally instead.
+    const store = new StoreDouble()
+    store.current = { ...expired(), refreshToken: null }
+    const { calls, fetchImpl } = tokenEndpointSpy(() => ({ ok: true, body: {} }))
+
+    await expect(build(store, fetchImpl).accessTokenFor(USER)).resolves.toBeNull()
     expect(calls).toHaveLength(0)
   })
 
