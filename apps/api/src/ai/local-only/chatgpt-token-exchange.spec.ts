@@ -298,24 +298,112 @@ describe('exchangeCode', () => {
       },
     )
 
+    const verify = (override: Record<string, unknown>, claims = { nonce: 'n-1' }) =>
+      verifyIdentity({
+        idToken: signIdToken(claims),
+        clientId: 'client-1',
+        issuer: config.issuer,
+        jwksUri: config.jwks_uri,
+        nonce: 'n-1',
+        fetchImpl: fetchStub({}),
+        ...override,
+      } as never)
+
     it.each([
-      ['an empty client id', { clientId: '' }],
-      ['an empty issuer', { issuer: '' }],
-      ['an empty nonce', { nonce: '' }],
-    ])('refuses to verify with %s, rather than skipping the check', async (_why, override) => {
-      // jsonwebtoken guards its own checks with truthiness, so an empty
-      // string SKIPS the check instead of tightening it. All three fail open.
+      ['an empty client id', { clientId: '' }, /client id and an issuer/],
+      ['an empty issuer', { issuer: '' }, /client id and an issuer/],
+      ['an empty nonce', { nonce: '' }, /requires a nonce/],
+      ['an undefined nonce', { nonce: undefined }, /requires a nonce/],
+    ])(
+      'refuses to verify with %s, rather than skipping the check',
+      async (_why, override, expected) => {
+        // jsonwebtoken guards its own checks with truthiness, so an empty
+        // string SKIPS the check instead of tightening it. All of these fail
+        // open without the guard.
+        await expect(verify(override)).rejects.toThrow(expected)
+      },
+    )
+
+    it('accepts an explicit null nonce, which is how a refresh says it has none', async () => {
+      // A refresh has no new authorize request, so there is no nonce to
+      // compare. `null` is the only way to say that; Task 8 depends on it.
+      await expect(
+        verify({ nonce: null }, { nonce: undefined } as never),
+      ).resolves.toMatchObject({ subject: 'user-sub' })
+    })
+
+    it('still rejects a mismatched nonce when one is expected', async () => {
+      await expect(verify({}, { nonce: 'DIFFERENT' })).rejects.toThrow(/nonce/i)
+    })
+
+    it('verifies a saved rotation against its receipt time, not the current clock', async () => {
+      // A signing-key outage can outlast the identity token without
+      // invalidating the refresh token. Verifying such a token against the
+      // current clock would fail permanently, on a refresh token that has
+      // already been consumed -- an account that can never reconnect.
+      const receivedAt = new Date(Date.now() - 60 * 60 * 1000)
+      const tokenFromThen = new JwtService().sign(
+        {
+          iss: config.issuer,
+          aud: 'client-1',
+          sub: 'user-sub',
+          iat: Math.floor(receivedAt.getTime() / 1000),
+          exp: Math.floor(receivedAt.getTime() / 1000) + 300,
+        },
+        { privateKey, algorithm: 'RS256', keyid: 'k1' },
+      )
+
+      // Expired as of now...
       await expect(
         verifyIdentity({
-          idToken: signIdToken({ nonce: 'n-1' }),
+          idToken: tokenFromThen,
           clientId: 'client-1',
           issuer: config.issuer,
           jwksUri: config.jwks_uri,
-          nonce: 'n-1',
+          nonce: null,
           fetchImpl: fetchStub({}),
-          ...override,
         }),
-      ).rejects.toThrow(/client id, an issuer and a nonce/)
+      ).rejects.toThrow()
+
+      // ...but valid as of when it was received.
+      await expect(
+        verifyIdentity({
+          idToken: tokenFromThen,
+          clientId: 'client-1',
+          issuer: config.issuer,
+          jwksUri: config.jwks_uri,
+          nonce: null,
+          verifyAt: receivedAt,
+          fetchImpl: fetchStub({}),
+        }),
+      ).resolves.toMatchObject({ subject: 'user-sub' })
+    })
+
+    it('rejects a token whose azp names another client', async () => {
+      await expect(
+        verify({}, { nonce: 'n-1', azp: 'another-client' } as never),
+      ).rejects.toThrow(/another client/i)
+    })
+
+    it('rejects multiple audiences without this client as the authorized party', async () => {
+      // `audience` alone accepts a token minted for several clients at once,
+      // of which we are merely one. OIDC Core requires `azp` in that case.
+      await expect(
+        verify({}, {
+          nonce: 'n-1',
+          aud: ['client-1', 'another-client'],
+        } as never),
+      ).rejects.toThrow(/multiple audiences/i)
+    })
+
+    it('accepts multiple audiences when azp names this client', async () => {
+      await expect(
+        verify({}, {
+          nonce: 'n-1',
+          aud: ['client-1', 'another-client'],
+          azp: 'client-1',
+        } as never),
+      ).resolves.toMatchObject({ subject: 'user-sub' })
     })
   })
 

@@ -116,7 +116,24 @@ export async function verifyIdentity(args: {
   clientId: string
   issuer: string
   jwksUri: string
-  nonce: string
+  /**
+   * The nonce generated for the authorize request, or **`null` to state that
+   * there is no nonce to compare** -- which is true of a refresh, because no
+   * new authorize request happened. `null` is the only way to say that: an
+   * `undefined` or empty string is refused, so "forgot to pass it" can never
+   * be mistaken for "deliberately absent". The reference implementation
+   * makes the same distinction, passing `undefined` on refresh and a real
+   * nonce on the initial exchange.
+   */
+  nonce: string | null
+  /**
+   * Verify as of this moment rather than now. Set it to when the token was
+   * RECEIVED when resuming a saved rotation: a signing-key outage can
+   * outlast the identity token without invalidating the refresh token, and
+   * verifying such a token against the current clock would fail permanently
+   * on a refresh token that has already been consumed.
+   */
+  verifyAt?: Date
   fetchImpl?: typeof fetch
 }): Promise<{ subject: string }> {
   // `jsonwebtoken` guards its own checks with truthiness -- `if
@@ -127,9 +144,15 @@ export async function verifyIdentity(args: {
   // them at today's single call site, but this function is exported and Task
   // 8 calls it directly, so the guard belongs here rather than in the
   // caller.
-  if (!args.clientId || !args.issuer || !args.nonce) {
+  if (!args.clientId || !args.issuer) {
     throw new Error(
-      'ChatGPT identity verification refuses to run without a client id, an issuer and a nonce.',
+      'ChatGPT identity verification refuses to run without a client id and an issuer.',
+    )
+  }
+  // `null` is a decision; anything else falsy is a mistake.
+  if (args.nonce !== null && (typeof args.nonce !== 'string' || !args.nonce)) {
+    throw new Error(
+      'ChatGPT identity verification requires a nonce, or an explicit null when refreshing.',
     )
   }
 
@@ -156,13 +179,23 @@ export async function verifyIdentity(args: {
     args.fetchImpl ?? fetch,
   )
 
-  let payload: { sub?: unknown; nonce?: unknown; exp?: unknown }
+  let payload: {
+    sub?: unknown
+    nonce?: unknown
+    exp?: unknown
+    aud?: unknown
+    azp?: unknown
+  }
   try {
     payload = await jwt.verifyAsync(args.idToken, {
       publicKey,
       algorithms: ['RS256'],
       issuer: args.issuer,
       audience: args.clientId,
+      // `clockTimestamp` is in seconds (jsonwebtoken's convention).
+      ...(args.verifyAt === undefined
+        ? {}
+        : { clockTimestamp: Math.floor(args.verifyAt.getTime() / 1000) }),
     })
   } catch (error) {
     // A rotated key looks exactly like a bad signature from here, so drop
@@ -175,8 +208,24 @@ export async function verifyIdentity(args: {
 
   // Generated in Task 4 and checked here. Generating a nonce and not
   // comparing it is the same class of mistake as unchecked PKCE.
-  if (payload.nonce !== args.nonce) {
+  if (args.nonce !== null && payload.nonce !== args.nonce) {
     throw new Error('ChatGPT identity nonce did not match the request.')
+  }
+  // OIDC Core: whenever `azp` is present it must be this client, and when
+  // `aud` carries more than one value `azp` is REQUIRED and must be this
+  // client. Checking `audience` alone accepts a token minted for several
+  // clients at once, of which we are merely one.
+  if (payload.azp !== undefined && payload.azp !== args.clientId) {
+    throw new Error('ChatGPT identity was authorized for another client.')
+  }
+  if (
+    Array.isArray(payload.aud) &&
+    payload.aud.length > 1 &&
+    payload.azp !== args.clientId
+  ) {
+    throw new Error(
+      'ChatGPT identity has multiple audiences without naming this client as the authorized party.',
+    )
   }
   if (typeof payload.sub !== 'string' || !payload.sub) {
     throw new Error('ChatGPT identity token has no subject.')
