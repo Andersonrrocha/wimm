@@ -37,7 +37,18 @@ export class ChatGptRefreshRetryableError extends Error {
   constructor(message: string, cause?: unknown) {
     super(message)
     this.name = 'ChatGptRefreshRetryableError'
-    this.cause = cause
+    // Non-enumerable, as a native `cause` is. Every message this module
+    // produces is static, but `cause` holds whatever a collaborator threw --
+    // so it is the one place where "no credential in an error" would depend
+    // on someone else's behaviour. Keeping it off the enumerable surface
+    // keeps it out of `JSON.stringify`, out of a spread, and out of any log
+    // line that serialises the object rather than reading `.message`.
+    Object.defineProperty(this, 'cause', {
+      value: cause,
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    })
   }
 }
 
@@ -57,7 +68,15 @@ export interface ChatGptRefreshDeps {
     | 'promotePending'
     | 'clearTokens'
   >
-  discover: () => Promise<OidcConfig>
+  /**
+   * Takes the caller's `fetch` so discovery is bounded by the same timeout as
+   * every other call here. Without it a discovery that never settles wedges
+   * the user permanently: the first call never resolves, every later caller
+   * joins the same single-flight promise, and the entry is never released
+   * until the process restarts. Compatible with `discoverOidcConfig`, whose
+   * signature is `(fetchImpl?: typeof fetch)`.
+   */
+  discover: (fetchImpl?: typeof fetch) => Promise<OidcConfig>
   fetchImpl: typeof fetch
   verifyIdentity: typeof verifyIdentity
   /** Per-request timeout; defaults to 30 seconds. */
@@ -147,7 +166,7 @@ export class ChatGptRefreshService {
   ): Promise<{ clientId: string; config: OidcConfig } | null> {
     const clientId = await this.store.loadClientId(userId)
     if (clientId === null) return null
-    return { clientId, config: await this.discover() }
+    return { clientId, config: await this.discover(this.fetchImpl) }
   }
 
   /** Posts the refresh grant and persists what comes back as a pending rotation. */
@@ -183,7 +202,7 @@ export class ChatGptRefreshService {
     const receivedAt = new Date()
 
     if (!response.ok) {
-      if (await isInvalidGrant(response)) {
+      if (await isTerminalGrantFailure(response)) {
         // The refresh token itself was refused: this connection is over.
         await this.store.clearTokens(userId)
         return null
@@ -199,12 +218,20 @@ export class ChatGptRefreshService {
 
     try {
       await this.store.savePending(userId, credentials, receivedAt)
-    } catch {
+    } catch (cause) {
       // The store refuses when there is no live connection, i.e. the user
       // disconnected while this refresh was in flight. That attempt is over:
-      // nothing is saved and nothing may be revived, so this is a plain
-      // `null`, not a retry.
-      return null
+      // nothing is saved and nothing may be revived, so it is a plain `null`.
+      //
+      // But a database error is not a disconnect, and answering `null` to it
+      // tells the caller "reconnect" about a connection that is still there.
+      // Distinguish the two by re-reading: gone means disconnected.
+      const stillLive = await this.store.load(userId).catch(() => null)
+      if (stillLive === null) return null
+      throw new ChatGptRefreshRetryableError(
+        'ChatGPT rotated credentials could not be saved; the next call starts again from the stored connection.',
+        cause,
+      )
     }
     return this.completeRotation(userId, context, {
       credentials,
@@ -295,18 +322,46 @@ function isExpired(credentials: ChatGptCredentials): boolean {
   return credentials.expiresAt.getTime() - EXPIRY_SKEW_MS <= Date.now()
 }
 
-/** The body of a refused grant, read only to see whether it says `invalid_grant`. */
-async function isInvalidGrant(response: Response): Promise<boolean> {
+/**
+ * The codes that mean this refresh token is dead and only a new sign-in will
+ * help. Taken from OpenAI's reference implementation, which applies exactly
+ * this set to `grant_type=refresh_token` responses -- and explicitly NOT to
+ * the authorization-code exchange or to API admission failures, including a
+ * plain 401.
+ *
+ * Matching only `invalid_grant`, as an earlier version did, leaves the other
+ * five classified as retryable: the connection would never clear, never
+ * report "reconnect", and every later call would post the same dead token
+ * forever with no automatic way out.
+ */
+const TERMINAL_GRANT_ERRORS = new Set([
+  'invalid_grant',
+  'invalid_refresh_token',
+  'token_expired',
+  'refresh_token_expired',
+  'refresh_token_invalidated',
+  'refresh_token_reused',
+])
+
+/** Whether a refused grant says the refresh token itself is finished. */
+async function isTerminalGrantFailure(response: Response): Promise<boolean> {
+  let body: unknown
   try {
-    const body: unknown = await response.json()
-    return (
-      typeof body === 'object' &&
-      body !== null &&
-      (body as { error?: unknown }).error === 'invalid_grant'
-    )
+    body = await response.json()
   } catch {
+    // An unreadable body is not evidence that the token is dead.
     return false
   }
+  if (typeof body !== 'object' || body === null) return false
+  const error = (body as { error?: unknown }).error
+  // Two shapes: `error` as a bare code, and `error: { code }`. Exact matches
+  // only -- a description that merely contains a code must not count.
+  if (typeof error === 'string') return TERMINAL_GRANT_ERRORS.has(error)
+  if (typeof error === 'object' && error !== null) {
+    const code = (error as { code?: unknown }).code
+    return typeof code === 'string' && TERMINAL_GRANT_ERRORS.has(code)
+  }
+  return false
 }
 
 async function readJson(response: Response): Promise<Record<string, unknown>> {

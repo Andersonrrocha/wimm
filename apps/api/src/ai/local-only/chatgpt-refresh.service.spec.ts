@@ -188,7 +188,10 @@ const build = (
   store: StoreDouble,
   fetchImpl: typeof fetch,
   verifyIdentity: VerifyIdentity = verifyAccepting,
-  extra: { timeoutMs?: number; discover?: () => Promise<OidcConfig> } = {},
+  extra: {
+    timeoutMs?: number
+    discover?: (fetchImpl?: typeof fetch) => Promise<OidcConfig>
+  } = {},
 ) =>
   new ChatGptRefreshService({
     store: store as never,
@@ -390,6 +393,232 @@ describe('ChatGptRefreshService', () => {
       await expect(service.accessTokenFor(USER)).resolves.toBeNull()
       expect(calls).toHaveLength(0)
       expect(discoveries).toBe(0)
+    })
+
+    // Taken from OpenAI's reference implementation, which applies exactly
+    // this set to refresh grants. Matching only `invalid_grant` leaves the
+    // other five classified as retryable, so the connection would never
+    // clear and every later call would post the same dead token forever.
+    it.each([
+      'invalid_grant',
+      'invalid_refresh_token',
+      'token_expired',
+      'refresh_token_expired',
+      'refresh_token_invalidated',
+      'refresh_token_reused',
+    ])('clears the connection when the grant is refused with %s', async (code) => {
+      const store = new StoreDouble()
+      store.current = expired()
+      const { fetchImpl } = tokenEndpointSpy(() => ({
+        ok: false,
+        body: { error: code },
+      }))
+
+      await expect(
+        build(store, fetchImpl).accessTokenFor(USER),
+      ).resolves.toBeNull()
+      expect(store.cleared).toBe(1)
+      expect(store.current).toBeNull()
+    })
+
+    it('reads a terminal code from a nested error object too', async () => {
+      const store = new StoreDouble()
+      store.current = expired()
+      const { fetchImpl } = tokenEndpointSpy(() => ({
+        ok: false,
+        body: { error: { code: 'refresh_token_expired' } },
+      }))
+
+      await expect(
+        build(store, fetchImpl).accessTokenFor(USER),
+      ).resolves.toBeNull()
+      expect(store.cleared).toBe(1)
+    })
+
+    it.each([
+      ['a description that merely contains a code', { error: 'server_error', error_description: 'invalid_grant' }],
+      ['an unrelated code', { error: 'temporarily_unavailable' }],
+      ['a bare string body', 'invalid_grant'],
+      // These two are what distinguish an exact match from a substring
+      // match: each CONTAINS a terminal code without being one.
+      ['a code that merely contains a terminal one', { error: 'not_invalid_grant' }],
+      ['a terminal code with a suffix', { error: 'refresh_token_expired_maybe' }],
+      ['a nested code that merely contains a terminal one', { error: { code: 'xx_invalid_grant_yy' } }],
+    ])('does not clear the connection for %s', async (_why, body) => {
+      // Clearing on a transient failure would disconnect users during an
+      // OpenAI outage, which is the wrong failure to choose.
+      const store = new StoreDouble()
+      store.current = expired()
+      const { fetchImpl } = tokenEndpointSpy(() => ({ ok: false, body }))
+
+      await expect(
+        build(store, fetchImpl).accessTokenFor(USER),
+      ).rejects.toThrow()
+      expect(store.cleared).toBe(0)
+      expect(store.current).not.toBeNull()
+    })
+
+    it('bounds discovery with the same timeout as every other call', async () => {
+      // Discovery used to be called with no arguments, so the service's
+      // bounded fetch never reached it. A discovery that never settled then
+      // wedged the user permanently: the first call never resolved, every
+      // later caller joined the same single-flight promise, and the entry
+      // was never released until the process restarted.
+      const store = new StoreDouble()
+      store.current = expired()
+      const { fetchImpl } = tokenEndpointSpy(() => ({ ok: true, body: rotated() }))
+      const seen: Array<typeof fetch | undefined> = []
+      const service = build(store, fetchImpl, verifyAccepting, {
+        discover: async (passed) => {
+          seen.push(passed)
+          return config
+        },
+      })
+
+      await service.accessTokenFor(USER)
+
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toBeDefined()
+      // And it is a bounded wrapper, not the global fetch.
+      expect(seen[0]).not.toBe(globalThis.fetch)
+    })
+
+    it('passes the bounded fetch to verifyIdentity as well', async () => {
+      // The service documents that the timeout covers the JWKS fetch too,
+      // which only holds if the bounded fetch is handed down.
+      const store = new StoreDouble()
+      store.current = expired()
+      const { fetchImpl } = tokenEndpointSpy(() => ({ ok: true, body: rotated() }))
+      const seen: Array<typeof fetch | undefined> = []
+      const service = build(store, fetchImpl, async (args) => {
+        seen.push(args.fetchImpl)
+        return { subject: 'sub-1' }
+      })
+
+      await service.accessTokenFor(USER)
+
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toBeDefined()
+      expect(seen[0]).not.toBe(globalThis.fetch)
+    })
+
+    it('releases only its own in-flight entry, never every other user\'s', async () => {
+      // `inFlight.clear()` instead of `.delete(userId)` passed the whole
+      // suite, because every other test uses a single user and the two are
+      // then indistinguishable. Telling them apart needs a THIRD caller:
+      // user 1 finishing must not evict user 2's entry, or a later caller
+      // for user 2 would start a second grant instead of joining the first.
+      //
+      // The shared `StoreDouble` cannot express this -- it has one slot and
+      // ignores `userId`, so user 2 would see user 1's promoted credential
+      // and skip refreshing. A first version of this test measured only that.
+      const perUser = new Map<string, ChatGptCredentials | null>([
+        ['user-1', expired()],
+        ['user-2', expired()],
+      ])
+      const store = {
+        async load(userId: string) {
+          return perUser.get(userId) ?? null
+        },
+        async loadPending() {
+          return null
+        },
+        async loadClientId() {
+          return 'client-1'
+        },
+        async save() {},
+        async savePending() {},
+        async promotePending() {
+          return true
+        },
+        async clearTokens(userId: string) {
+          perUser.set(userId, null)
+        },
+      }
+
+      const gates: Array<() => void> = []
+      const fetchImpl = (async (input: string | URL) => {
+        if (String(input) !== config.token_endpoint) throw new Error('unexpected')
+        await new Promise<void>((resolve) => gates.push(resolve))
+        return { ok: true, status: 200, json: async () => rotated() }
+      }) as unknown as typeof fetch
+
+      /** Opens gate `index` once the grant has actually reached the endpoint. */
+      const open = async (index: number) => {
+        for (let tick = 0; tick < 500 && gates.length <= index; tick += 1) {
+          await new Promise((resolve) => setImmediate(resolve))
+        }
+        const release = gates[index]
+        if (release === undefined) throw new Error(`grant ${index} never arrived`)
+        release()
+      }
+
+      const service = build(store as never, fetchImpl)
+
+      const first = service.accessTokenFor('user-1')
+      const second = service.accessTokenFor('user-2')
+
+      // Let user 1's grant finish. Under `.clear()` this evicts user 2 too.
+      await open(0)
+      await first
+
+      // A later caller for user 2, whose grant is still outstanding.
+      const third = service.accessTokenFor('user-2')
+      await open(1)
+      await Promise.all([second, third])
+
+      // Two grants in total, one per user. A third would mean user 2's entry
+      // was evicted when user 1 finished, so the later caller did not join.
+      expect(gates).toHaveLength(2)
+    })
+
+    it('does not say "reconnect" when the store fails for a reason other than a disconnect', async () => {
+      // A database error is not a disconnect. Answering `null` to it tells
+      // the caller to reconnect about a connection that is still there.
+      const store = new StoreDouble()
+      store.current = expired()
+      store.savePending = async () => {
+        throw new Error('database is unavailable')
+      }
+      const { fetchImpl } = tokenEndpointSpy(() => ({ ok: true, body: rotated() }))
+
+      await expect(
+        build(store, fetchImpl).accessTokenFor(USER),
+      ).rejects.toBeInstanceOf(ChatGptRefreshRetryableError)
+      // The connection is untouched, so a later call can try again.
+      expect(store.current).not.toBeNull()
+      expect(store.cleared).toBe(0)
+    })
+
+    it('still answers null when the store refuses because the user disconnected', async () => {
+      const store = new StoreDouble()
+      store.current = expired()
+      store.savePending = async () => {
+        // What the real store throws once `clearTokens` has run...
+        store.current = null
+        throw new Error('No live ChatGPT connection to rotate.')
+      }
+      const { fetchImpl } = tokenEndpointSpy(() => ({ ok: true, body: rotated() }))
+
+      await expect(
+        build(store, fetchImpl).accessTokenFor(USER),
+      ).resolves.toBeNull()
+    })
+
+    it('keeps the cause off the error\'s enumerable surface', async () => {
+      // Every message here is static, but `cause` holds whatever a
+      // collaborator threw -- the one place where "no credential in an
+      // error" would rest on someone else's behaviour.
+      const SECRET = 'SENTINEL-COLLABORATOR-SECRET-4b19'
+      const error = new ChatGptRefreshRetryableError('static message', {
+        leaked: SECRET,
+      })
+
+      expect(JSON.stringify(error)).not.toContain(SECRET)
+      expect(JSON.stringify({ ...error })).not.toContain(SECRET)
+      expect(Object.keys(error)).not.toContain('cause')
+      // ...and it is still reachable for a deliberate read.
+      expect(error.cause).toEqual({ leaked: SECRET })
     })
 
     it('returns null when there is no connection at all', async () => {
