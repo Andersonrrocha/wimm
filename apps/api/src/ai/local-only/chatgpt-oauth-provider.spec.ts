@@ -436,6 +436,26 @@ describe('ChatGptOAuthProvider', () => {
   describe('a 401', () => {
     const unauthorized = () => json(401, { error: { message: 'expired' } })
 
+    it('does not re-send the payload when the refresh returns the same token', async () => {
+      // The clock-skew case, which every other retry test misses because
+      // they script two DISTINCT tokens. `accessTokenFor` decides expiry
+      // from the local clock, so when OpenAI's clock is ahead of ours it
+      // hands back the very same string -- and re-posting it would transmit
+      // the user's transaction descriptions and amounts a second time for a
+      // provably identical 401.
+      const { provider, calls, accessTokenFor } = build({
+        tokens: [TOKEN_A, TOKEN_A],
+        responses: [unauthorized(), goodAnswer()],
+      })
+
+      await expect(run(provider)).rejects.toThrow()
+
+      // It asked for a fresh token...
+      expect(accessTokenFor).toHaveBeenCalledTimes(2)
+      // ...and having been given the same one, did NOT post again.
+      expect(calls).toHaveLength(1)
+    })
+
     it('is retried once with whatever token the refresh service now hands back', async () => {
       const { provider, calls, accessTokenFor } = build({
         tokens: [TOKEN_A, TOKEN_B],

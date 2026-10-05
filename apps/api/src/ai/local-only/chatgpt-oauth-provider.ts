@@ -226,10 +226,14 @@ export interface ChatGptOAuthProviderDeps {
  * amounts. It tells OpenAI not to retain the request, which for a personal
  * finance app is a privacy property, not a performance option.
  *
- * **A 401 is retried exactly once**, by asking the refresh service for a token
- * again. `accessTokenFor` refreshes a minute early, which covers request
- * latency, and a resumed rotation can hand back a token that has since
- * expired; one retry closes those. A second would be a loop.
+ * **A 401 is retried at most once**, by asking the refresh service for a
+ * token again -- and only when that returns a *different* token. The refresh
+ * service decides expiry from the local clock, so when OpenAI's clock is
+ * ahead of ours it returns the same string, and re-posting it would send the
+ * transaction descriptions and amounts again for a provably identical 401.
+ * `accessTokenFor` refreshing early covers request latency, and a resumed
+ * rotation can hand back a token that has since expired; one retry closes
+ * those. A second would be a loop.
  *
  * **No credential in a log, an error message or a result.** The token goes in
  * one header. Every error message here is static, and a failure of `fetch`
@@ -296,6 +300,19 @@ export class ChatGptOAuthProvider implements AiProvider {
     if (response.status === 401 && !isSharingCode(code)) {
       const retryToken = await this.accessToken(args.userId)
       if (retryToken === null) return []
+      // Only re-send when the token actually changed. `accessTokenFor`
+      // decides expiry from the LOCAL clock, so if OpenAI's clock is ahead
+      // of ours it hands back the very same string -- and re-posting it
+      // would transmit the user's transaction descriptions and amounts a
+      // second time for a provably identical 401. For a personal-finance
+      // app that second transmission is the part that matters, not the
+      // wasted round trip.
+      if (retryToken === token) {
+        this.logger.warn(
+          'ChatGPT rejected the access token and refreshing returned the same one; not retrying.',
+        )
+        throw failure(response.status, code)
+      }
       response = await this.post(retryToken, body)
       code = response.ok ? null : await readErrorCode(response)
     }
