@@ -381,13 +381,14 @@ describe('ChatGptRefreshService', () => {
     })
 
     it('refreshes a token that is about to expire, rather than handing out one that dies in flight', async () => {
-      // 30 seconds left: valid by the clock, but a categorize request started
-      // with it would very likely 401 mid-flight. The skew refreshes first.
+      // Four minutes left: valid by the clock, and comfortably inside the
+      // five-minute skew. The wide skew is what absorbs clock disagreement
+      // with OpenAI, which only bites when OUR clock is behind theirs.
       const store = new StoreDouble()
       store.current = {
         ...expired(),
         accessToken: 'nearly-dead',
-        expiresAt: new Date(Date.now() + 30_000),
+        expiresAt: new Date(Date.now() + 4 * 60_000),
       }
       const { calls, fetchImpl } = tokenEndpointSpy(() => ({
         ok: true,
@@ -401,12 +402,15 @@ describe('ChatGptRefreshService', () => {
     })
 
     it('leaves a token alone when it expires well beyond the skew window', async () => {
-      // The skew must not be so wide that it refreshes constantly.
+      // The skew must not be so wide that it refreshes constantly. Thirty
+      // minutes, not five: five IS the skew, so it would sit exactly on the
+      // boundary and the test would read as a threshold check rather than a
+      // "plenty of time" one.
       const store = new StoreDouble()
       store.current = {
         ...expired(),
         accessToken: 'plenty-of-time',
-        expiresAt: new Date(Date.now() + 5 * 60_000),
+        expiresAt: new Date(Date.now() + 30 * 60_000),
       }
       const { calls, fetchImpl } = tokenEndpointSpy(() => ({ ok: true, body: {} }))
 

@@ -21,8 +21,6 @@ import {
  */
 const REQUEST_TIMEOUT_MS = 30_000
 
-/** Same ceiling Task 6 applies on the initial exchange. */
-
 /**
  * Nothing was lost: the stored credentials are untouched, or a rotation is
  * saved and will be resumed, so a later `accessTokenFor` may succeed.
@@ -236,7 +234,11 @@ export class ChatGptRefreshService {
       )
     }
 
-    const credentials = readRotation(await readJsonObject(response, 'ChatGPT token refresh response'), live, receivedAt)
+    const credentials = readRotation(
+    await readJsonObject(response, 'ChatGPT token refresh response'),
+    live,
+    receivedAt,
+  )
 
     try {
       await this.store.savePending(userId, credentials, receivedAt, generation)
@@ -339,12 +341,19 @@ export class ChatGptRefreshService {
  *
  * Without this, a token with two seconds left passes the check, the
  * categorize request starts, and the token expires in flight -- a 401 and a
- * wasted round trip. Task 9 must still retry a 401 by calling
- * `accessTokenFor` again, because this cannot cover clock skew between this
- * machine and OpenAI; the skew covers request latency, the retry covers
- * disagreement about the time.
+ * wasted round trip.
+ *
+ * Five minutes, not one. The skew also absorbs clock disagreement with
+ * OpenAI, and only in one direction: a 401 happens when OUR clock is BEHIND
+ * theirs, because we then believe a dead token is still live. A clock that
+ * runs ahead merely refreshes early, which costs nothing. Five minutes
+ * covers realistic drift on a machine with no working NTP, and the provider's
+ * retry cannot help here -- asked again, this returns the same string, which
+ * is why Task 9 now refuses to re-send the payload in that case. Drift
+ * beyond this would need a forced refresh, which is a real design change
+ * rather than a constant.
  */
-const EXPIRY_SKEW_MS = 60_000
+const EXPIRY_SKEW_MS = 300_000
 
 function isExpired(credentials: ChatGptCredentials): boolean {
   return credentials.expiresAt.getTime() - EXPIRY_SKEW_MS <= Date.now()
