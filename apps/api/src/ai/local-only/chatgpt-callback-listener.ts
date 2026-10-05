@@ -160,6 +160,15 @@ function validateCallback(
   // - before `code`, because otherwise a refusal (no code, by definition)
   //   reads as a malformed callback and the server's own reason is lost.
   //
+  // The residual cost of that ordering, stated rather than left implicit: if
+  // the authorization server omits `state` on an error redirect -- contrary
+  // to the RFC, and unverified against OpenAI -- a genuine refusal is
+  // reported as a state mismatch instead of "you declined". The alternative
+  // ordering is worse: this listener closes on the first request, so checking
+  // `error` first would let any local process both end a sign-in AND label it
+  // "you declined" with an unauthenticated `?error=access_denied`. A worse
+  // message in one non-conforming case beats a forgeable one in every case.
+  //
   // The value is compared, never echoed: `error` and `error_description` are
   // text from outside this process that would otherwise reach a log. A
   // repeated `error` is an ambiguity, so it takes the generic branch -- the
