@@ -2126,8 +2126,64 @@ The blast radius is bounded by `mapSuggestions`' candidate-id check: the worst c
 
 **Ordering note:** this task introduces the `openBrowser` option because it is the consumer of it; Task 11 supplies the real `shell.openExternal` implementation and adds the compose-time refusal. Declaring the option here is what lets this task's spec pass `openBrowser: async () => undefined` without depending on a later task.
 
+**Files (added during pre-flight):**
+- Modify: `apps/api/src/ai/local-only/chatgpt-token-exchange.ts` — `verifyIdentity` also returns the account label
+- Modify: `apps/api/src/ai/local-only/chatgpt-callback-listener.ts` — surface an OAuth `error` from the callback
+
 **Interfaces:**
 - Produces: `POST /api/ai/chatgpt/connect`, `GET /api/ai/chatgpt/status`, `POST /api/ai/chatgpt/disconnect`
+
+### The connect sequence, written out
+
+The brief previously called `ChatGptConnectFlow` "a thin composition of Tasks 3-8" and named none of the functions. It is where seven tasks meet, and the order is load-bearing — getting it wrong is exactly what the Task 4/5 circular-contract defect was. Compose it in this order:
+
+```ts
+const config = await discoverOidcConfig(fetchImpl)
+// Reuse the durable per-installation client ID when there is one. Dynamic
+// registration issues it once; re-registering would invalidate every
+// previously stored identity, because it is the `id_token` audience.
+const existingClientId = await store.loadClientId(userId)
+
+const listener = await startCallbackListener({ timeoutMs })
+const request = createAuthorizeRequest({
+  config, redirectUri: listener.redirectUri, appName, existingClientId,
+})
+// ARM BEFORE OPENING THE BROWSER. A fast callback must not arrive unarmed.
+const pending = listener.awaitCallback(request.state)
+await openBrowser(request.url)
+const { code, clientId } = await pending
+
+const credentials = await exchangeCode({
+  config, clientId, code,
+  verifier: request.verifier,
+  redirectUri: listener.redirectUri,
+  nonce: request.nonce,
+})
+await store.save(userId, clientId, credentials)
+```
+
+`listener.close()` belongs in a `finally`: a flow that throws between binding and the callback must not leave the port held.
+
+### Three cross-task changes this task needs, each settled during pre-flight
+
+**1. The consent gate — and `ImportsService` cannot be the one to decide it.** `ImportsService` gates AI work on `aiCategorizationMode`, which defaults to `OFF`. A user who connects ChatGPT and never touches the mode would therefore be silently skipped. The gate cannot be taught about ChatGPT: `ImportsService` is reachable from `app.module.ts` and so may never import anything under `ai/local-only/` — checked, it imports nothing from there today.
+
+**So a successful connect must set the mode.** Use `BYOK`: it means the user supplied their own credential, which is exactly what a ChatGPT connection is, and the `AiProvider` doc comment already records that `SERVER` and `BYOK` mean "use whichever provider this composition wires up" rather than naming a vendor — so no fourth enum value, no shared-package change, no migration.
+
+- **Connect:** if the mode is `OFF`, set it to `BYOK`. If it is already non-`OFF`, leave it — that is the user's existing choice.
+- **Disconnect:** set it back to `OFF` **only if** `aiApiKeyEncrypted` is also null. A user may hold an Anthropic key *and* a ChatGPT connection; disconnecting one must not silently switch AI off while the other credential is still there.
+
+**2. `accountLabel` has no source yet.** Task 7's store only *retains* it and nothing ever writes it, so `status()` would always report `null` and the UI would have no account to name. The label must come from the **verified** payload — we request `openid profile email`, so the `id_token` carries an email claim, but reading it with a second unverified decode would be trusting a token twice over. Have `verifyIdentity` return it instead:
+
+```ts
+Promise<{ subject: string; accountLabel: string | null }>
+```
+
+`accountLabel` is the `email` claim when it is a non-empty string, otherwise `null`. Everything already verified about the token covers it. The connect flow then writes it alongside `save`.
+
+**3. A denied consent is currently indistinguishable from a broken callback.** OAuth redirects a refusal back as `error=access_denied` with **no `code`**, and the listener never reads `error` — so it rejects with "did not carry exactly one code", and the user is told something went wrong when in fact they declined. Surface it: when the callback carries an `error` parameter, reject with that reason distinguishable from a malformed callback, and map a denial to its own message. "You declined" is not "something failed", and the design's failure table already demands one message per cause.
+
+**Still accepted knowingly from Task 5:** because the listener closes on the first request, any local process can end a sign-in attempt with one request to the port. It cannot forge a success without the armed `state`, and keeping the listener open after a bad request would be the worse trade.
 
 **Requirements:**
 - `connect` runs discovery, starts the listener, calls the injected `openBrowser`, awaits the callback, exchanges, stores, and returns **status only**.
