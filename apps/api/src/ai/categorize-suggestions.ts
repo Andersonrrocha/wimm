@@ -102,9 +102,34 @@ export function mapSuggestions(
   const candidateById = new Map(candidates.map((c) => [c.id, c]))
 
   const out: AiCategorizeResult[] = []
-  for (const s of input.suggestions ?? []) {
-    if (typeof s.index !== 'number') continue
-    const confidence = typeof s.confidence === 'number' ? s.confidence : 0
+  // `Array.isArray`, not `?? []`: a `suggestions` of `42` or `{ length: 0 }`
+  // is not iterable and threw a raw TypeError out of `categorizeBatch`. The
+  // caller catches that and logs it, so the cost was the WHOLE batch's
+  // suggestions, silently, rather than the one bad entry -- and the exposure
+  // is the Anthropic path, which is the live one: OpenAI's `strict: true`
+  // constrains items to objects, Anthropic's non-strict `input_schema` does
+  // not.
+  const suggestions = Array.isArray(input.suggestions) ? input.suggestions : []
+  for (const s of suggestions) {
+    // A `null` element threw on the first property read, with the same
+    // whole-batch cost.
+    if (typeof s !== 'object' || s === null) continue
+    // `typeof NaN === 'number'`, and an index far outside the batch is just
+    // as unusable, so bound it to a real row rather than only type-check it.
+    if (
+      typeof s.index !== 'number' ||
+      !Number.isInteger(s.index) ||
+      s.index < 0
+    ) {
+      continue
+    }
+    // Clamped to [0,1]. A model answering `42` kept its category (the floor
+    // below only catches the low side) and the preview rendered it as
+    // "4200%" -- `imports-page.tsx` does `Math.round(confidence * 100)`.
+    const raw = typeof s.confidence === 'number' && Number.isFinite(s.confidence)
+      ? s.confidence
+      : 0
+    const confidence = Math.min(Math.max(raw, 0), 1)
     let categoryId: string | null = null
     if (
       typeof s.categoryId === 'string' &&

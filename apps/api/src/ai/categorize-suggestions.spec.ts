@@ -140,6 +140,80 @@ describe('mapSuggestions', () => {
   })
 })
 
+describe('mapSuggestions: malformed input must cost one entry, never the batch', () => {
+  // Every case below used to throw a raw TypeError out of `categorizeBatch`.
+  // `ImportsService` catches that and logs it, so the price was the WHOLE
+  // batch's suggestions rather than the one bad entry -- and the exposure is
+  // the Anthropic path, the one that runs today: OpenAI's `strict: true`
+  // constrains items to objects, Anthropic's non-strict schema does not.
+  const good = { index: 0, categoryId: 'cat-groceries', confidence: 0.9 }
+
+  it('skips a null element and keeps the rest of the batch', () => {
+    const out = mapSuggestions(
+      { suggestions: [null, good] } as never,
+      candidates,
+    )
+    expect(out).toEqual([{ index: 0, categoryId: 'cat-groceries', confidence: 0.9 }])
+  })
+
+  it.each([42, 'abc', { length: 0 }, null, undefined])(
+    'returns nothing, and does not throw, for a suggestions of %p',
+    (suggestions) => {
+      expect(() =>
+        mapSuggestions({ suggestions } as never, candidates),
+      ).not.toThrow()
+      expect(mapSuggestions({ suggestions } as never, candidates)).toEqual([])
+    },
+  )
+
+  it.each([Number.NaN, 1.5, -4, Number.POSITIVE_INFINITY])(
+    'skips an index of %p, which cannot name a real row',
+    (index) => {
+      const out = mapSuggestions(
+        { suggestions: [{ ...good, index }, good] } as never,
+        candidates,
+      )
+      expect(out).toEqual([{ index: 0, categoryId: 'cat-groceries', confidence: 0.9 }])
+    },
+  )
+})
+
+describe('mapSuggestions: confidence is clamped to [0,1]', () => {
+  const base = { index: 0, categoryId: 'cat-groceries' }
+
+  it('clamps a confidence above 1, which the preview rendered as 4200%', () => {
+    // `imports-page.tsx` does `Math.round(confidence * 100)`.
+    const [result] = mapSuggestions(
+      { suggestions: [{ ...base, confidence: 42 }] } as never,
+      candidates,
+    )
+    expect(result!.confidence).toBe(1)
+    // Still above the floor, so the category is kept.
+    expect(result!.categoryId).toBe('cat-groceries')
+  })
+
+  it('clamps a negative confidence to 0 and drops the category with it', () => {
+    const [result] = mapSuggestions(
+      { suggestions: [{ ...base, confidence: -5 }] } as never,
+      candidates,
+    )
+    expect(result!.confidence).toBe(0)
+    expect(result!.categoryId).toBeNull()
+  })
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, 'high', null, undefined])(
+    'reads a confidence of %p as 0 rather than passing it on',
+    (confidence) => {
+      const [result] = mapSuggestions(
+        { suggestions: [{ ...base, confidence }] } as never,
+        candidates,
+      )
+      expect(result!.confidence).toBe(0)
+      expect(result!.categoryId).toBeNull()
+    },
+  )
+})
+
 describe('buildPrompt', () => {
   const transactions = [
     { index: 0, description: 'Mercado Livre', amount: '123.45' },
