@@ -2094,6 +2094,26 @@ git commit -m "feat(ai): implement the ChatGPT plan-usage provider"
 
 ---
 
+## Open, with owners — from Task 9's review
+
+### F3. The merged provider registry is reachable from nowhere — **owned by whichever task routes imports**
+
+`LocalOnlyAiModule` exports only `ChatGptOAuthProvider`; `AiModule` exports `AiProviderRegistry`. `app.local.module.ts` imports **both**. So the merged registry — the one that actually contains the ChatGPT provider — can be resolved only from inside its own spec. Any future consumer under `AppLocalModule` that injects `AiProviderRegistry` gets `AiModule`'s ChatGPT-less one, `get('chatgpt-oauth')` returns `undefined`, and **nothing errors**.
+
+That is not hypothetical: Task 9's implementer walked into exactly this in its own spec, where `moduleRef.get`'s non-strict default silently resolved the wrong registry. It fixed the spec (`select(...).get(token, { strict: true })`, asserting both directions) but the shape still invites the same mistake, with a doc comment as the only guard.
+
+**Two ways to close it**, for the routing task to choose:
+- Override `provide: AiProviderRegistry` in `AppLocalModule.forRoot` so the local composition resolves the merged list by default. Makes the right thing happen silently, which is stronger than making the wrong thing loud — but needs `LocalOnlyAiModule` to export its list.
+- Give the merged registry its own token. More explicit at every call site, but a wrong injection is still only a wrong value, not a compile error, so it is the weaker of the two.
+
+**A parity assertion is already in place** (`local-only-ai.module.spec.ts`): every id in `AiModule`'s list must also be in the local one. It catches a hosted provider added directly to `AiModule`'s `providers` array, which the old test — checking only `'anthropic'` by name — would have missed.
+
+### F4. `buildPrompt` does not escape transaction descriptions — **pre-existing, unowned**
+
+`description="${t.description}"` is interpolated raw, so a description containing a quote or a newline can break the quoting and steer the model. It predates this plan and both providers are identically exposed, which is why Task 9's differential run could not surface it.
+
+The blast radius is bounded by `mapSuggestions`' candidate-id check: the worst case is a wrong-but-valid suggestion on a preview the user confirms, not an injected id or a leaked credential. Worth fixing — bank statement descriptions are attacker-influenceable in principle — but it is its own change with its own tests, not a note to bury.
+
 ## Task 10: Connect / status / disconnect routes
 
 **Files:**
