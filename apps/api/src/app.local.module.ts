@@ -47,6 +47,10 @@ import { AiModule } from './ai/ai.module'
 import { CategoriesModule } from './categories/categories.module'
 import { CategorizationRulesModule } from './categorization-rules/categorization-rules.module'
 import { ImportsModule } from './imports/imports.module'
+import {
+  CHATGPT_OPEN_BROWSER,
+  type OpenBrowser,
+} from './ai/local-only/chatgpt-connect-flow'
 import { LocalOnlyAiModule } from './ai/local-only/local-only-ai.module'
 import { LocalPrismaService } from './prisma/local/local-prisma.service'
 import { assertUsableAiKeyEncryptionSecret } from './prisma/local/profile-secret'
@@ -106,6 +110,25 @@ export interface AppLocalModuleOptions {
    * it itself, exactly like `sessionToken` above.
    */
   aiKeyEncryptionSecret: string
+
+  /**
+   * How to open a URL in the user's **own** browser, for the ChatGPT
+   * plan-usage sign-in (`POST /ai/chatgpt/connect`).
+   *
+   * Supplied here for the same reason `databaseFile` and `sessionToken` are:
+   * the real implementation is `shell.openExternal`, which is Electron, and
+   * this package stays Electron-free so both composition roots remain
+   * testable offline. Task 11 supplies it from the desktop main process; a
+   * test passes `async () => undefined`.
+   *
+   * Optional, and absent means absent -- `ChatGptConnectFlow.connect`
+   * refuses before it touches the network rather than opening nothing and
+   * waiting out the listener's timeout. It is deliberately NOT defaulted to
+   * something that opens a browser by other means: a desktop app spawning
+   * `open`/`xdg-open` behind this module's back is exactly the kind of
+   * platform behaviour the Electron-free rule exists to keep out.
+   */
+  openBrowser?: OpenBrowser
 }
 
 @Module({})
@@ -184,6 +207,16 @@ export class AppLocalModule {
         // itself instantiates and injects) can receive it through its
         // constructor rather than a compile-time constant.
         { provide: SESSION_TOKEN, useValue: options.sessionToken },
+        // Published for `ChatGptConnectFlow`, which `LocalOnlyAiModule`
+        // builds in a factory. `global: true` above is what makes a provider
+        // declared here visible to an imported module -- the same mechanism
+        // the `PrismaService` alias relies on. `null` rather than left out:
+        // the flow then refuses a connect with a message instead of Nest
+        // failing to resolve a dependency at boot.
+        {
+          provide: CHATGPT_OPEN_BROWSER,
+          useValue: options.openBrowser ?? null,
+        },
         // Global guard for THIS composition root only -- see
         // `SessionTokenGuard`'s doc comment for why it exists and what it
         // protects. Registering `APP_GUARD` here, inside `forRoot`'s

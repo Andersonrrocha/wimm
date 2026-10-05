@@ -14,6 +14,7 @@ import { AiModule } from '../ai.module'
 import { AI_PROVIDERS, AiProviderRegistry } from '../ai-provider.registry'
 import type { AiProvider } from '../ai-provider.interface'
 import { AnthropicCategorizerService } from '../anthropic-categorizer.service'
+import { ChatGptConnectFlow } from './chatgpt-connect-flow'
 import { ChatGptConnectionStore } from './chatgpt-connection.store'
 import { ChatGptOAuthProvider } from './chatgpt-oauth-provider'
 import type { ChatGptCredentials } from './chatgpt-token-exchange'
@@ -188,6 +189,21 @@ describe('LocalOnlyAiModule (wired)', () => {
 
       expect(hosted.get('anthropic')).toBeDefined()
       expect(hosted.has('chatgpt-oauth')).toBe(false)
+    })
+  })
+
+  describe('the connect flow', () => {
+    it('is resolvable, and refuses a connect when nothing published a browser opener', async () => {
+      // This module is booted here with no composition root, so
+      // `CHATGPT_OPEN_BROWSER` is unpublished and the optional injection
+      // yields nothing. The flow must then refuse by name -- before
+      // discovery, before binding a port -- rather than fail to resolve at
+      // boot or open nothing and wait out the listener's timeout.
+      const flow = inLocal(ChatGptConnectFlow)
+
+      await expect(flow.connect(userId)).rejects.toThrow(/browser/i)
+      // Nothing was spent finding that out.
+      expect(fetchSpy).not.toHaveBeenCalled()
     })
   })
 

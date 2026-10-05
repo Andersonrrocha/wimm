@@ -210,7 +210,11 @@ type VerifyIdentity = (args: {
   nonce: string | null
   verifyAt?: Date
   fetchImpl?: typeof fetch
-}) => Promise<{ subject: string }>
+  // `accountLabel` is part of the real shape too (the connect flow writes it
+  // from the verified payload); a refresh has no use for it and passes it on
+  // to nobody, but a double that omitted it would no longer type-check
+  // against `typeof verifyIdentity`.
+}) => Promise<{ subject: string; accountLabel: string | null }>
 
 /**
  * Accepts a refresh the way the real function does: `null` is the only
@@ -219,7 +223,7 @@ type VerifyIdentity = (args: {
  */
 const verifyAccepting: VerifyIdentity = async (args) => {
   if (args.nonce !== null) throw new Error('a refresh must pass a null nonce')
-  return { subject: 'sub-1' }
+  return { subject: 'sub-1', accountLabel: null }
 }
 
 const build = (
@@ -534,7 +538,7 @@ describe('ChatGptRefreshService', () => {
       const seen: Array<typeof fetch | undefined> = []
       const service = build(store, fetchImpl, async (args) => {
         seen.push(args.fetchImpl)
-        return { subject: 'sub-1' }
+        return { subject: 'sub-1', accountLabel: null }
       })
 
       await service.accessTokenFor(USER)
@@ -902,7 +906,7 @@ describe('ChatGptRefreshService', () => {
       const seen: Array<{ nonce: string | null; verifyAt?: Date }> = []
       const service = build(store, fetchImpl, async (args) => {
         seen.push({ nonce: args.nonce, verifyAt: args.verifyAt })
-        return { subject: 'sub-1' }
+        return { subject: 'sub-1', accountLabel: null }
       })
 
       await service.accessTokenFor(USER)
@@ -997,7 +1001,10 @@ describe('ChatGptRefreshService', () => {
       const store = new StoreDouble()
       store.current = expired()
       const { fetchImpl } = tokenEndpointSpy(() => ({ ok: true, body: rotated() }))
-      const service = build(store, fetchImpl, async () => ({ subject: 'someone-else' }))
+      const service = build(store, fetchImpl, async () => ({
+        subject: 'someone-else',
+        accountLabel: null,
+      }))
 
       await expect(service.accessTokenFor(USER)).resolves.toBeNull()
       expect(store.cleared).toBe(1)

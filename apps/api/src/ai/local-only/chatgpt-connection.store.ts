@@ -148,20 +148,35 @@ export class ChatGptConnectionStore {
 
   /**
    * Stores a freshly established connection. A new sign-in supersedes any
-   * rotation that was still pending, so the pending slot is cleared; an
-   * existing `accountLabel` is left alone.
+   * rotation that was still pending, so the pending slot is cleared.
    *
    * `clientId` is a separate argument because it outlives the credentials.
+   *
+   * `accountLabel` is optional, and the three cases are distinct:
+   * **omitted** leaves whatever label is already there (this class retains
+   * one across a disconnect, and a caller that does not know the label must
+   * not erase it); **a string** writes it; **`null`** clears it. The connect
+   * flow passes the label its just-verified `id_token` carried, including
+   * `null` -- the status endpoint must name the account that is actually
+   * connected, never one left over from a different sign-in.
    */
   async save(
     userId: string,
     clientId: string,
     credentials: ChatGptCredentials,
+    accountLabel?: string | null,
   ): Promise<void> {
     const data = {
       clientId,
       tokensEncrypted: this.seal(credentials),
       pendingEncrypted: null,
+      // Spread rather than passing `accountLabel` through: Prisma does read
+      // an explicit `undefined` as "field not provided", so the two are
+      // equivalent today -- but "leave the column alone" is the contract
+      // here, and stating it in the shape of the data rather than relying on
+      // that convention is what keeps it true if this object is ever reused
+      // for a raw write.
+      ...(accountLabel === undefined ? {} : { accountLabel }),
       ...mirror(credentials),
     }
     await this.prisma.chatGptConnection.upsert({

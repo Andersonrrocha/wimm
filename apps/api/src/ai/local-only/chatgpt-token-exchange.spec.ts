@@ -440,13 +440,66 @@ describe('exchangeCode', () => {
 })
 
 describe('verifyIdentity', () => {
-  it('returns the verified subject', async () => {
-    const identity = await verifyIdentity({
-      idToken: signIdToken({ nonce: 'n-1' }),
+  const verified = (claims: Record<string, unknown>) =>
+    verifyIdentity({
+      idToken: signIdToken({ nonce: 'n-1', ...claims }),
       clientId: 'client-1', issuer: config.issuer, jwksUri: config.jwks_uri,
       nonce: 'n-1', fetchImpl: fetchStub({}),
     })
+
+  it('returns the verified subject', async () => {
+    const identity = await verified({})
     expect(identity.subject).toBe('user-sub')
+  })
+
+  /**
+   * The account label has to come from HERE, out of the payload this
+   * function has already verified. A second, unverified `decode` elsewhere
+   * would be trusting the token twice over -- once for identity, once for
+   * what to display.
+   */
+  describe('the account label', () => {
+    it('is the verified email claim', async () => {
+      await expect(verified({ email: 'ada@example.com' })).resolves.toMatchObject({
+        accountLabel: 'ada@example.com',
+      })
+    })
+
+    it.each([
+      ['no email claim', {}],
+      ['an empty email claim', { email: '' }],
+      ['a whitespace-only email claim', { email: '   ' }],
+      ['a non-string email claim', { email: 42 }],
+    ])('is null for %s, never a placeholder', async (_why, claims) => {
+      await expect(verified(claims)).resolves.toMatchObject({
+        accountLabel: null,
+      })
+    })
+
+    it('is trimmed', async () => {
+      await expect(verified({ email: '  ada@example.com  ' })).resolves.toMatchObject({
+        accountLabel: 'ada@example.com',
+      })
+    })
+  })
+})
+
+describe('exchangeCode returns the account label beside the credentials', () => {
+  it('carries the label the identity verification produced', async () => {
+    const result = await exchangeCode({
+      config, clientId: 'client-1', code: 'c', verifier: 'v',
+      redirectUri: 'http://127.0.0.1:1/auth/callback', nonce: 'n-1',
+      fetchImpl: fetchStub({
+        access_token: 'access-value', refresh_token: 'refresh-value',
+        id_token: signIdToken({ nonce: 'n-1', email: 'ada@example.com' }),
+        expires_in: 3600, scope: CHATGPT_SCOPES,
+      }),
+    })
+
+    expect(result.accountLabel).toBe('ada@example.com')
+    // The label is not a credential and is not sealed with them: it is a
+    // plain column the status endpoint reads.
+    expect(result.accessToken).toBe('access-value')
   })
 })
 

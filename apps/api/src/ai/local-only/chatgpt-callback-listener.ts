@@ -56,6 +56,26 @@ export interface CallbackResult {
   clientId: string
 }
 
+/**
+ * The user refused consent at the authorization server: the redirect came
+ * back with `error=access_denied` and no `code`.
+ *
+ * Its own class, because declining is not a malfunction and the two must not
+ * read the same. Without it a refusal arrives here as "the callback must
+ * carry exactly one non-empty code", and the user is told something went
+ * wrong when in fact they chose this.
+ *
+ * The authorization server's `error_description` is deliberately NOT carried
+ * on it, and neither is the raw `error` value: both are free text from
+ * outside this process that would end up in a log or an error body.
+ */
+export class ChatGptSignInDeniedError extends Error {
+  constructor() {
+    super('ChatGPT sign-in was declined at the authorization server.')
+    this.name = 'ChatGptSignInDeniedError'
+  }
+}
+
 export interface CallbackListener {
   /** `http://127.0.0.1:<bound port>/auth/callback` — known only after binding. */
   redirectUri: string
@@ -126,6 +146,31 @@ function validateCallback(
   if (states.length !== 1 || states[0] === '' || states[0] !== expectedState) {
     throw new Error(
       'ChatGPT sign-in callback state is missing or does not match.',
+    )
+  }
+
+  // An OAuth error response, which carries no `code` at all. This sits
+  // AFTER the state check and BEFORE the code check, both deliberately:
+  //
+  // - after `state`, because RFC 6749 section 4.1.2.1 requires the
+  //   authorization server to echo `state` on an error response too, so a
+  //   genuine refusal has one. A request that cannot produce the armed state
+  //   is reported as the state failure it is, rather than being allowed to
+  //   name a reason for an attempt it does not belong to;
+  // - before `code`, because otherwise a refusal (no code, by definition)
+  //   reads as a malformed callback and the server's own reason is lost.
+  //
+  // The value is compared, never echoed: `error` and `error_description` are
+  // text from outside this process that would otherwise reach a log. A
+  // repeated `error` is an ambiguity, so it takes the generic branch -- the
+  // same "never take the first" rule the other parameters follow.
+  const errors = query.getAll('error')
+  if (errors.length > 0) {
+    if (errors.length === 1 && errors[0] === 'access_denied') {
+      throw new ChatGptSignInDeniedError()
+    }
+    throw new Error(
+      'ChatGPT sign-in callback reported an error instead of returning a code.',
     )
   }
 

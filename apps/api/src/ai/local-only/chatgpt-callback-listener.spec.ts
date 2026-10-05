@@ -1,6 +1,7 @@
 import { createConnection, createServer } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import {
+  ChatGptSignInDeniedError,
   startCallbackListener,
   type CallbackListener,
 } from './chatgpt-callback-listener'
@@ -387,6 +388,71 @@ describe('startCallbackListener', () => {
     )
     expect(error).toBeInstanceOf(Error)
     expect(error?.message).not.toMatch(/tok-/)
+  })
+
+  describe('an OAuth error response', () => {
+    // A refusal carries `error` and NO `code`, so without this branch it
+    // arrives as "must carry exactly one non-empty code" and the user is
+    // told something broke when in fact they declined.
+    it('reports a declined consent as its own failure', async () => {
+      const listener = await start()
+      const pending = listener.awaitCallback('s-1')
+      await hit(listener.redirectUri, 'error=access_denied&state=s-1')
+
+      const error = await pending.then(
+        () => undefined,
+        (reason: unknown) => reason,
+      )
+      expect(error).toBeInstanceOf(ChatGptSignInDeniedError)
+      expect((error as Error).message).toMatch(/declined/i)
+    })
+
+    it('reports any other error without echoing it', async () => {
+      const listener = await start()
+      const pending = listener.awaitCallback('s-1')
+      await hit(
+        listener.redirectUri,
+        'error=tok-server_error&error_description=tok-free-text&state=s-1',
+      )
+
+      const error = await pending.then(
+        () => undefined,
+        (reason: unknown) => reason,
+      )
+      expect(error).toBeInstanceOf(Error)
+      expect(error).not.toBeInstanceOf(ChatGptSignInDeniedError)
+      // `error` and `error_description` are text from outside this process.
+      expect((error as Error).message).not.toMatch(/tok-/)
+      expect((error as Error).message).toMatch(/reported an error/i)
+    })
+
+    it('treats a repeated error parameter as an ambiguity, not a decline', async () => {
+      const listener = await start()
+      const pending = listener.awaitCallback('s-1')
+      await hit(
+        listener.redirectUri,
+        'error=access_denied&error=access_denied&state=s-1',
+      )
+
+      await expect(pending).rejects.not.toBeInstanceOf(
+        ChatGptSignInDeniedError,
+      )
+    })
+
+    it('still judges the state first, so only this attempt can name a reason', async () => {
+      // Any local process can reach this port. One that guesses no state
+      // must not get to label the attempt "the user declined".
+      const listener = await start()
+      const pending = listener.awaitCallback('s-1')
+      await hit(listener.redirectUri, 'error=access_denied&state=WRONG')
+
+      const error = await pending.then(
+        () => undefined,
+        (reason: unknown) => reason,
+      )
+      expect(error).not.toBeInstanceOf(ChatGptSignInDeniedError)
+      expect((error as Error).message).toMatch(/state/i)
+    })
   })
 
   it('does not echo the requested path in the error message', async () => {

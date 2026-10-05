@@ -23,6 +23,26 @@ export function isSharingGranted(scopes: string): boolean {
   return scopes.split(/\s+/).filter(Boolean).includes(SHARING_SCOPE)
 }
 
+/**
+ * What a verified `id_token` is allowed to tell the rest of the app.
+ *
+ * `accountLabel` comes from here, and only from here, on purpose. We request
+ * `openid profile email`, so the token carries an `email` claim -- but
+ * reading it with a second, unverified `decode` would be trusting the token
+ * twice over, once for identity and once for display. Everything already
+ * verified about this token (signature, issuer, audience, `azp`, nonce,
+ * expiry) covers the claim as well, so the label leaves with the subject.
+ */
+export interface VerifiedIdentity {
+  subject: string
+  /**
+   * The `email` claim when the verified payload carries a non-empty string,
+   * otherwise `null`. Never a placeholder: a connection whose token names no
+   * account has no account name to show, and the UI says so.
+   */
+  accountLabel: string | null
+}
+
 export interface ChatGptCredentials {
   accessToken: string
   /**
@@ -139,7 +159,7 @@ export async function verifyIdentity(args: {
    */
   verifyAt?: Date
   fetchImpl?: typeof fetch
-}): Promise<{ subject: string }> {
+}): Promise<VerifiedIdentity> {
   // `jsonwebtoken` guards its own checks with truthiness -- `if
   // (options.audience)`, `if (options.issuer)` -- so an empty string does not
   // relax the check, it SKIPS it entirely. And a `nonce` of `undefined`
@@ -189,6 +209,7 @@ export async function verifyIdentity(args: {
     exp?: unknown
     aud?: unknown
     azp?: unknown
+    email?: unknown
   }
   try {
     payload = await jwt.verifyAsync(args.idToken, {
@@ -240,7 +261,26 @@ export async function verifyIdentity(args: {
   if (typeof payload.exp !== 'number') {
     throw new Error('ChatGPT identity token has no expiry.')
   }
-  return { subject: payload.sub }
+  // Trimmed, and whitespace-only folded into `null`: a label exists to be
+  // shown, and `' '` is indistinguishable from no label on screen while
+  // being truthy in code.
+  const email = typeof payload.email === 'string' ? payload.email.trim() : ''
+  return { subject: payload.sub, accountLabel: email === '' ? null : email }
+}
+
+/**
+ * What one authorization-code exchange produces: the credentials to store,
+ * plus the account label from the identity verified inside it.
+ *
+ * The label rides along rather than becoming a `ChatGptCredentials` field
+ * because it is not a credential and is not encrypted with them -- it is a
+ * plain column the status endpoint reads. An intersection rather than a
+ * wrapper object so every existing caller of `exchangeCode` keeps reading
+ * `result.accessToken`; the connect flow splits the label off with a rest
+ * destructure before handing the credentials to the store.
+ */
+export type ChatGptExchange = ChatGptCredentials & {
+  accountLabel: string | null
 }
 
 export async function exchangeCode(args: {
@@ -251,7 +291,7 @@ export async function exchangeCode(args: {
   redirectUri: string
   nonce: string
   fetchImpl?: typeof fetch
-}): Promise<ChatGptCredentials> {
+}): Promise<ChatGptExchange> {
   const fetchImpl = args.fetchImpl ?? fetch
   const response = await fetchImpl(args.config.token_endpoint, {
     method: 'POST',
@@ -324,5 +364,6 @@ export async function exchangeCode(args: {
     scopes,
     subject: identity.subject,
     sharing: isSharingGranted(scopes),
+    accountLabel: identity.accountLabel,
   }
 }

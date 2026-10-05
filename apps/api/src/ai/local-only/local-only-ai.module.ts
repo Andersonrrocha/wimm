@@ -4,11 +4,19 @@ import { AiModule, buildAiProviders } from '../ai.module'
 import { AI_PROVIDERS, AiProviderRegistry } from '../ai-provider.registry'
 import { AnthropicCategorizerService } from '../anthropic-categorizer.service'
 import { PrismaService } from '../../prisma/prisma.service'
+import { createAuthorizeRequest } from './chatgpt-authorize'
+import { startCallbackListener } from './chatgpt-callback-listener'
+import {
+  CHATGPT_OPEN_BROWSER,
+  ChatGptConnectFlow,
+  type OpenBrowser,
+} from './chatgpt-connect-flow'
 import { ChatGptConnectionStore } from './chatgpt-connection.store'
+import { ChatGptController } from './chatgpt.controller'
 import { ChatGptOAuthProvider } from './chatgpt-oauth-provider'
 import { discoverOidcConfig } from './chatgpt-oidc'
 import { ChatGptRefreshService } from './chatgpt-refresh.service'
-import { verifyIdentity } from './chatgpt-token-exchange'
+import { exchangeCode, verifyIdentity } from './chatgpt-token-exchange'
 
 /**
  * Local-only AI composition seam.
@@ -41,6 +49,15 @@ import { verifyIdentity } from './chatgpt-token-exchange'
  *   collaborators as one object (so their specs need no DI container), so
  *   each is built by a factory too, supplied with the real store, OIDC
  *   discovery, `fetch` and identity verification.
+ * - `ChatGptConnectFlow` is built the same way, and is the one provider here
+ *   that needs something only the composition root can supply: a way to open
+ *   the user's browser. It arrives under `CHATGPT_OPEN_BROWSER`, published
+ *   by `AppLocalModule.forRoot` from its `openBrowser` option, and is
+ *   injected **optionally** -- `local-only-ai.module.spec.ts` boots this
+ *   module with no composition root at all, and a connect is not what it is
+ *   testing. A flow built without one refuses at `connect`, before it
+ *   touches the network, rather than failing to resolve at boot. Task 11
+ *   turns that into a compose-time refusal.
  *
  * **The provider list.** `AI_PROVIDERS` is a module-private token:
  * `AiModule` builds its own list (the hosted one, `buildAiProviders`) and
@@ -60,6 +77,7 @@ import { verifyIdentity } from './chatgpt-token-exchange'
  */
 @Module({
   imports: [AiModule],
+  controllers: [ChatGptController],
   providers: [
     {
       provide: ChatGptConnectionStore,
@@ -95,6 +113,31 @@ import { verifyIdentity } from './chatgpt-token-exchange'
           fetchImpl: (input, init) => fetch(input, init),
         }),
       inject: [ChatGptRefreshService, ChatGptConnectionStore],
+    },
+    {
+      provide: ChatGptConnectFlow,
+      useFactory: (
+        store: ChatGptConnectionStore,
+        prisma: PrismaService,
+        openBrowser: OpenBrowser | null | undefined,
+      ) =>
+        new ChatGptConnectFlow({
+          store,
+          prisma,
+          discover: discoverOidcConfig,
+          startListener: startCallbackListener,
+          createRequest: createAuthorizeRequest,
+          exchange: exchangeCode,
+          // Absent when nothing published the token (see this module's doc
+          // comment); `connect` refuses rather than guessing.
+          openBrowser: openBrowser ?? null,
+          fetchImpl: (input, init) => fetch(input, init),
+        }),
+      inject: [
+        ChatGptConnectionStore,
+        PrismaService,
+        { token: CHATGPT_OPEN_BROWSER, optional: true },
+      ],
     },
     {
       provide: AI_PROVIDERS,
