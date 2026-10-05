@@ -36,6 +36,10 @@ import { join } from 'path'
 // (not just the type) to resolve.
 import Database = require('better-sqlite3')
 import { AppLocalModule } from './app.local.module'
+import {
+  ChatGptConnectFlow,
+} from './ai/local-only/chatgpt-connect-flow'
+import { LocalOnlyAiModule } from './ai/local-only/local-only-ai.module'
 import { LocalPrismaService } from './prisma/local/local-prisma.service'
 import { PrismaService } from './prisma/prisma.service'
 import { SESSION_TOKEN_HEADER } from './profile/session-token'
@@ -96,6 +100,70 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
 
     afterEach(async () => {
       if (app) await app.close()
+    })
+
+    it("hands its openBrowser option to the connect flow in LocalOnlyAiModule", async () => {
+      // The one test that catches a missing `exports` entry. `global: true`
+      // puts this module into every import set; `exports` is what makes one
+      // of its tokens resolvable ACROSS the boundary, and Nest needs both.
+      // Without the export, `ChatGptConnectFlow` was built with a null opener
+      // and every connect refused -- while the whole suite stayed green,
+      // because the only other test of this wiring supplies its own root
+      // module which does export the token. So this one has to boot the
+      // REAL `AppLocalModule`.
+      const file = freshDatabaseFile('open-browser-wiring')
+      const userId = await seedUser(file, 'opener@example.com', 'opener')
+
+      const opened: string[] = []
+      const moduleRef = await Test.createTestingModule({
+        imports: [
+          AppLocalModule.forRoot({
+            databaseFile: file,
+            sessionToken: TEST_SESSION_TOKEN,
+            aiKeyEncryptionSecret: TEST_AI_KEY_ENCRYPTION_SECRET,
+            openBrowser: async (url: string) => {
+              opened.push(url)
+              // Ends the attempt here rather than waiting out the listener's
+              // five-minute default for a callback no browser will deliver.
+              throw new Error('no browser in this test environment')
+            },
+          }),
+        ],
+      }).compile()
+
+      const fetchSpy = jest
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async (input) =>
+          String(input).includes('.well-known/openid-configuration')
+            ? new Response(
+                JSON.stringify({
+                  issuer: 'https://auth.openai.com',
+                  authorization_endpoint: 'https://auth.openai.com/authorize',
+                  token_endpoint: 'https://auth.openai.com/oauth/token',
+                  jwks_uri: 'https://auth.openai.com/.well-known/jwks.json',
+                  revocation_endpoint: 'https://auth.openai.com/oauth/revoke',
+                }),
+                { status: 200 },
+              )
+            : new Response('{}', { status: 500 }),
+        )
+
+      try {
+        // Strictly from the consuming module: a non-strict resolve would
+        // search the whole container and find the root's own copy, proving
+        // only that the option was published.
+        const flow = moduleRef
+          .select(LocalOnlyAiModule)
+          .get(ChatGptConnectFlow, { strict: true })
+
+        await expect(flow.connect(userId)).rejects.toThrow(/no browser/)
+
+        expect(opened).toHaveLength(1)
+        expect(opened[0]).toContain('auth.openai.com/authorize')
+      } finally {
+        fetchSpy.mockRestore()
+        await moduleRef.close()
+      }
     })
 
     it('lists empty, creates a real Source row, then lists it back', async () => {

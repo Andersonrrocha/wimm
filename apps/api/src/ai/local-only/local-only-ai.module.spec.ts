@@ -12,6 +12,7 @@ import { generateAiKeyEncryptionSecret } from '../../prisma/local/profile-secret
 import { PrismaService } from '../../prisma/prisma.service'
 import { AiModule } from '../ai.module'
 import { AI_PROVIDERS, AiProviderRegistry } from '../ai-provider.registry'
+import { CHATGPT_OPEN_BROWSER } from './chatgpt-connect-flow'
 import type { AiProvider } from '../ai-provider.interface'
 import { AnthropicCategorizerService } from '../anthropic-categorizer.service'
 import { ChatGptConnectFlow } from './chatgpt-connect-flow'
@@ -54,6 +55,24 @@ const credentials = (
 const transactions = [{ index: 0, description: 'Mercado Livre', amount: '1.00' }]
 const candidates = [{ id: 'cat-groceries', name: 'Groceries' }]
 
+/**
+ * A valid OIDC discovery document, so the connect flow gets as far as opening
+ * a browser. Only the issuer is pinned in production; everything else is
+ * discovered, and `discoverOidcConfig` rejects a document whose own issuer
+ * does not match.
+ */
+const discovery = () =>
+  new Response(
+    JSON.stringify({
+      issuer: 'https://auth.openai.com',
+      authorization_endpoint: 'https://auth.openai.com/authorize',
+      token_endpoint: 'https://auth.openai.com/oauth/token',
+      jwks_uri: 'https://auth.openai.com/.well-known/jwks.json',
+      revocation_endpoint: 'https://auth.openai.com/oauth/revoke',
+    }),
+    { status: 200 },
+  )
+
 const answer = () =>
   new Response(
     JSON.stringify({
@@ -88,6 +107,21 @@ describe('LocalOnlyAiModule (wired)', () => {
    * lookup answers with `AiModule`'s and a test of this module's would be
    * silently asserting about the other one.
    */
+  /**
+   * The composition's opener. The test below proves THIS one reaches the flow.
+   *
+   * It records and then throws, for two reasons: the flow would otherwise sit
+   * on the listener's five-minute default waiting for a callback no browser
+   * is going to deliver, and a throwing opener is itself a path worth
+   * covering -- `shell.openExternal` rejects when there is no registered
+   * handler, which on a bare Linux box is the normal case.
+   */
+  const opened: string[] = []
+  const openBrowser = async (url: string): Promise<void> => {
+    opened.push(url)
+    throw new Error('no browser in this test environment')
+  }
+
   const inLocal = <T>(token: new (...args: any[]) => T): T =>
     moduleRef.select(LocalOnlyAiModule).get(token, { strict: true })
   const inAi = <T>(token: new (...args: any[]) => T): T =>
@@ -110,12 +144,23 @@ describe('LocalOnlyAiModule (wired)', () => {
       },
     })
 
+    // Stands in for `AppLocalModule`, which is what publishes these in the
+    // real composition. Note `exports` as well as `@Global()`: global puts a
+    // module into every import set, `exports` is what makes one of its tokens
+    // resolvable across the boundary, and Nest needs both. Omitting the
+    // export of `CHATGPT_OPEN_BROWSER` is exactly the defect review found in
+    // `app.local.module.ts` -- with the injection optional it was invisible,
+    // and every connect refused for want of an opener while the whole suite
+    // stayed green.
     @Global()
     @Module({
-      providers: [{ provide: PrismaService, useValue: prisma }],
-      exports: [PrismaService],
+      providers: [
+        { provide: PrismaService, useValue: prisma },
+        { provide: CHATGPT_OPEN_BROWSER, useValue: openBrowser },
+      ],
+      exports: [PrismaService, CHATGPT_OPEN_BROWSER],
     })
-    class TestPrismaModule {}
+    class TestRootModule {}
 
     moduleRef = await Test.createTestingModule({
       imports: [
@@ -124,12 +169,18 @@ describe('LocalOnlyAiModule (wired)', () => {
           ignoreEnvFile: true,
           load: [() => ({ AI_KEY_ENCRYPTION_SECRET: secret })],
         }),
-        TestPrismaModule,
+        TestRootModule,
         LocalOnlyAiModule,
       ],
     }).compile()
 
-    fetchSpy = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => answer())
+    fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (input) =>
+        String(input).includes('.well-known/openid-configuration')
+          ? discovery()
+          : answer(),
+      )
   })
 
   afterEach(async () => {
@@ -193,17 +244,28 @@ describe('LocalOnlyAiModule (wired)', () => {
   })
 
   describe('the connect flow', () => {
-    it('is resolvable, and refuses a connect when nothing published a browser opener', async () => {
-      // This module is booted here with no composition root, so
-      // `CHATGPT_OPEN_BROWSER` is unpublished and the optional injection
-      // yields nothing. The flow must then refuse by name -- before
-      // discovery, before binding a port -- rather than fail to resolve at
-      // boot or open nothing and wait out the listener's timeout.
+    it("receives the composition root's own browser opener", async () => {
+      // THE test the Critical needed. Its predecessor asserted that a flow
+      // with no opener refuses -- true, but it was passing for the wrong
+      // reason: the token was published without being exported, the
+      // injection was optional, so the flow silently got `null` and refused
+      // in every composition including the real one. Resolving the token
+      // directly would not have caught it either: `get` is non-strict by
+      // default and finds the provider inside the root's own injector,
+      // proving only that it was published.
+      //
+      // So assert on the FLOW, strictly resolved from this module, actually
+      // calling through to the opener the root supplied.
       const flow = inLocal(ChatGptConnectFlow)
+      opened.length = 0
 
-      await expect(flow.connect(userId)).rejects.toThrow(/browser/i)
-      // Nothing was spent finding that out.
-      expect(fetchSpy).not.toHaveBeenCalled()
+      // It gets far enough to open a browser, which is all this proves. The
+      // opener then throws, so the attempt ends there rather than waiting
+      // out the listener.
+      await expect(flow.connect(userId)).rejects.toThrow(/no browser/)
+
+      expect(opened).toHaveLength(1)
+      expect(opened[0]).toContain('auth.openai.com')
     })
   })
 

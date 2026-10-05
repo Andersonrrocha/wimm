@@ -470,6 +470,38 @@ describe('ChatGptConnectFlow', () => {
       expect(await mode()).toBe(AiCategorizationMode.SERVER)
     })
 
+    it('leaves a deliberately chosen SERVER mode alone on disconnect', async () => {
+      // `grantConsent` touches only a mode of `OFF`; `releaseConsent` used
+      // not to, so disconnecting forced `OFF` over a mode the user had
+      // chosen. `SERVER` is settable through `PATCH /users/me` and has a null
+      // `aiApiKeyEncrypted` by design, so the other guard never fired.
+      await prisma.user.update({
+        where: { id: userId },
+        data: { aiCategorizationMode: AiCategorizationMode.SERVER },
+      })
+
+      await harness().flow.disconnect(userId)
+
+      expect(await mode()).toBe(AiCategorizationMode.SERVER)
+    })
+
+    it('changes nothing on disconnect when no connection ever existed', async () => {
+      // The endpoint should be a no-op here, not a way to reach into another
+      // setting. Any authenticated local caller could previously flip the
+      // mode this way.
+      await prisma.user.update({
+        where: { id: userId },
+        data: { aiCategorizationMode: AiCategorizationMode.SERVER },
+      })
+
+      await harness().flow.disconnect(userId)
+
+      expect(await mode()).toBe(AiCategorizationMode.SERVER)
+      await expect(
+        prisma.chatGptConnection.findUnique({ where: { userId } }),
+      ).resolves.toBeNull()
+    })
+
     it('grants nothing when the sign-in fails', async () => {
       const h = harness({
         exchange: async () => {

@@ -52,10 +52,12 @@ import { exchangeCode, verifyIdentity } from './chatgpt-token-exchange'
  * - `ChatGptConnectFlow` is built the same way, and is the one provider here
  *   that needs something only the composition root can supply: a way to open
  *   the user's browser. It arrives under `CHATGPT_OPEN_BROWSER`, published
- *   by `AppLocalModule.forRoot` from its `openBrowser` option, and is
- *   injected **optionally** -- `local-only-ai.module.spec.ts` boots this
- *   module with no composition root at all, and a connect is not what it is
- *   testing. A flow built without one refuses at `connect`, before it
+ *   **and exported** by `AppLocalModule.forRoot` from its `openBrowser`
+ *   option -- `global: true` alone is not enough, as the comment there now
+ *   records. The injection is **required**: optional injection turned a
+ *   missing export into a silent runtime refusal that no test could see, so
+ *   a composition that forgets it now fails at boot. A flow given a `null`
+ *   opener still refuses at `connect`, before it
  *   touches the network, rather than failing to resolve at boot. Task 11
  *   turns that into a compose-time refusal.
  *
@@ -136,7 +138,7 @@ import { exchangeCode, verifyIdentity } from './chatgpt-token-exchange'
       inject: [
         ChatGptConnectionStore,
         PrismaService,
-        { token: CHATGPT_OPEN_BROWSER, optional: true },
+        CHATGPT_OPEN_BROWSER,
       ],
     },
     {

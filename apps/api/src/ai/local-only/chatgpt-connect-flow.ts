@@ -30,6 +30,32 @@ import { type exchangeCode } from './chatgpt-token-exchange'
 export type OpenBrowser = (url: string) => Promise<void>
 
 /**
+ * Verify-then-refuse for the one option that previously escaped it.
+ *
+ * `AppLocalModule.forRoot` checks its session token and its encryption
+ * secret at the single unbypassable point, for the reason
+ * `assertUsableSessionToken` records: a misconfiguration caught at boot names
+ * the problem, while one caught later becomes a request-time 500. `openBrowser`
+ * was the only option not held to that, so a non-function became a `TypeError`
+ * on the user's first sign-in attempt.
+ *
+ * `undefined` is still allowed and becomes `null`: a composition that supplies
+ * no opener refuses a connect with a message, and Task 11 turns that into a
+ * compose-time requirement.
+ */
+export function assertUsableOpenBrowser(
+  value: unknown,
+): OpenBrowser | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'function') {
+    throw new Error(
+      'AppLocalModule.forRoot: refusing to compose the local API with an openBrowser that is not a function.',
+    )
+  }
+  return value as OpenBrowser
+}
+
+/**
  * DI token for `OpenBrowser`. A `Symbol`, like `SESSION_TOKEN` and
  * `AI_PROVIDERS`, so it cannot collide with another provider token -- and
  * because a bare function has no class token Nest could resolve it by.
@@ -218,9 +244,30 @@ export class ChatGptConnectFlow {
   }
 
   /** Back to `OFF`, but only while no Anthropic key remains. */
+  /**
+   * Gives back only the consent `grantConsent` took.
+   *
+   * Symmetric with it, and both conditions are load-bearing:
+   *
+   * - `aiCategorizationMode: BYOK` -- `grantConsent` is careful to touch only
+   *   a mode of `OFF`, on the grounds that anything else is the user's own
+   *   choice. Without the same condition here, disconnecting forced `OFF`
+   *   over a deliberately chosen `SERVER`, and did so even when no ChatGPT
+   *   connection had ever existed: any authenticated local caller could flip
+   *   another setting through an endpoint that should have been a no-op.
+   *   `SERVER` is user-settable through `PATCH /users/me`, and by schema
+   *   design has a null `aiApiKeyEncrypted`, so the other guard never fired.
+   * - `aiApiKeyEncrypted: null` -- a user may hold an Anthropic key *and* a
+   *   ChatGPT connection. Disconnecting one must not switch AI off while the
+   *   other credential is still there.
+   */
   private async releaseConsent(userId: string): Promise<void> {
     await this.deps.prisma.user.updateMany({
-      where: { id: userId, aiApiKeyEncrypted: null },
+      where: {
+        id: userId,
+        aiCategorizationMode: AiCategorizationMode.BYOK,
+        aiApiKeyEncrypted: null,
+      },
       data: { aiCategorizationMode: AiCategorizationMode.OFF },
     })
   }

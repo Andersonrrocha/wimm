@@ -48,6 +48,7 @@ import { CategoriesModule } from './categories/categories.module'
 import { CategorizationRulesModule } from './categorization-rules/categorization-rules.module'
 import { ImportsModule } from './imports/imports.module'
 import {
+  assertUsableOpenBrowser,
   CHATGPT_OPEN_BROWSER,
   type OpenBrowser,
 } from './ai/local-only/chatgpt-connect-flow'
@@ -208,14 +209,20 @@ export class AppLocalModule {
         // constructor rather than a compile-time constant.
         { provide: SESSION_TOKEN, useValue: options.sessionToken },
         // Published for `ChatGptConnectFlow`, which `LocalOnlyAiModule`
-        // builds in a factory. `global: true` above is what makes a provider
-        // declared here visible to an imported module -- the same mechanism
-        // the `PrismaService` alias relies on. `null` rather than left out:
-        // the flow then refuses a connect with a message instead of Nest
-        // failing to resolve a dependency at boot.
+        // builds in a factory.
+        //
+        // **It must be in `exports` below, and `global: true` is not enough.**
+        // `global` puts this module into every other module's import set;
+        // `exports` is what makes one of its tokens resolvable *across* the
+        // boundary. Nest needs both. `PrismaService` works because it is
+        // exported; `SESSION_TOKEN` works because only this module consumes
+        // it. This is the first provider here that a *different* module
+        // injects, and it is the first that needed exporting -- which it did
+        // not have, so every `connect` refused for want of an opener while
+        // 984 tests stayed green.
         {
           provide: CHATGPT_OPEN_BROWSER,
-          useValue: options.openBrowser ?? null,
+          useValue: assertUsableOpenBrowser(options.openBrowser),
         },
         // Global guard for THIS composition root only -- see
         // `SessionTokenGuard`'s doc comment for why it exists and what it
@@ -226,7 +233,7 @@ export class AppLocalModule {
         // `JwtAuthGuard` registration entirely untouched.
         { provide: APP_GUARD, useClass: SessionTokenGuard },
       ],
-      exports: [PrismaService],
+      exports: [PrismaService, CHATGPT_OPEN_BROWSER],
     }
   }
 }
