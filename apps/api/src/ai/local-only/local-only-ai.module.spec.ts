@@ -11,7 +11,8 @@ import { LocalPrismaService } from '../../prisma/local/local-prisma.service'
 import { generateAiKeyEncryptionSecret } from '../../prisma/local/profile-secret'
 import { PrismaService } from '../../prisma/prisma.service'
 import { AiModule } from '../ai.module'
-import { AiProviderRegistry } from '../ai-provider.registry'
+import { AI_PROVIDERS, AiProviderRegistry } from '../ai-provider.registry'
+import type { AiProvider } from '../ai-provider.interface'
 import { AnthropicCategorizerService } from '../anthropic-categorizer.service'
 import { ChatGptConnectionStore } from './chatgpt-connection.store'
 import { ChatGptOAuthProvider } from './chatgpt-oauth-provider'
@@ -154,6 +155,28 @@ describe('LocalOnlyAiModule (wired)', () => {
 
       expect(registry.get('anthropic')).toBeInstanceOf(AnthropicCategorizerService)
       expect(registry.get('anthropic')).toBe(inAi(AnthropicCategorizerService))
+    })
+
+    it('carries every hosted provider, not just the one named here', () => {
+      // The two lists share `buildAiProviders`, so a hosted provider added
+      // THERE reaches both. Nothing stops one being registered directly in
+      // `AiModule`'s own `providers` array, though, and the local list would
+      // then silently drop it -- and the test above only ever checks
+      // `'anthropic'` by name. This holds whatever is added, to either.
+      const idsIn = (module: Parameters<typeof moduleRef.select>[0]) =>
+        (
+          moduleRef.select(module).get<AiProvider[]>(AI_PROVIDERS, {
+            strict: true,
+          }) ?? []
+        )
+          .map((provider) => provider.id)
+          .sort()
+
+      const hosted = idsIn(AiModule)
+      const local = idsIn(LocalOnlyAiModule)
+
+      expect(hosted.length).toBeGreaterThan(0)
+      expect(local).toEqual([...hosted, 'chatgpt-oauth'].sort())
     })
 
     // The hosted list is `AiModule`'s own, and `AiModule` is reachable from
