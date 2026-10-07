@@ -28,6 +28,7 @@ import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { decryptWithAiKey, deriveAiKeyEncryptionKey, encryptWithAiKey } from '@wimm/api/dist/ai/ai-key-crypto'
+import { CHATGPT_OPEN_BROWSER } from '@wimm/api/dist/ai/local-only/chatgpt-connect-flow'
 import { DATABASE_MIGRATED_BY_NEWER_BUILD_CODE } from '@wimm/api/dist/prisma/local/migration-runner'
 import { LocalPrismaService } from '@wimm/api/dist/prisma/local/local-prisma.service'
 import { openLocalDatabase } from '@wimm/api/dist/prisma/local/open-local-database'
@@ -39,6 +40,7 @@ import {
 import { snapshotDatabase } from '@wimm/api/dist/prisma/local/snapshot'
 import { SESSION_TOKEN_HEADER } from '@wimm/api/dist/profile/session-token'
 
+import { openChatGptAuthorizeUrl } from './chatgpt-browser'
 import {
   createProfileAndOpen,
   exportActiveProfileDatabase,
@@ -388,6 +390,103 @@ describe('per-profile AI key encryption secret (Task 1, phase 4c)', () => {
 
     // And it is genuinely re-encrypted, not left under the legacy secret.
     expect(() => decryptWithAiKey(legacyKey, storedNow)).toThrow()
+  })
+})
+
+/**
+ * The guarantee Task 11 chose to enforce here rather than at compose time.
+ *
+ * `AppLocalModule.forRoot`'s `openBrowser` option stays optional (absent
+ * becomes `null`, and `ChatGptConnectFlow.connect` refuses by name) because
+ * seventeen of the eighteen `forRoot` boots across `app.local.module.spec.ts`
+ * and `local-route-posture.spec.ts` are testing sources, session tokens and
+ * route posture and have no business carrying a browser stub. What matters
+ * is narrower and better tested here: that the ONE non-spec composer -- the
+ * production boot in `local-api.ts` -- supplies one, so the shipped build's
+ * ChatGPT sign-in is not dead on arrival.
+ *
+ * This file is the right place for that because it boots the real, built
+ * `@wimm/api/dist` with no mocks and no spec-supplied root module. The
+ * lesson paid for earlier in this plan was a test that passed with the
+ * production export removed, because the spec had handed over its own root
+ * module which did export the token -- there is no such fixture here to cover
+ * for a defect.
+ */
+describe('the production boot supplies a browser opener (Task 11)', () => {
+  let profileDir: string
+  let handle: LocalApiHandle | undefined
+
+  beforeEach(() => {
+    profileDir = tmpProfileDir()
+  })
+
+  afterEach(async () => {
+    if (handle) {
+      await handle.close()
+      handle = undefined
+    }
+    rmSync(profileDir, { recursive: true, force: true })
+  })
+
+  /**
+   * Resolves every instance registered under `CHATGPT_OPEN_BROWSER`, across
+   * the whole container.
+   *
+   * **Why `each: true` and not `strict: true`.** The lesson this plan paid
+   * for twice is that Nest's default, non-strict `get` searches the entire
+   * container, so finding *something* under a token says nothing about which
+   * module published it. The obvious remedy -- `{ strict: true }` -- does not
+   * work on an application root: `NestApplicationContext.selectContextModule`
+   * sets the strict lookup's context module to the container's FIRST module,
+   * which here is Nest's own `InternalCoreModule` (verified: the container's
+   * module order is `InternalCoreModule, AppLocalModule, ConfigModule, ...`),
+   * so a strict `get` of this token throws "this provider does not exist in
+   * the current context". Worse, because `NestFactory.create` defaults to
+   * `abortOnError: true`, that throw goes through Nest's `ExceptionsZone` and
+   * calls `process.exit(1)` -- it kills the Jest worker instead of failing
+   * the test. `app.select(AppLocalModule)` is no help either: the module was
+   * registered under a token derived from `forRoot`'s dynamic metadata, which
+   * `select` cannot reconstruct.
+   *
+   * `each: true` answers the ambiguity directly and more completely than
+   * strict would: asserting the array has exactly one element proves there is
+   * precisely ONE provider for this token anywhere in the composition, and
+   * asserting its identity proves it is this app's guarded opener.
+   */
+  function resolveEveryPublishedOpener(app: LocalApiHandle['app']): unknown[] {
+    return app.get<unknown, unknown[]>(CHATGPT_OPEN_BROWSER, { each: true })
+  }
+
+  it("publishes exactly chatgpt-browser.ts's openChatGptAuthorizeUrl under CHATGPT_OPEN_BROWSER, once", async () => {
+    handle = await createProfileAndOpen({ profileDir, name: 'Test Profile' })
+
+    const openers = resolveEveryPublishedOpener(handle.app)
+
+    // Exactly one, so "found under this token" cannot be satisfied by some
+    // other module having published it.
+    expect(openers).toHaveLength(1)
+    // Identity, not `typeof === 'function'`: what must be true is that the
+    // production boot wired THIS module's guarded opener, not merely that
+    // something callable reached the token. With `openBrowser` dropped from
+    // `local-api.ts`'s `forRoot` call, `assertUsableOpenBrowser` turns the
+    // absence into `null` and the provider still exists -- so a mere
+    // "is it a function" check would be the weaker assertion, and this is
+    // the one that fails.
+    expect(openers[0]).toBe(openChatGptAuthorizeUrl)
+  })
+
+  it('and what it published is the guarded opener: a non-issuer origin is refused, not handed to a browser', async () => {
+    handle = await createProfileAndOpen({ profileDir, name: 'Test Profile' })
+
+    const openers = resolveEveryPublishedOpener(handle.app)
+    expect(openers).toHaveLength(1)
+    const opener = openers[0] as (url: string) => Promise<void>
+
+    // Runs the real guard inside the real composition. It refuses before
+    // `shell.openExternal` is reached, which is why this is safe to call in
+    // a plain Node test process, where `electron` resolves to a path string
+    // and has no `shell` at all.
+    await expect(opener('https://evil.example/authorize')).rejects.toThrow()
   })
 })
 

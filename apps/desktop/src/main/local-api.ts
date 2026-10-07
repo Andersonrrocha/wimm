@@ -143,6 +143,7 @@ import {
 import { generateSessionToken } from '@wimm/api/dist/profile/session-token'
 
 import type { BackupSummary, ProfileBackups } from '../shared/backup-protocol'
+import { openChatGptAuthorizeUrl } from './chatgpt-browser'
 import { validateProfileName } from './profile-lifecycle'
 
 // `require.resolve` rather than `__dirname`-relative traversal: the latter
@@ -441,8 +442,24 @@ async function bootProfileDatabase(
 
   const sessionToken = generateSessionToken()
 
+  // `openBrowser` is what makes the ChatGPT plan-usage sign-in work at all:
+  // `AppLocalModule.forRoot` treats it as optional (absent becomes `null`,
+  // and `ChatGptConnectFlow.connect` then refuses by name rather than
+  // opening nothing and waiting out its listener's timeout) precisely so the
+  // seventeen of the API's own eighteen `forRoot` boots that are testing
+  // sources, session tokens and route posture need not each carry a browser
+  // stub, nor every future unrelated spec after them.
+  // This is the only non-spec composer, so this is the one place that MUST
+  // supply one, and `local-api.spec.ts` proves it does by booting this exact
+  // path against the real built `@wimm/api/dist`. Dropping it here would ship
+  // a build whose connect is dead while every API suite stayed green.
   const app: INestApplication = await NestFactory.create(
-    AppLocalModule.forRoot({ databaseFile, sessionToken, aiKeyEncryptionSecret }),
+    AppLocalModule.forRoot({
+      databaseFile,
+      sessionToken,
+      aiKeyEncryptionSecret,
+      openBrowser: openChatGptAuthorizeUrl,
+    }),
   )
 
   // Everything from here on can fail after the app (and, once `listen()`
