@@ -10,6 +10,22 @@
 
 **Source of truth:** `docs/superpowers/specs/2026-10-02-chatgpt-plan-usage-oauth-design.md`. Read its "Protocol facts" section before Task 3; the values there are exact and must not be paraphrased.
 
+## A testing hazard found in Task 11 — repo-wide, not plan-specific
+
+**Never call `app.get(token, { strict: true })` on a real application root, and treat a dropped test count as a symptom of it.** Verified in Nest's own source:
+
+- `nest-application-context.js:45` — `selectContextModule()` takes `modules.next().value`, the container's **first** module. On an app root created by `NestFactory.create` that is Nest's own `InternalCoreModule`, not yours, so a strict lookup searches the wrong module and fails.
+- `nest-factory.js:30` — `abortOnError` defaults to `true`, and the teardown is only `rethrow` when it is explicitly `false`.
+- `errors/exceptions-zone.js:6` — that default teardown is `() => process.exit(1)`.
+
+So a failed `app.get` **kills the Jest worker**. It does not fail a test: every later test in the file silently vanishes from the count, which reads as a smaller suite rather than a failure. Task 11 observed 103/111 with one "failed" suite from exactly this.
+
+`app.select(Module)` is no remedy on a root composed by `forRoot`, because the module is registered under a token derived from its dynamic metadata. The API's own specs get away with `select(...).get(..., { strict: true })` only because their root is a `Test.createTestingModule`.
+
+**What to do instead, by layer:**
+- From a `Test.createTestingModule`, `moduleRef.select(Module).get(token, { strict: true })` works and is the right way to prove a *consumer* can resolve a token across a module boundary — which is what caught Task 10's Critical.
+- From a real app root, use `{ each: true }` and assert the array has exactly the expected length and identity. That proves what a production boot can prove: that the token is published once, and by you.
+
 ## Global Constraints
 
 - All code, comments and commits in English. User-facing strings in `en` and `pt` only, via `i18next`.
