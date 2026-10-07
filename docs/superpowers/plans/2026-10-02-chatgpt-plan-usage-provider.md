@@ -2401,6 +2401,22 @@ git commit -m "feat(ai): add ChatGPT connect, status and disconnect routes"
 - Consumes: `AppLocalModuleOptions.openBrowser`, declared in Task 10
 - Produces: `openChatGptAuthorizeUrl(url: string): Promise<void>`, passed in as that option from `local-api.ts`
 
+### A plan decision reversed during pre-flight
+
+This task was written to make `openBrowser` a **compose-time requirement**. Counting the callers changes that: **17 `AppLocalModule.forRoot` boots in `app.local.module.spec.ts` plus one in `local-route-posture.spec.ts` pass no opener**, because they are testing sources, session tokens and route posture. Making it required would push a browser stub into all of them, and leave every future unrelated spec carrying one.
+
+**Enforce it at the production caller instead.** `local-api.ts` is the only non-spec composer, and `apps/desktop/src/main/local-api.spec.ts` boots the real built `@wimm/api/dist` with no mocks — so a test there that the production boot supplies an opener is a genuine end-to-end check, and a more precise one than a compose-time assert: it catches the thing that actually matters, which is shipping a build whose connect is dead.
+
+Keep `assertUsableOpenBrowser` as Task 10 left it (absent → `null`, non-function → refuse). The flow still refuses a connect without one, loudly and by name. Note that the test which would have caught Task 10's Critical now lives in `app.local.module.spec.ts`, booting the real root — that is the layer where this guarantee belongs.
+
+### Two guards the Task 10 review asked for
+
+**1. The authorize URL's origin must be the issuer's, exactly.** The opener receives a string and hands it to the user's browser, so it is the last place a doctored `authorization_endpoint` can be stopped. Compare the **parsed** `origin` against `https://auth.openai.com` — not a `startsWith`, which `https://auth.openai.com.evil.example` passes, and not a hostname check, which plain `http://auth.openai.com` passes.
+
+This is deliberately stricter than Task 3's discovery hardening, which requires `https:` on every endpoint but **not** same-origin — because `jwks_uri` may legitimately live on a CDN and asserting otherwise would risk breaking the live flow. The authorize URL is different: it is the one the user sees and types into, so a wrong origin is a phishing vector and failing closed is right. **If OpenAI ever serves authorize from another origin, this is the line that breaks — loudly, which is the intent.**
+
+**2. The opener's own errors must never carry the URL.** The flow rethrows whatever the opener throws, and Nest's default exception filter logs a non-`HttpException` stack. So an opener that rejects with a message containing the authorize URL puts `state` and `code_challenge` in the log. Neither is on the prohibited list and `code_challenge` is public by design, but it is the one new log surface this task opens, and a static message costs nothing. `shell.openExternal` does reject in the normal case on a machine with no registered handler, so this path runs.
+
 **Requirements:**
 - `shell.openExternal` only. **No `BrowserWindow`.**
 - Refuse any URL whose origin is not the discovered issuer's origin. An `openExternal` that forwards an arbitrary string is a navigation primitive handed to whatever can reach it.
