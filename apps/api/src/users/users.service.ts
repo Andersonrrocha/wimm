@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
-import { AiCategorizationMode, ChartDateMode } from '@wimm/shared'
+import { AiByokSource, AiCategorizationMode, ChartDateMode } from '@wimm/shared'
 import { AiKeyCrypto } from '../ai/ai-key-crypto'
 import { PrismaService } from '../prisma/prisma.service'
 import type { UpdateMeDto } from './dto/update-me.dto'
@@ -27,6 +27,7 @@ export class UsersService {
         trialEndsAt: true,
         founderNumber: true,
         aiCategorizationMode: true,
+        aiByokSource: true,
         aiApiKeyEncrypted: true,
         createdAt: true,
         updatedAt: true,
@@ -52,6 +53,11 @@ export class UsersService {
     if (dto.aiCategorizationMode !== undefined) {
       data.aiCategorizationMode =
         dto.aiCategorizationMode as AiCategorizationMode
+    }
+    // Asymmetric, like `aiApiKey` below: a value chooses, `null` clears the
+    // choice back to "not chosen", `undefined` leaves the stored one alone.
+    if (dto.aiByokSource !== undefined) {
+      data.aiByokSource = dto.aiByokSource as AiByokSource | null
     }
     if (dto.aiApiKey !== undefined) {
       data.aiApiKeyEncrypted =
