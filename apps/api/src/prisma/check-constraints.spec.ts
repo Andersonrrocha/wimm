@@ -1,19 +1,25 @@
 import { CHECK_CONSTRAINTS, checkConstraintNames } from './check-constraints'
 
 describe('CHECK constraint definitions', () => {
-  it('declares exactly 18', () => {
-    expect(CHECK_CONSTRAINTS).toHaveLength(18)
+  it('declares exactly 19', () => {
+    expect(CHECK_CONSTRAINTS).toHaveLength(19)
   })
 
-  it('has one nullable constraint, on User.subscriptionPlan', () => {
+  // Nullable is the exception, not the default: a CHECK that permits NULL on
+  // a NOT NULL column would be indistinguishable from the strict form, so the
+  // two columns that legitimately need it are named rather than counted.
+  it('has two nullable constraints, on User.subscriptionPlan and User.aiByokSource', () => {
     const nullable = CHECK_CONSTRAINTS.filter((c) => c.nullable)
-    expect(nullable.map((c) => c.name)).toEqual(['User_subscriptionPlan_check'])
+    expect(nullable.map((c) => c.name).sort()).toEqual([
+      'User_aiByokSource_check',
+      'User_subscriptionPlan_check',
+    ])
   })
 
   it('exposes names sorted and unique', () => {
     const names = checkConstraintNames()
     expect(names).toEqual([...new Set(names)].sort())
-    expect(names).toHaveLength(18)
+    expect(names).toHaveLength(19)
   })
 
   // Value correctness (table, column, values, nullable) is NOT checked here

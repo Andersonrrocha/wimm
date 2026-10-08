@@ -13,7 +13,11 @@ export type CheckConstraint = {
   table: string
   column: string
   values: readonly string[]
-  /** Only User.subscriptionPlan; its CHECK must permit NULL. */
+  /**
+   * The column's CHECK must permit NULL. True for the two columns whose
+   * absence is itself a state: `User.subscriptionPlan` ("no plan") and
+   * `User.aiByokSource` ("not chosen").
+   */
   nullable: boolean
 }
 
@@ -22,6 +26,7 @@ export const CHECK_CONSTRAINTS: readonly CheckConstraint[] = [
   { name: 'User_subscriptionStatus_check', table: 'User', column: 'subscriptionStatus', values: ['ACTIVE', 'TRIALING', 'EXPIRED', 'CANCELED'], nullable: false },
   { name: 'User_subscriptionPlan_check', table: 'User', column: 'subscriptionPlan', values: ['MONTHLY', 'ANNUAL', 'LIFETIME'], nullable: true },
   { name: 'User_aiCategorizationMode_check', table: 'User', column: 'aiCategorizationMode', values: ['OFF', 'SERVER', 'BYOK'], nullable: false },
+  { name: 'User_aiByokSource_check', table: 'User', column: 'aiByokSource', values: ['ANTHROPIC_KEY', 'CHATGPT_PLAN'], nullable: true },
   { name: 'Source_type_check', table: 'Source', column: 'type', values: ['BANK_ACCOUNT', 'CREDIT_CARD', 'CASH', 'MANUAL'], nullable: false },
   { name: 'Category_type_check', table: 'Category', column: 'type', values: ['INCOME', 'EXPENSE'], nullable: false },
   { name: 'SystemCategorizationRule_kind_check', table: 'SystemCategorizationRule', column: 'kind', values: ['INCOME', 'EXPENSE'], nullable: false },

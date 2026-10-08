@@ -32,6 +32,12 @@ model User {
    * NULL when SERVER or OFF; never returned by the API.
    */
   aiApiKeyEncrypted    String?
+  /**
+   * Which own-credential source BYOK categorization uses when more than one
+   * is available: ANTHROPIC_KEY | CHATGPT_PLAN. NULL = not chosen, which
+   * only matters when both exist.
+   */
+  aiByokSource         String?
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   refreshTokens        RefreshToken[]

@@ -23,7 +23,8 @@ CREATE TABLE "User" (
     "chartDateMode" TEXT NOT NULL DEFAULT 'BILLING_CYCLE',
     "subscriptionStatus" TEXT NOT NULL DEFAULT 'ACTIVE',
     "subscriptionPlan" TEXT,
-    "aiCategorizationMode" TEXT NOT NULL DEFAULT 'OFF'
+    "aiCategorizationMode" TEXT NOT NULL DEFAULT 'OFF',
+    "aiByokSource" TEXT
 );
 `
 
@@ -73,9 +74,10 @@ describe('injectCheckConstraints', () => {
     expect(tableBlock(out, 'Transaction')).not.toContain(`CHECK ("frequency"`)
   })
 
-  it('permits NULL on the one nullable constraint', () => {
+  it('permits NULL on each nullable constraint', () => {
     const user = tableBlock(injectCheckConstraints(DDL), 'User')
     expect(user).toContain(`CHECK ("subscriptionPlan" IS NULL OR "subscriptionPlan" IN ('MONTHLY', 'ANNUAL', 'LIFETIME'))`)
+    expect(user).toContain(`CHECK ("aiByokSource" IS NULL OR "aiByokSource" IN ('ANTHROPIC_KEY', 'CHATGPT_PLAN'))`)
   })
 
   it('preserves a column default while adding the constraint', () => {
@@ -107,7 +109,8 @@ describe('injectCheckConstraints', () => {
     "chartDateMode" TEXT NOT NULL DEFAULT 'BILLING_CYCLE',
     "subscriptionStatus" TEXT NOT NULL DEFAULT 'ACTIVE',
     "subscriptionPlan" TEXT,
-    "aiCategorizationMode" TEXT NOT NULL DEFAULT 'OFF'
+    "aiCategorizationMode" TEXT NOT NULL DEFAULT 'OFF',
+    "aiByokSource" TEXT
 );
 `
     let out = ''
@@ -115,19 +118,19 @@ describe('injectCheckConstraints', () => {
       out = injectCheckConstraints(userOnly)
     }).not.toThrow()
 
-    // All 4 of User's constraints landed...
+    // All 5 of User's constraints landed...
     const userConstraints = CHECK_CONSTRAINTS.filter((c) => c.table === 'User')
-    expect(userConstraints).toHaveLength(4)
+    expect(userConstraints).toHaveLength(5)
     for (const c of userConstraints) {
       expect(out).toContain(renderCheck(c))
     }
 
-    // ...and nothing else did — the other 10 constraints have no table to land in.
+    // ...and nothing else did — the other 14 constraints have no table to land in.
     const checkCount = (out.match(/CHECK \(/g) ?? []).length
-    expect(checkCount).toBe(4)
+    expect(checkCount).toBe(5)
   })
 
-  it('injects all 18 constraints when every table from schema.sqlite.prisma is present', () => {
+  it('injects all 19 constraints when every table from schema.sqlite.prisma is present', () => {
     // Hand-written rather than generated via `prisma migrate diff`: this fixture only
     // needs to be structurally accurate (11 CREATE TABLE blocks, real column names),
     // and hand-writing keeps the test fast, hermetic, and independent of the Prisma
@@ -141,7 +144,8 @@ CREATE TABLE "User" (
     "chartDateMode" TEXT NOT NULL DEFAULT 'BILLING_CYCLE',
     "subscriptionStatus" TEXT NOT NULL DEFAULT 'ACTIVE',
     "subscriptionPlan" TEXT,
-    "aiCategorizationMode" TEXT NOT NULL DEFAULT 'OFF'
+    "aiCategorizationMode" TEXT NOT NULL DEFAULT 'OFF',
+    "aiByokSource" TEXT
 );
 
 -- CreateTable
@@ -222,7 +226,7 @@ CREATE TABLE "RefreshToken" (
     "tokenHash" TEXT NOT NULL
 );
 `
-    expect(CHECK_CONSTRAINTS).toHaveLength(18)
+    expect(CHECK_CONSTRAINTS).toHaveLength(19)
 
     const out = injectCheckConstraints(fullDdl)
 
@@ -249,7 +253,7 @@ CREATE TABLE "RefreshToken" (
     }
 
     const checkCount = (out.match(/CHECK \(/g) ?? []).length
-    expect(checkCount).toBe(18)
+    expect(checkCount).toBe(19)
   })
 })
 

@@ -13,6 +13,7 @@ CREATE TABLE "User" (
     "founderNumber" INTEGER,
     "aiCategorizationMode" TEXT NOT NULL DEFAULT 'OFF' CHECK ("aiCategorizationMode" IN ('OFF', 'SERVER', 'BYOK')),
     "aiApiKeyEncrypted" TEXT,
+    "aiByokSource" TEXT CHECK ("aiByokSource" IS NULL OR "aiByokSource" IN ('ANTHROPIC_KEY', 'CHATGPT_PLAN')),
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL
 );
