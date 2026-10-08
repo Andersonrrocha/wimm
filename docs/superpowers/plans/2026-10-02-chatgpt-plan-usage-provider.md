@@ -3282,6 +3282,8 @@ git add apps/api apps/desktop && git commit -m "test(ai): close out ChatGPT plan
 
 ## Before the first release — a blocking prerequisite, not a deferral
 
+> **Tracked since 2026-10-08 in [`docs/release-blockers.md`](../../release-blockers.md), item 1**, with an owner, on the final review's request: a prerequisite recorded only inside a finished plan is one nobody reads again. The two other unproven items that gate a release — `assert:constraints`, and the fact that nothing has run against the real OpenAI service — are items 2 and 3 there.
+
 **Confirmed with the owner on 2026-10-04: no `v*` release has ever been cut.** That is what makes Task 1's approach valid, and it is the only thing that makes it valid.
 
 The SQLite chain is a single `0000_baseline/migration.sql` that parity check 3 requires be a full regeneration, so a schema change rewrites it rather than adding an incremental migration. But `apps/api/src/prisma/local/migration-runner.ts` hard-fails at boot when an already-applied migration's checksum no longer matches its file. Consequences, in order of when they bite:
