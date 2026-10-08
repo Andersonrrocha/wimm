@@ -39,6 +39,27 @@ export const AiCategorizationMode = {
 export type AiCategorizationMode =
   (typeof AiCategorizationMode)[keyof typeof AiCategorizationMode]
 
+/**
+ * Which of the user's own credentials categorization uses under
+ * `AiCategorizationMode.BYOK`.
+ *
+ * `BYOK` says *whose* credential, not *which vendor*, and there are two
+ * kinds: an Anthropic API key and a ChatGPT plan. Persisted and
+ * user-facing, which is why it is an enum here and not an `AiProvider.id`
+ * -- `ai-provider.interface.ts` states that ids are never shown to a user
+ * and never persisted, and this must not be the exception that breaks it.
+ * The mapping from a value here to a provider id lives in
+ * `AiCategorizerSelector`.
+ *
+ * `null` on a user means "not chosen", which matters only when both
+ * sources are available: with one, it is used without asking.
+ */
+export const AiByokSource = {
+  ANTHROPIC_KEY: 'ANTHROPIC_KEY',
+  CHATGPT_PLAN: 'CHATGPT_PLAN',
+} as const
+export type AiByokSource = (typeof AiByokSource)[keyof typeof AiByokSource]
+
 export const SourceType = {
   BANK_ACCOUNT: 'BANK_ACCOUNT',
   CREDIT_CARD: 'CREDIT_CARD',

@@ -1,4 +1,5 @@
 import {
+  AiByokSource,
   AiCategorizationMode,
   CategorizationMatchType,
   CategoryType,
@@ -70,12 +71,20 @@ describe('domain enums', () => {
     expect(ImportBatchStatus).toEqual({ COMPLETED: 'COMPLETED' })
   })
 
+  it('exposes the BYOK credential sources', () => {
+    expect(AiByokSource).toEqual({
+      ANTHROPIC_KEY: 'ANTHROPIC_KEY',
+      CHATGPT_PLAN: 'CHATGPT_PLAN',
+    })
+  })
+
   it('uses each key as its own value', () => {
     const all = [
       ChartDateMode,
       SubscriptionStatus,
       SubscriptionPlan,
       AiCategorizationMode,
+      AiByokSource,
       SourceType,
       CategoryType,
       TransactionKind,

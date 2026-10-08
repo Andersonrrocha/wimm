@@ -1,4 +1,5 @@
 import type {
+  AiByokSource,
   AiCategorizationMode,
   CategorizationMatchType,
   CategoryType,
@@ -59,6 +60,12 @@ export interface User {
   founderNumber: number | null
   /** AI suggestion preference; OFF unless user opts in. */
   aiCategorizationMode: AiCategorizationMode
+  /**
+   * Which own-credential source BYOK categorization uses; null = not chosen.
+   * Only consulted when BOTH sources are available -- with one, it is used
+   * without asking.
+   */
+  aiByokSource: AiByokSource | null
   /** True when a BYOK Anthropic key is stored (the value itself never leaves the server). */
   hasAiApiKey: boolean
   createdAt: string
@@ -69,6 +76,8 @@ export interface UpdateUserMeRequest {
   preferredLocale?: AppLocale
   chartDateMode?: ChartDateMode
   aiCategorizationMode?: AiCategorizationMode
+  /** A source to choose it, null to clear the choice, undefined to leave alone. */
+  aiByokSource?: AiByokSource | null
   /** String to set/replace, null to clear, undefined to leave alone. */
   aiApiKey?: string | null
 }
