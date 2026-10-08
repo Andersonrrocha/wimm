@@ -141,8 +141,10 @@ describe('AnthropicCategorizerService', () => {
 
       const answer = await service.hasCredentialFor('user-1')
 
+      // `typeof` is the whole assertion: a mutation that returned the key
+      // instead of a boolean fails here, and stringifying a boolean to search
+      // it for the sentinel could never fail at all.
       expect(typeof answer).toBe('boolean')
-      expect(JSON.stringify(answer)).not.toContain('SENTINEL')
     })
   })
 })

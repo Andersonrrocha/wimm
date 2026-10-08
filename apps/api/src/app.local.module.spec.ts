@@ -24,7 +24,7 @@
  *    the DTO's `@IsEnum` validation (deliberately bypassed here by calling
  *    the service directly with a raw invalid value).
  */
-import { INestApplication, ValidationPipe } from '@nestjs/common'
+import { INestApplication, Logger, ValidationPipe } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import { AiCategorizationMode, SourceType } from '@wimm/shared'
 import { randomUUID } from 'crypto'
@@ -36,6 +36,10 @@ import { join } from 'path'
 // (not just the type) to resolve.
 import Database = require('better-sqlite3')
 import { AppLocalModule } from './app.local.module'
+import {
+  deriveAiKeyEncryptionKey,
+  encryptWithAiKey,
+} from './ai/ai-key-crypto'
 import {
   ChatGptConnectFlow,
 } from './ai/local-only/chatgpt-connect-flow'
@@ -371,6 +375,101 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
         expect(typeof preview.rows[0]!.aiSuggestedCategoryId).toBe('string')
         expect(preview.rows[0]!.aiConfidence).toBe(0.95)
       } finally {
+        fetchSpy.mockRestore()
+        await moduleRef.close()
+      }
+    })
+
+    // The one state `AiCategorizerSelector` answers with `needsChoice`, over
+    // the real composition. `ai-categorizer-selector.service.spec.ts` covers
+    // it with doubles, which cannot show that the real registry actually has
+    // two providers reporting a credential here -- and a user who stores an
+    // `sk-ant-` key and then connects a plan reaches this state for real.
+    it('spends neither credential when both are available and the user has chosen neither', async () => {
+      const file = freshDatabaseFile('ai-import-routing-needs-choice')
+      const userId = await seedUser(file, 'both@example.com', 'both')
+
+      const sourceId = await onProfile(file, async (prisma) => {
+        // BYOK, `aiByokSource` left null, and *both* own credentials present:
+        // the Anthropic key encrypted under the same profile secret
+        // `AiKeyCrypto` is composed with, so `AiKeyResolverService` really
+        // decrypts it, and a real ChatGPT connection through the real store.
+        await prisma.user.update({
+          where: { id: userId },
+          data: {
+            aiCategorizationMode: AiCategorizationMode.BYOK,
+            aiByokSource: null,
+            aiApiKeyEncrypted: encryptWithAiKey(
+              deriveAiKeyEncryptionKey(TEST_AI_KEY_ENCRYPTION_SECRET),
+              'sk-ant-SENTINEL-both-sources-available',
+            ),
+          },
+        })
+
+        await new ChatGptConnectionStore(
+          prisma as unknown as PrismaService,
+          TEST_AI_KEY_ENCRYPTION_SECRET,
+        ).save(userId, 'client-1', {
+          accessToken: ACCESS_TOKEN,
+          refreshToken: 'spec-refresh-token',
+          idToken: 'spec-id-token',
+          expiresAt: new Date(Date.now() + 3_600_000),
+          scopes: 'openid offline_access chatgpt.tokens.use.direct',
+          subject: 'sub-1',
+          sharing: true,
+        })
+
+        const source = await prisma.source.create({
+          data: { userId, name: 'Cartao', type: SourceType.CREDIT_CARD, closingDay: 5, dueDay: 12 },
+        })
+        return source.id
+      })
+
+      const moduleRef = await Test.createTestingModule({
+        imports: [
+          AppLocalModule.forRoot({
+            databaseFile: file,
+            sessionToken: TEST_SESSION_TOKEN,
+            aiKeyEncryptionSecret: TEST_AI_KEY_ENCRYPTION_SECRET,
+            openBrowser: async () => undefined,
+          }),
+        ],
+      }).compile()
+
+      // Same reason as the case above: `compile()` runs no lifecycle hook,
+      // so without this the ChatGPT provider is not registered at all and
+      // only one source would be available -- which would pass this test
+      // for entirely the wrong reason.
+      await moduleRef.init()
+
+      const fetchSpy = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        throw new Error('no AI request should be made while the choice is pending')
+      })
+      // The `needsChoice` trace is what makes this test discriminating.
+      // `fetchSpy` not being called is necessary but NOT sufficient: with
+      // `moduleRef.init()` removed the ChatGPT provider is never registered,
+      // the Anthropic key becomes the only source and is used, and its SDK
+      // does not go through global `fetch` -- so the fetch assertion alone
+      // still passes while nothing it claims is true. This line only runs on
+      // the `needsChoice` branch of the real `ImportsService`.
+      const debugSpy = jest.spyOn(Logger.prototype, 'debug').mockImplementation()
+
+      try {
+        const preview = await moduleRef
+          .get(ImportsService)
+          .preview(userId, sourceId, csvFile())
+
+        expect(debugSpy).toHaveBeenCalledWith(
+          expect.stringContaining(
+            'both credential sources are available and none is selected',
+          ),
+        )
+        expect(fetchSpy).not.toHaveBeenCalled()
+        expect(preview.rows).toHaveLength(2)
+        expect(preview.rows[0]!.aiSuggestedCategoryId).toBeUndefined()
+        expect(preview.rows[1]!.aiSuggestedCategoryId).toBeUndefined()
+      } finally {
+        debugSpy.mockRestore()
         fetchSpy.mockRestore()
         await moduleRef.close()
       }

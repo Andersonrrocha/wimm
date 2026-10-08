@@ -691,8 +691,15 @@ export class ImportsService {
       if (selection.needsChoice) {
         // Both own-credential sources are available and the user has chosen
         // neither. Guessing would spend one of their own credentials on a
-        // decision they were never shown. Telling them is Task 14's half.
-        this.logger.warn(
+        // decision they were never shown.
+        //
+        // `debug`, not `warn`: this is a legitimate steady state, not a
+        // fault, and it fires on every preview the user runs. The level was
+        // `warn` only while the state had no UI surface at all; the
+        // Preferences tab now shows the chooser and the ChatGPT panel says
+        // what is pending, so the user is told in the product. The line
+        // stays because it is still the only server-side trace of the state.
+        this.logger.debug(
           `AI categorize skipped for user ${userId}: both credential sources are available and none is selected.`,
         )
         return

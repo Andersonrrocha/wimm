@@ -858,7 +858,12 @@ ${'note '.repeat(30)}
 
       // Both own-credential sources available, neither chosen. Picking one
       // would spend a credential on a decision the user never saw.
-      it('warns and makes no suggestion when the selector needs the user to choose', async () => {
+      //
+      // Traced at `debug`, and the `warn` spy is here to assert that: the
+      // state is a legitimate steady one the UI now reports, so it must not
+      // keep shouting on every preview the user runs.
+      it('traces at debug and makes no suggestion when the selector needs the user to choose', async () => {
+        const debug = jest.spyOn(Logger.prototype, 'debug').mockImplementation()
         const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation()
         aiSelectorMock.selectFor.mockResolvedValue({
           provider: null,
@@ -869,13 +874,15 @@ ${'note '.repeat(30)}
           const r = await service.preview('user-1', 'src-1', csvFile())
 
           expect(aiCategorizerMock.categorizeBatch).not.toHaveBeenCalled()
-          expect(warn).toHaveBeenCalledWith(
+          expect(debug).toHaveBeenCalledWith(
             'AI categorize skipped for user user-1: both credential sources are available and none is selected.',
           )
+          expect(warn).not.toHaveBeenCalled()
           expect(r.rows).toHaveLength(2)
           expect(r.rows[0].aiSuggestedCategoryId).toBeUndefined()
         } finally {
           warn.mockRestore()
+          debug.mockRestore()
         }
       })
 
