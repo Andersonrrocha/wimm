@@ -69,7 +69,7 @@
     "chartDateMode": "Chart date mode",
     "chartDateModeHint": "How credit card spending is bucketed in charts. Billing cycle (default) follows the cash-flow view; Purchase date matches typical apps.",
     "aiTitle": "AI categorization",
-    "aiSubtitle": "Optional. When a transaction doesn't match any of your rules, ask Claude to suggest a category. Only the description and amount are sent — never your account, source, or any identifying info.",
+    "aiSubtitle": "Optional. When a transaction doesn't match any of your rules, ask an AI to suggest a category. Only the description and amount are sent — never your account, source, or any identifying info.",
     "aiMode": "Mode",
     "aiModeHint": "Server uses our Anthropic key (cost on us). BYOK uses your own key — strongest privacy, no shared infrastructure.",
     "aiModeOff": "Off (rules only)",

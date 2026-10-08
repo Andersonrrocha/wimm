@@ -69,7 +69,7 @@
     "chartDateMode": "Modo de data nos gráficos",
     "chartDateModeHint": "Como os gastos no cartão de crédito aparecem nos gráficos. Ciclo da fatura (padrão) é a visão de fluxo de caixa; Data da compra é a visão tradicional.",
     "aiTitle": "Categorização por IA",
-    "aiSubtitle": "Opcional. Quando uma transação não bate com nenhuma regra sua, peça ao Claude para sugerir uma categoria. Só a descrição e o valor são enviados — nunca a conta, a fonte ou qualquer dado identificador.",
+    "aiSubtitle": "Opcional. Quando uma transação não bate com nenhuma regra sua, peça a uma IA para sugerir uma categoria. Só a descrição e o valor são enviados — nunca a conta, a fonte ou qualquer dado identificador.",
     "aiMode": "Modo",
     "aiModeHint": "Servidor usa a nossa chave Anthropic (custo nosso). BYOK usa sua própria chave — máxima privacidade, sem infraestrutura compartilhada.",
     "aiModeOff": "Desligado (só regras)",
