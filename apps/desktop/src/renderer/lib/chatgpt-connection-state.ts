@@ -94,6 +94,15 @@ export interface ChatGptStateDescription {
    *
    * False for every `invite` state: there the primary action is "Connect",
    * not "Retry", and offering both would be two buttons for one thing.
+   *
+   * It does not by itself put a "Try again" button on screen.
+   * `shouldOfferRetry` is the question the UI actually asks, and it ignores
+   * this flag entirely while nothing is connected. So `offlineCannotConnect`
+   * carries `retryable: true` -- repeating that connect genuinely could
+   * succeed -- and still renders no second button, because with no
+   * connection "Connect" already *is* the retry. This flag is observable
+   * only on a live connection; for every `!connected` state it describes the
+   * operation without controlling the UI.
    */
   retryable: boolean
   tone: ChatGptTone
@@ -180,21 +189,35 @@ function describeFailure(errorCode: string | undefined): ChatGptStateDescription
  *   API: when the connection is not the credential that runs, no request is
  *   being made through it, so any error in hand is from the past and the
  *   live fact is that the connection is idle.
- * - the two own-credential-source branches immediately after `mode`, and
- *   still ahead of everything about the network or the API, because they are
- *   the same kind of fact as `OFF` and `SERVER`. Under `BYOK` with both
- *   sources available `AiCategorizerSelector` either suggests nothing at all
- *   (nothing chosen -- its `needsChoice`) or routes to the Anthropic key, and
- *   in neither case does a request go through this connection. Below
- *   `online` they would promise that "suggestions resume on their own",
- *   which with nothing chosen they never do; below `sharing` they would
- *   answer "is my plan doing anything?" with "it never can" and leave
- *   unsaid that the Anthropic key is idle too while no choice is stored.
- * - `byokSource` read only under `hasAnthropicKey`, which is the selector's
- *   own rule: one source is used without asking, so with no second source
- *   there is nothing pending and nothing the stored value can redirect.
- *   `CHATGPT_PLAN` falls through on purpose -- the plan is then what runs,
- *   and the branches below are the ones that describe the call it makes.
+ * - `chooseSource` -- both own credentials available and neither stored --
+ *   immediately after `mode`, and still ahead of everything about the
+ *   network or the API, because it is the same kind of fact as `OFF` and
+ *   `SERVER`: `AiCategorizerSelector` answers `needsChoice` and suggests
+ *   nothing at all, so no request goes through this connection. Below
+ *   `online` it would promise that "suggestions resume on their own", which
+ *   with nothing chosen they never do; below `sharing` it would answer "is
+ *   my plan doing anything?" with "it never can" and leave unsaid that the
+ *   Anthropic key is idle too while no choice is stored. That last reason
+ *   belongs to this branch alone -- see the next bullet, which must not be
+ *   read as covered by it.
+ * - `sourceAnthropicKey` -- the Anthropic key is the stored choice -- the
+ *   other way round: *below* `online`, below `errorCode`/`failed`, and
+ *   below `sharing`. Its message ends in "Set it to this plan to use it",
+ *   and with `sharing` false that advice is simply wrong: switching the
+ *   choice to the plan yields `sharingNotEnabled`, not a working plan, so
+ *   `sharingNotEnabled` is both truer and more useful there. The argument
+ *   that keeps `chooseSource` above `sharing` does not transfer, because
+ *   here the Anthropic key is not idle -- it is the credential that runs --
+ *   so reporting the plan's own defect leaves nothing unsaid. Below
+ *   `online` it is harmless for the same reason: with the key doing the
+ *   work, `offline`'s "suggestions resume on their own once the connection
+ *   is back" is true.
+ * - `byokSource` read only under `hasAnthropicKey` in both of those
+ *   branches, which is the selector's own rule: one source is used without
+ *   asking, so with no second source there is nothing pending and nothing
+ *   the stored value can redirect. `CHATGPT_PLAN` falls through on purpose
+ *   -- the plan is then what runs, and the branches below are the ones that
+ *   describe the call it makes.
  * - `online` before `errorCode`: offline, the last code is an artefact of
  *   the dropped connection rather than something the API said.
  * - `errorCode` before `sharing`: the API's own code names the cause
@@ -238,17 +261,8 @@ export function describeChatGptState(
   if (input.mode === 'SERVER') {
     return { messageKey: 'ai.chatgpt.modeServer', tone: 'info', retryable: false }
   }
-  if (input.hasAnthropicKey) {
-    if (input.byokSource === null) {
-      return { messageKey: 'ai.chatgpt.chooseSource', tone: 'info', retryable: false }
-    }
-    if (input.byokSource === 'ANTHROPIC_KEY') {
-      return {
-        messageKey: 'ai.chatgpt.sourceAnthropicKey',
-        tone: 'info',
-        retryable: false,
-      }
-    }
+  if (input.hasAnthropicKey && input.byokSource === null) {
+    return { messageKey: 'ai.chatgpt.chooseSource', tone: 'info', retryable: false }
   }
   if (!input.online) {
     return { messageKey: 'ai.chatgpt.offline', tone: 'info', retryable: true }
@@ -259,7 +273,43 @@ export function describeChatGptState(
   if (!input.sharing) {
     return { messageKey: 'ai.chatgpt.sharingNotEnabled', tone: 'error', retryable: false }
   }
+  if (input.hasAnthropicKey && input.byokSource === 'ANTHROPIC_KEY') {
+    return {
+      messageKey: 'ai.chatgpt.sourceAnthropicKey',
+      tone: 'info',
+      retryable: false,
+    }
+  }
   return { messageKey: 'ai.chatgpt.connected', tone: 'info', retryable: false }
+}
+
+/**
+ * Whether to offer a second, "Try again" button beside the panel's primary
+ * action.
+ *
+ * `ChatGptStateDescription.retryable` is the mapping's judgement about the
+ * *operation* and is right as it stands -- a failed connect could succeed on
+ * a second try. Whether that deserves a second *button* is a different
+ * question, and with nothing connected the answer is no: "Connect" is
+ * already the retry, while "Try again" would only clear the message and
+ * re-read a status that still says not-connected. A failed status call is
+ * its own reason to offer the button regardless of the rest, since
+ * re-checking is exactly what it needs.
+ *
+ * Here rather than inline in the component for the reason this whole module
+ * exists: it is a pure boolean over three values, so the existing `node`
+ * harness covers it, where the same expression written into JSX had no test
+ * that could reach it.
+ */
+export function shouldOfferRetry(input: {
+  /** `ChatGptStateDescription.retryable`. */
+  retryable: boolean
+  /** `ChatGptStatus.connected`. */
+  connected: boolean
+  /** `GET /api/ai/chatgpt/status` itself failed, so nothing is known. */
+  statusFailed: boolean
+}): boolean {
+  return (input.retryable && input.connected) || input.statusFailed
 }
 
 /**

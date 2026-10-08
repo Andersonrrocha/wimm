@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { UseQueryResult } from '@tanstack/react-query'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import type { AiByokSource, AiCategorizationMode } from '@wimm/shared'
 import { useAuth } from '../../context/auth-context'
@@ -12,13 +11,16 @@ import {
   describeChatGptState,
   readChatGptFailure,
   readChatGptStatus,
+  shouldOfferRetry,
 } from '../../lib/chatgpt-connection-state'
 import { cn } from '../../lib/cn'
 import { dateFnsLocaleForLang } from '../../lib/date-fns-locale'
 import { formatDateTime } from '../../lib/dates'
+import {
+  CHATGPT_STATUS_QUERY_KEY,
+  useChatGptStatus,
+} from '../../lib/use-chatgpt-status'
 import { Button } from '../ui/button'
-
-const STATUS_QUERY_KEY = ['chatgpt-status']
 
 const NO_CONNECTION: ChatGptStatus = readChatGptStatus(undefined)
 const NO_FAILURE: ChatGptFailure = { failed: false, declined: false, errorCode: undefined }
@@ -28,31 +30,6 @@ const toneClass: Record<ChatGptTone, string> = {
   invite: 'text-fg-muted',
   info: 'text-info',
   error: 'text-negative',
-}
-
-/**
- * `GET /api/ai/chatgpt/status` as one React Query entry, shared by every
- * caller.
- *
- * Exported because the Preferences tab needs the same `connected` flag to
- * decide whether the credential-source choice is real at all, and one query
- * key reading one route is how both learn it. A second `useQuery` with its
- * own `queryFn` would be a second definition of the same server state, free
- * to disagree with this one.
- *
- * Disabled outside local mode: `ChatGptController` is registered by
- * `LocalOnlyAiModule`, so in hosted mode the route does not exist.
- */
-export function useChatGptStatus(): UseQueryResult<ChatGptStatus> {
-  const { mode } = useAuth()
-  return useQuery({
-    queryKey: STATUS_QUERY_KEY,
-    enabled: mode?.mode === 'local',
-    queryFn: async () => {
-      const { data } = await apiClient.get<unknown>('/ai/chatgpt/status')
-      return readChatGptStatus(data)
-    },
-  })
 }
 
 interface ChatGptConnectionProps {
@@ -109,9 +86,12 @@ interface ChatGptConnectionProps {
  * payload from four named fields, so even a future API that grew a token
  * field could not deliver one into React state here.
  *
- * Every decision -- which message, which tone, whether a retry is worth
- * offering -- is `describeChatGptState`, which is unit-tested in
- * `renderer/lib`. This file renders that result and nothing else. It carries
+ * Every decision this panel makes is in `renderer/lib`, where the unit
+ * harness reaches it: `describeChatGptState` for which message and which
+ * tone, and `shouldOfferRetry` for whether a second "Try again" button
+ * appears. This file renders their results, formats the account rows, and
+ * owns only its own lifecycle wiring -- the `online` listeners and the
+ * `onMutate` failure clear, which are not decisions over values. It carries
  * no automated test of its own, as no renderer component in this repository
  * does today: `jest.config.js` reaches only `src/main` and
  * `src/renderer/lib`, with `testEnvironment: 'node'` and `**\/*.spec.ts`.
@@ -146,7 +126,7 @@ export function ChatGptConnection({
   // and `aiMode` here comes from that same user record.
   const settle = async (): Promise<void> => {
     setFailure(NO_FAILURE)
-    await qc.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
+    await qc.invalidateQueries({ queryKey: CHATGPT_STATUS_QUERY_KEY })
     await refreshUser()
   }
 
@@ -280,15 +260,14 @@ export function ChatGptConnection({
           </Button>
         )}
 
-        {/* `retryable` is the mapping's judgement about the connection and
-            is right as it stands -- a failed connect could succeed on a
-            second try. Whether that deserves a *second button* is this
-            component's call, and with nothing connected it does not:
-            "Connect" is the retry, while "Try again" would only clear the
-            message and re-read a status that says not-connected. A failed
-            status call is its own reason to offer the button regardless,
-            since re-checking is exactly what it needs. */}
-        {(description.retryable && status.connected) || statusQuery.isError ? (
+        {/* The rule itself, and why `retryable` alone is not it, are in
+            `shouldOfferRetry`'s own doc comment -- it lives in
+            `renderer/lib` so the unit harness can pin it. */}
+        {shouldOfferRetry({
+          retryable: description.retryable,
+          connected: status.connected,
+          statusFailed: statusQuery.isError,
+        }) ? (
           <Button
             variant="ghost"
             size="sm"

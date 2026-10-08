@@ -83,7 +83,7 @@
     "aiKeyInvalid": "Chaves Anthropic começam com sk-ant-…",
     "aiKeyFailed": "Não foi possível salvar a chave.",
     "aiByokSourceLabel": "Fonte da credencial",
-    "aiByokSourceHint": "Você tem uma chave Anthropic e um plano ChatGPT. Escolha qual vai categorizar — nada é sugerido até você escolher.",
+    "aiByokSourceHint": "Você tem uma chave Anthropic e um plano ChatGPT. Escolha qual vai categorizar.",
     "aiByokSourcePlaceholder": "Ainda não escolhida",
     "aiByokSourceAnthropicKey": "Chave da API Anthropic",
     "aiByokSourceChatGptPlan": "Plano ChatGPT",

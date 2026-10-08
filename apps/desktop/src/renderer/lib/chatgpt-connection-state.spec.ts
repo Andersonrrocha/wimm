@@ -4,6 +4,7 @@ import {
   describeChatGptState,
   readChatGptFailure,
   readChatGptStatus,
+  shouldOfferRetry,
 } from './chatgpt-connection-state'
 
 /**
@@ -252,6 +253,22 @@ describe('describeChatGptState', () => {
     ).toBe('ai.chatgpt.connected')
   })
 
+  // The reason `chooseSource` outranks `sharing` does not transfer here: the
+  // Anthropic key is the credential that runs, so it is not idle, and
+  // `sourceAnthropicKey` ends in "Set it to this plan to use it" -- advice
+  // that is false while the plan cannot share, because setting it to the
+  // plan yields exactly this state instead.
+  it('does not promise the plan would work when the plan cannot share', () => {
+    const state = describeChatGptState({
+      ...base,
+      hasAnthropicKey: true,
+      byokSource: AiByokSource.ANTHROPIC_KEY,
+      sharing: false,
+    })
+    expect(state.messageKey).toBe('ai.chatgpt.sharingNotEnabled')
+    expect(state.messageKey).not.toBe('ai.chatgpt.sourceAnthropicKey')
+  })
+
   // Same ranking the mode branches get, for the same reason: with no choice
   // stored nothing runs, so an error in hand is from the past and `offline`'s
   // "suggestions resume on their own" is a promise nothing will keep.
@@ -280,6 +297,48 @@ describe('describeChatGptState', () => {
       expect(describeChatGptState({ ...base, errorCode: code }).messageKey).not.toBe(
         'ai.chatgpt.unknownError',
       )
+    }
+  })
+})
+
+describe('shouldOfferRetry', () => {
+  it('offers the button for a retryable failure on a live connection', () => {
+    expect(
+      shouldOfferRetry({ retryable: true, connected: true, statusFailed: false }),
+    ).toBe(true)
+  })
+
+  // The whole point of the predicate: `offlineCannotConnect` and every other
+  // `!connected` state carries its own `retryable`, and none of them may
+  // produce a second button, because "Connect" already is the retry there.
+  it('offers no second button while nothing is connected, however retryable', () => {
+    expect(
+      shouldOfferRetry({ retryable: true, connected: false, statusFailed: false }),
+    ).toBe(false)
+    expect(
+      describeChatGptState({
+        ...base,
+        connected: false,
+        sharing: false,
+        failed: true,
+        online: false,
+      }).retryable,
+    ).toBe(true)
+  })
+
+  it('offers no button for a non-retryable failure on a live connection', () => {
+    expect(
+      shouldOfferRetry({ retryable: false, connected: true, statusFailed: false }),
+    ).toBe(false)
+  })
+
+  // A status call that failed is its own reason: re-reading the status is
+  // exactly what it needs, and no other input is known at that point.
+  it('offers the button whenever the status call itself failed', () => {
+    for (const retryable of [true, false]) {
+      for (const connected of [true, false]) {
+        expect(shouldOfferRetry({ retryable, connected, statusFailed: true })).toBe(true)
+      }
     }
   })
 })

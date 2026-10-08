@@ -11,15 +11,13 @@ import { useAuth } from '../../context/auth-context'
 import { apiClient } from '../../lib/api-client'
 import { Button } from '../../components/ui/button'
 import { ChartDateModeToggle } from '../../components/ui/chart-date-mode-toggle'
-import {
-  ChatGptConnection,
-  useChatGptStatus,
-} from '../../components/settings/chatgpt-connection'
+import { ChatGptConnection } from '../../components/settings/chatgpt-connection'
 import { Field } from '../../components/ui/field'
 import { Panel } from '../../components/ui/panel'
 import { ProfileBackupsSection } from '../../components/profile-backups'
 import { ProfileSwitcher } from '../../components/profile-switcher'
 import { Select } from '../../components/ui/select'
+import { useChatGptStatus } from '../../lib/use-chatgpt-status'
 
 export function PreferencesTab(): JSX.Element {
   const { t } = useTranslation()
@@ -215,6 +213,21 @@ export function PreferencesTab(): JSX.Element {
               disabled={pending || !user}
               placeholder={t('settings.aiByokSourcePlaceholder')}
               options={[
+                // "Not chosen yet" as the first option, not as Radix's
+                // placeholder. `Select` maps `''` to an internal token
+                // before handing it to Radix, and Radix shows the
+                // placeholder only for `''` or `undefined` -- so with no
+                // option carrying `''` the trigger rendered neither the
+                // placeholder nor a matching item, i.e. blank, in exactly
+                // the state this control exists for. Same shape as
+                // `imports-page.tsx` and `recurrences-page.tsx`.
+                // `disabled` keeps it unselectable, so
+                // `onByokSourceChange`'s enum guard stays the only writer.
+                {
+                  value: '',
+                  label: t('settings.aiByokSourcePlaceholder'),
+                  disabled: true,
+                },
                 {
                   value: 'ANTHROPIC_KEY',
                   label: t('settings.aiByokSourceAnthropicKey'),

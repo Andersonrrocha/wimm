@@ -83,7 +83,7 @@
     "aiKeyInvalid": "Anthropic keys start with sk-ant-…",
     "aiKeyFailed": "Could not save the key.",
     "aiByokSourceLabel": "Credential source",
-    "aiByokSourceHint": "You have both an Anthropic key and a ChatGPT plan. Pick which one categorizes — nothing is suggested until you do.",
+    "aiByokSourceHint": "You have both an Anthropic key and a ChatGPT plan. Pick which one categorizes.",
     "aiByokSourcePlaceholder": "Not chosen yet",
     "aiByokSourceAnthropicKey": "Anthropic API key",
     "aiByokSourceChatGptPlan": "ChatGPT plan",
