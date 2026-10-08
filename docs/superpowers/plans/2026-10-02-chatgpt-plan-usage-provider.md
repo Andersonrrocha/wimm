@@ -2765,6 +2765,24 @@ git commit -m "feat(desktop): map ChatGPT failure states and add the connection 
 
 ---
 
+### F5. `pnpm lint` never type-checks the renderer — **repo-wide, found in Task 12**
+
+`apps/desktop/tsconfig.json` is solution-style: `files: []` with `references` to `tsconfig.node.json` and `tsconfig.web.json`. The lint script runs `tsc --noEmit` against it **without `-b`**, so that invocation checks **nothing**; the other two targets are `tsconfig.scripts.json` and `tsconfig.spec.json`. The renderer's own `.tsx` sources have therefore never been type-checked by `lint` or by CI.
+
+Running the real check (`tsc --noEmit -p apps/desktop/tsconfig.web.json`) reports **89 errors**. They are not this plan's: 76 are the repo-wide `Cannot find namespace 'JSX'` that React 19 introduced by moving it to `React.JSX`, and the rest are `include`-allowlist complaints.
+
+**It already hid a genuine crash.** `rules-tab.tsx:235` called `categoryDisplayName` without importing it — a `ReferenceError` whenever the rules tab rendered a rule row. The use arrived in `61837d6`; a later commit, `56c9a9b`, replaced that import with `buildCategoryOptionGroups` and did not notice the other call site. **Fixed in this plan** (`fix(desktop): import categoryDisplayName in the rules tab`) because it is a real crash and the fix is one line — but the reason it survived is F5, and F5 is not fixed.
+
+**Shape:** change the lint target to `tsc -b --noEmit` (or add `tsconfig.web.json` explicitly), then clear the 76 `JSX` occurrences with `import type { JSX } from 'react'`. Mechanical but broad, across roughly 30 files, and it must not be mixed into a feature commit.
+
+### F6. The seven `subscription_sharing_*` messages cannot reach the UI
+
+Task 9 maps all seven codes to distinct messages and Task 12 renders them, both correctly and both tested. But nothing can deliver them: those codes are raised by the provider during import categorization, where `ImportsService` catches the failure and logs a warning — AI is advisory and must never gate an import. None of the three ChatGPT routes populates a `code`.
+
+So the states reachable today are `notConnected`, `declined`, `connected`, `modeOff`, `offline` and `sharingNotEnabled`. The other seven are correct, tested, and dead.
+
+**Decide, do not drift:** either the import preview surfaces a categorization failure to the user (which means deciding what "AI is advisory" means when the user should know their weekly cap is spent), or those seven messages are acknowledged as reachable only once something routes that signal. The design's failure table assumes the former — `subscription_sharing_usage_limit_exceeded` is the weekly-cap row, and a user who hit their own cap is exactly who needs telling.
+
 ## Task 13: Full sweep and the packaging guard
 
 **Files:** none created; this task is verification.
