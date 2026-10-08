@@ -30,6 +30,8 @@ interface Harness {
   opened: string[]
   /** Read through a method, so the live count is observed rather than a copy taken at load time. */
   browserWindowsConstructed: () => number
+  /** How many times `require('electron')` has run. */
+  electronRequired: () => number
 }
 
 /**
@@ -43,11 +45,16 @@ interface Harness {
 function load(options: { openExternalRejectsWith?: Error } = {}): Harness {
   jest.resetModules()
   const opened: string[] = []
+  // Counts how many times the `electron` factory ran, so a test can prove the
+  // module does not pull it in at import time.
+  const electronRequired = { count: 0 }
   // Mutable counter shared with the mock below; read through a method so the
   // test observes the live value rather than a copy taken at load time.
   const constructed = { count: 0 }
 
-  jest.doMock('electron', () => ({
+  jest.doMock('electron', () => {
+    electronRequired.count += 1
+    return {
     shell: {
       openExternal: async (url: string) => {
         if (options.openExternalRejectsWith) {
@@ -63,7 +70,8 @@ function load(options: { openExternalRejectsWith?: Error } = {}): Harness {
         constructed.count += 1
       }
     },
-  }))
+    }
+  })
 
   // eslint-disable-next-line @typescript-eslint/no-var-requires -- must be required AFTER the doMock call above, never statically imported.
   const mod = require('./chatgpt-browser') as BrowserModule
@@ -71,6 +79,7 @@ function load(options: { openExternalRejectsWith?: Error } = {}): Harness {
     openChatGptAuthorizeUrl: mod.openChatGptAuthorizeUrl,
     opened,
     browserWindowsConstructed: () => constructed.count,
+    electronRequired: () => electronRequired.count,
   }
 }
 
@@ -80,6 +89,61 @@ describe('openChatGptAuthorizeUrl', () => {
     const url = 'https://auth.openai.com/authorize?client_id=dynamic_agent_client&state=s'
     await harness.openChatGptAuthorizeUrl(url)
     expect(harness.opened).toEqual([url])
+  })
+
+  it('does not require electron until it is actually called', async () => {
+    // Not a style point. A static `import { shell } from 'electron'` put the
+    // package on the module-load path of `local-api.ts`, and so of three
+    // suites that had been electron-free. `electron/index.js` reads
+    // `path.txt` and, when missing, `spawnSync`s a ~100 MB download or
+    // throws -- and CI's ubuntu `verify` job, the one that runs `pnpm test`,
+    // has no Electron cache step. Those suites would have fetched the binary
+    // inside a Jest module load, or failed to load, on a clean runner.
+    const harness = load()
+    expect(harness.electronRequired()).toBe(0)
+
+    await harness.openChatGptAuthorizeUrl('https://auth.openai.com/authorize')
+    expect(harness.electronRequired()).toBe(1)
+  })
+
+  it('hands over the normalised URL, not the raw input', async () => {
+    // Validating one string and opening another leaves the gate resting on
+    // Node's parser and Chromium's agreeing about every input. WHATWG reads
+    // the backslash below as a slash, so the host is the issuer's -- but a
+    // lenient RFC 3986 consumer would read `evil.example`.
+    const harness = load()
+    const raw = 'https://auth.openai.com\\@evil.example/authorize'
+    const normalised = new URL(raw).href
+
+    await harness.openChatGptAuthorizeUrl(raw)
+
+    expect(harness.opened).toEqual([normalised])
+    expect(harness.opened[0]).not.toBe(raw)
+  })
+
+  it.each([
+    ['a blob URL inheriting the issuer origin', 'blob:https://auth.openai.com/0b4d'],
+    ['a userinfo prefix', 'https://auth.openai.com@evil.example/authorize'],
+    ['a trailing-dot host', 'https://auth.openai.com./authorize'],
+    ['a Cyrillic homograph host', 'https://auth.op\u0435nai.com/authorize'],
+  ])('refuses %s', async (_why, hostile) => {
+    const harness = load()
+    await expect(harness.openChatGptAuthorizeUrl(hostile)).rejects.toThrow()
+    expect(harness.opened).toEqual([])
+  })
+
+  it('carries no cause on the unparseable branch either', async () => {
+    // Node's own `ERR_INVALID_URL` carries `.input` -- the whole URL. This is
+    // the measured leak, not a hypothetical one, and it is the third throw
+    // site, which the other no-leak tests did not reach.
+    const harness = load()
+    const failure = await harness
+      .openChatGptAuthorizeUrl('not-a-url')
+      .catch((error: Error) => error)
+
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).cause).toBeUndefined()
+    expect((failure as Error).message).not.toContain('not-a-url')
   })
 
   it('never constructs a BrowserWindow', async () => {

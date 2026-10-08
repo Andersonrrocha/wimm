@@ -40,8 +40,11 @@ export type OpenBrowser = (url: string) => Promise<void>
  * on the user's first sign-in attempt.
  *
  * `undefined` is still allowed and becomes `null`: a composition that supplies
- * no opener refuses a connect with a message, and Task 11 turns that into a
- * compose-time requirement.
+ * no opener refuses a connect with a message. Task 11 was going to make that a
+ * compose-time requirement and deliberately did not: 16 `forRoot` boots in
+ * the API's own specs pass no opener because they test sources, session
+ * tokens and route posture, so the guarantee is enforced at the production
+ * composer (`local-api.ts`) and checked there instead.
  */
 export function assertUsableOpenBrowser(
   value: unknown,
@@ -84,8 +87,10 @@ export interface ChatGptConnectDeps {
   exchange: typeof exchangeCode
   /**
    * `null` when the composition supplied none. `connect` then refuses before
-   * it touches the network -- see there. Task 11 turns that into a
-   * compose-time refusal, at which point this can stop being nullable.
+   * it touches the network -- see there. This stays nullable on purpose: Task 11
+   * enforces the opener at the production composer rather than at compose
+   * time, because most `forRoot` boots in the API's specs have no business
+   * carrying a browser.
    */
   openBrowser: OpenBrowser | null
   appName?: string

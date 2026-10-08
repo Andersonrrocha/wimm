@@ -446,9 +446,9 @@ async function bootProfileDatabase(
   // `AppLocalModule.forRoot` treats it as optional (absent becomes `null`,
   // and `ChatGptConnectFlow.connect` then refuses by name rather than
   // opening nothing and waiting out its listener's timeout) precisely so the
-  // seventeen of the API's own eighteen `forRoot` boots that are testing
-  // sources, session tokens and route posture need not each carry a browser
-  // stub, nor every future unrelated spec after them.
+  // API's own `forRoot` boots -- which mostly test sources, session tokens
+  // and route posture -- need not each carry a browser stub, nor every
+  // future unrelated spec after them.
   // This is the only non-spec composer, so this is the one place that MUST
   // supply one, and `local-api.spec.ts` proves it does by booting this exact
   // path against the real built `@wimm/api/dist`. Dropping it here would ship

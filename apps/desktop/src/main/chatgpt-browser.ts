@@ -28,9 +28,31 @@
  * input on this path an attacker could hope to influence. This function is
  * the last place that can be stopped, so it is where the check belongs.
  */
-import { shell } from 'electron'
-
 import { CHATGPT_ISSUER } from '@wimm/api/dist/ai/local-only/chatgpt-oidc'
+
+/**
+ * `electron` is required lazily, inside the call, and that is not a style
+ * choice.
+ *
+ * A static import put it on the module-load path of `local-api.ts`, and so of
+ * `local-api.spec.ts`, `local-api-bridge.spec.ts` and `updater.spec.ts` --
+ * three suites that had been electron-free. `electron/index.js` reads
+ * `path.txt` and, when it is missing, `spawnSync`s `install.js`: a
+ * synchronous ~100 MB binary download, or a throw. Electron 42+ dropped the
+ * postinstall script, and CI's `verify` job -- ubuntu, the one that runs
+ * `pnpm test` -- has no Electron cache step; only `cross-platform` does. So a
+ * static import meant those three suites would either fetch the binary inside
+ * a Jest module load or fail to load at all on a clean runner. It passes on a
+ * developer machine purely because the binary is already there.
+ *
+ * `jest.doMock('electron', ...)` before `require`-ing this module still
+ * intercepts it, because the lookup happens at call time.
+ */
+async function openWithShell(url: string): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { shell } = require('electron') as typeof import('electron')
+  await shell.openExternal(url)
+}
 
 /**
  * The only origin an authorize URL may have: the issuer's, parsed from
@@ -68,10 +90,16 @@ const ISSUER_ORIGIN = new URL(CHATGPT_ISSUER).origin
  * `code_challenge` is public by design, but this is the one new log surface
  * this module opens and a static message costs nothing.
  *
- * For the same reason neither error below carries a `cause`: Node prints a
- * cause's own message alongside the error, so attaching the underlying
- * `openExternal` rejection (whose text routinely quotes the URL it could not
- * open) would reintroduce exactly what these constants exist to avoid.
+ * For the same reason no error below carries a `cause`. The evidence is
+ * narrower than it first looks, and worth stating accurately: V8 excludes a
+ * `cause` from `.stack`, so Nest's filter -- which logs `message` and
+ * `stack` -- would not have printed it. But `util.inspect`,
+ * `console.error(err)` and uncaught-exception printing all do. And on macOS
+ * with Electron 43 the `openExternal` rejection is the static "No application
+ * found to open URL", carrying no URL at all; Windows and Linux are
+ * unverified. So this is cheap insurance against platform behaviour we do not
+ * know, rather than a fix for a leak that was measured. The measured case is
+ * Node's own `ERR_INVALID_URL`, which carries `.input`: the whole URL.
  */
 const REFUSED_MESSAGE =
   'Refusing to open the ChatGPT authorize URL: its origin is not the expected issuer. ' +
@@ -102,12 +130,24 @@ export async function openChatGptAuthorizeUrl(url: string): Promise<void> {
     throw new Error(REFUSED_MESSAGE)
   }
 
-  if (parsed.origin !== ISSUER_ORIGIN) {
+  // `blob:https://auth.openai.com/<uuid>` inherits its inner origin, so an
+  // origin check alone accepts it. Inert today -- no OS registers a `blob:`
+  // handler, and discovery requires https -- but the scheme is exactly what
+  // the `http://` near-miss is about, so pin it too.
+  if (parsed.protocol !== 'https:' || parsed.origin !== ISSUER_ORIGIN) {
     throw new Error(REFUSED_MESSAGE)
   }
 
   try {
-    await shell.openExternal(url)
+    // `parsed.href`, NOT the raw input. Validating one string and handing over
+    // another leaves the gate resting on Node's parser and Chromium's
+    // agreeing about every input. They mostly do -- a backslash becomes a
+    // slash, a NUL or a newline is stripped -- but
+    // `https://auth.openai.com\@evil.example` parses to the issuer's host
+    // under WHATWG while reading as `evil.example` to a lenient RFC 3986
+    // consumer. Normalising once removes the question instead of answering it
+    // per input.
+    await openWithShell(parsed.href)
   } catch {
     throw new Error(OPEN_FAILED_MESSAGE)
   }

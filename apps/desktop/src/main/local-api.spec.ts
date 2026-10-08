@@ -398,7 +398,7 @@ describe('per-profile AI key encryption secret (Task 1, phase 4c)', () => {
  *
  * `AppLocalModule.forRoot`'s `openBrowser` option stays optional (absent
  * becomes `null`, and `ChatGptConnectFlow.connect` refuses by name) because
- * seventeen of the eighteen `forRoot` boots across `app.local.module.spec.ts`
+ * most `forRoot` boots across `app.local.module.spec.ts`
  * and `local-route-posture.spec.ts` are testing sources, session tokens and
  * route posture and have no business carrying a browser stub. What matters
  * is narrower and better tested here: that the ONE non-spec composer -- the
