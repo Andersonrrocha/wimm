@@ -21,7 +21,12 @@
 /** @type {import('jest').Config} */
 module.exports = {
   testEnvironment: 'node',
-  roots: ['<rootDir>/src/main', '<rootDir>/src/renderer/lib'],
+  // `scripts` is here for the packaging guards. They had no harness at all --
+  // the root `jest.config.js` covers only the repository-root `scripts/`, and
+  // this list previously stopped at the renderer -- which is how
+  // `verify-local-only-ai-in-package.cjs` kept a blind spot that passed on
+  // any non-empty archive listing.
+  roots: ['<rootDir>/src/main', '<rootDir>/src/renderer/lib', '<rootDir>/scripts'],
   testMatch: ['**/*.spec.ts'],
   transform: {
     '^.+\\.ts$': [

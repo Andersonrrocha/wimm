@@ -37,6 +37,8 @@
  * `after-pack.cjs` calls `assertLocalOnlyAiShipped` as its last step.
  */
 const asar = require('@electron/asar')
+const fs = require('node:fs')
+const path = require('node:path')
 
 /**
  * Any packaged path containing this segment is local-only by convention.
@@ -47,22 +49,69 @@ const asar = require('@electron/asar')
 const LOCAL_ONLY_MARKER = '/ai/local-only/'
 
 /**
+ * Where the compiled modules this guard expects to find come from: the
+ * `@wimm/api` build output that packaging is supposed to copy into the
+ * archive.
+ *
+ * Derived rather than hard-coded. A frozen list of eleven module names would
+ * be a second place to update every time a local-only module is added, and
+ * the failure mode of forgetting is silent -- the new module could be
+ * dropped from the archive and this guard would still pass, which is the
+ * class of bug it exists to prevent.
+ */
+const BUILT_LOCAL_ONLY_DIR = path.join(__dirname, '..', '..', 'api', 'dist', 'ai', 'local-only')
+
+/**
  * Every entry in `asarPath` whose path contains `LOCAL_ONLY_MARKER`, read
  * from the real archive rather than from packaging configuration.
  */
-function findLocalOnlyEntries(asarPath) {
-  return asar.listPackage(asarPath).filter((entryPath) => entryPath.includes(LOCAL_ONLY_MARKER))
+function findLocalOnlyEntries(asarPath, listPackage = asar.listPackage) {
+  return listPackage(asarPath).filter((entryPath) => entryPath.includes(LOCAL_ONLY_MARKER))
 }
 
 /**
- * Throws if `asarPath` ships no local-only AI provider file at all. The
- * mutation proof for this breaks it on purpose by restoring a
- * `"!node_modules/@wimm/api/dist/ai/local-only/**\/*"` exclusion to
- * `build.files` and repackaging: the files vanish from the archive and this
- * throws.
+ * The compiled module filenames the archive must carry, read from
+ * `BUILT_LOCAL_ONLY_DIR`.
+ *
+ * Source maps and declaration files are excluded: they are build artefacts
+ * whose absence breaks no runtime behaviour, and requiring them would make
+ * this guard fail for a correct archive built with `sourceMap: false`.
  */
-function assertLocalOnlyAiShipped(asarPath) {
-  const localOnlyEntries = findLocalOnlyEntries(asarPath)
+function readExpectedModules(dir = BUILT_LOCAL_ONLY_DIR) {
+  return fs
+    .readdirSync(dir)
+    .filter((name) => name.endsWith('.js'))
+    .sort()
+}
+
+/**
+ * Throws unless `asarPath` ships every compiled local-only AI module.
+ *
+ * **Why every module and not merely one.** This check used to pass as long
+ * as the filtered list was non-empty. That closed the total-exclusion case
+ * -- a restored `build.files` exclusion makes the files vanish wholesale --
+ * and left a partial drop invisible: ten of eleven modules missing still
+ * printed OK, and `electron-builder`'s collector has dropped individual
+ * files in this project before (it omitted `yocto-queue` entirely, and
+ * substituted `path-to-regexp` into `express`'s own nested tree). A module
+ * missing from `node_modules/@wimm/api/dist/ai/local-only/` fails at
+ * `require` time inside the packaged app, long after the build reported
+ * success, and the user sees AI categorization that silently does nothing.
+ *
+ * The two failures are reported separately on purpose: an empty archive
+ * list points at `build.files` and at whether `@wimm/api` was built, while a
+ * partial list points at the collector and names the modules that went
+ * missing. Collapsing them would send a reader to the wrong place.
+ *
+ * `listPackage` and `expectedModules` are injectable for the same reason the
+ * rest of this feature injects its edges: the real ones read the filesystem,
+ * and the spec needs to drive both sides without producing an archive.
+ */
+function assertLocalOnlyAiShipped(
+  asarPath,
+  { listPackage = asar.listPackage, expectedModules = readExpectedModules } = {},
+) {
+  const localOnlyEntries = findLocalOnlyEntries(asarPath, listPackage)
 
   if (localOnlyEntries.length === 0) {
     throw new Error(
@@ -73,10 +122,42 @@ function assertLocalOnlyAiShipped(asarPath) {
         'node_modules/@wimm/api/dist/ai/local-only/, and that @wimm/api was built before packaging.',
     )
   }
+
+  const expected = expectedModules()
+
+  // A guard that derives what to look for cannot prove anything when the
+  // reference itself is empty -- it would report OK for any archive at all.
+  // That is the same vacuous pass this function was rewritten to close, one
+  // level up, so it gets its own refusal rather than being folded into the
+  // check above.
+  if (expected.length === 0) {
+    throw new Error(
+      '[verify-local-only-ai-in-package] refusing to continue -- found no compiled modules in ' +
+        `${BUILT_LOCAL_ONLY_DIR} to check the archive against, so this guard can prove nothing. ` +
+        'Build @wimm/api before packaging.',
+    )
+  }
+
+  const missing = expected.filter(
+    (name) => !localOnlyEntries.some((entryPath) => entryPath.endsWith(`${LOCAL_ONLY_MARKER}${name}`)),
+  )
+
+  if (missing.length > 0) {
+    throw new Error(
+      `[verify-local-only-ai-in-package] refusing to continue -- ${asarPath} is missing ` +
+        `${missing.length} of ${expected.length} compiled local-only AI modules: ` +
+        `${missing.join(', ')}. The archive carries some of them, so build.files is matching; ` +
+        "this is electron-builder's file collector dropping individual files, which it has done " +
+        'in this project before. Each missing module fails at require time inside the packaged ' +
+        'app, after the build reports success.',
+    )
+  }
 }
 
 module.exports = {
   LOCAL_ONLY_MARKER,
+  BUILT_LOCAL_ONLY_DIR,
   findLocalOnlyEntries,
+  readExpectedModules,
   assertLocalOnlyAiShipped,
 }

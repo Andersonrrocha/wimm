@@ -25,6 +25,7 @@
     "src/renderer/lib/chatgpt-connection-state.ts",
     "src/renderer/lib/chatgpt-connection-state.spec.ts",
     "src/renderer/lib/locale-parity.spec.ts",
+    "scripts/verify-local-only-ai-in-package.spec.ts",
     "src/renderer/i18n/locales/en.json",
     "src/renderer/i18n/locales/pt.json"
   ],
