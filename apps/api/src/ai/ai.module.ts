@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common'
+import { AiCategorizerSelector } from './ai-categorizer-selector.service'
 import { AI_PROVIDERS, AiProviderRegistry } from './ai-provider.registry'
 import type { AiProvider } from './ai-provider.interface'
 import { AiKeyCrypto } from './ai-key-crypto'
@@ -43,12 +44,14 @@ export function buildAiProviders(anthropic: AnthropicCategorizerService): AiProv
       inject: [AnthropicCategorizerService],
     },
     AiProviderRegistry,
+    AiCategorizerSelector,
   ],
   exports: [
     AiKeyCrypto,
     AiKeyResolverService,
     AnthropicCategorizerService,
     AiProviderRegistry,
+    AiCategorizerSelector,
   ],
 })
 export class AiModule {}

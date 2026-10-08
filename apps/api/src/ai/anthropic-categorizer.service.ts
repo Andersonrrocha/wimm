@@ -57,6 +57,16 @@ export class AnthropicCategorizerService implements AiProvider {
 
   constructor(private readonly keys: AiKeyResolverService) {}
 
+  /**
+   * Whether a key can be resolved for this user -- the same resolution
+   * `categorizeBatch` does, which is why it is cheap and why it cannot
+   * disagree with what a real call would find. The key itself is discarded
+   * here and never leaves this expression.
+   */
+  async hasCredentialFor(userId: string): Promise<boolean> {
+    return (await this.keys.resolveForUser(userId)) !== null
+  }
+
   async categorizeBatch(args: {
     userId: string
     transactions: AiCategorizeInput[]

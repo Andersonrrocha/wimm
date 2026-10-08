@@ -4,6 +4,7 @@ import type { AiProvider } from './ai-provider.interface'
 function fakeProvider(id: string): AiProvider {
   return {
     id,
+    hasCredentialFor: jest.fn().mockResolvedValue(false),
     categorizeBatch: jest.fn().mockResolvedValue([]),
   }
 }

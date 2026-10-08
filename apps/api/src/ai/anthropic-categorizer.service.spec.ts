@@ -110,4 +110,39 @@ describe('AnthropicCategorizerService', () => {
     expect(resolveForUser).not.toHaveBeenCalled()
     expect(mockAnthropicConstructor).not.toHaveBeenCalled()
   })
+
+  describe('hasCredentialFor', () => {
+    it('is true for a user whose key resolves', async () => {
+      resolveForUser.mockResolvedValue('test-anthropic-key')
+
+      expect(await service.hasCredentialFor('user-1')).toBe(true)
+      expect(resolveForUser).toHaveBeenCalledWith('user-1')
+    })
+
+    it('is false for a user whose key does not resolve', async () => {
+      resolveForUser.mockResolvedValue(null)
+
+      expect(await service.hasCredentialFor('user-1')).toBe(false)
+    })
+
+    // `AiProvider.hasCredentialFor` is contractually cheap and
+    // side-effect-free: selection calls it on every enabled preview, so it
+    // must never build a client or reach the API.
+    it('builds no client and calls the API not at all', async () => {
+      await service.hasCredentialFor('user-1')
+
+      expect(mockAnthropicConstructor).not.toHaveBeenCalled()
+      expect(mockMessagesCreate).not.toHaveBeenCalled()
+    })
+
+    // The resolved key is a secret; the answer is one bit about it.
+    it('returns a plain boolean, never the key it looked at', async () => {
+      resolveForUser.mockResolvedValue('sk-ant-SENTINEL-must-not-escape')
+
+      const answer = await service.hasCredentialFor('user-1')
+
+      expect(typeof answer).toBe('boolean')
+      expect(JSON.stringify(answer)).not.toContain('SENTINEL')
+    })
+  })
 })

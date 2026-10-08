@@ -38,6 +38,19 @@ import type {
 export interface AiProvider {
   readonly id: string
 
+  /**
+   * Whether this provider has a usable credential for the user right now.
+   *
+   * Selection needs this and `categorizeBatch` cannot answer it: a provider
+   * with no credential returns `[]`, which is indistinguishable from "no
+   * suggestion applied". Cheap and side-effect-free by contract -- a local
+   * read, never a network call, and never a token refresh.
+   *
+   * A boolean and nothing else. No part of the credential it looked at may
+   * appear in the return value, in a log line, or in a thrown error.
+   */
+  hasCredentialFor(userId: string): Promise<boolean>
+
   categorizeBatch(args: {
     userId: string
     transactions: AiCategorizeInput[]

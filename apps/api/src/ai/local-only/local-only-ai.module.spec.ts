@@ -346,4 +346,33 @@ describe('LocalOnlyAiModule (wired)', () => {
       expect(fetchSpy).not.toHaveBeenCalled()
     })
   })
+
+  describe('availability, through the real store', () => {
+    const available = () => inLocal(ChatGptOAuthProvider).hasCredentialFor(userId)
+
+    it('reports a connection the profile secret can actually read', async () => {
+      await storeWith(secret).save(userId, 'client-1', credentials())
+
+      expect(await available()).toBe(true)
+      // Cheap by contract: nothing about asking goes near the network.
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    it('reports no connection when there is none', async () => {
+      expect(await available()).toBe(false)
+    })
+
+    // Same reasoning as `categorizeBatch`'s undecryptable case: a profile
+    // exported and reopened without its secret has a row but no credential,
+    // and must read as not connected rather than as connected-but-silent.
+    it('reports no connection for a profile whose tokens it cannot decrypt', async () => {
+      await storeWith(generateAiKeyEncryptionSecret()).save(
+        userId,
+        'client-1',
+        credentials(),
+      )
+
+      expect(await available()).toBe(false)
+    })
+  })
 })

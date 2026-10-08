@@ -125,6 +125,46 @@ describe('ChatGptOAuthProvider', () => {
     expect(build().provider.id).toBe('chatgpt-oauth')
   })
 
+  describe('hasCredentialFor', () => {
+    it('is true for a connection the store can read', async () => {
+      const { provider, status } = build({ status: { connected: true } })
+
+      expect(await provider.hasCredentialFor(USER)).toBe(true)
+      expect(status).toHaveBeenCalledWith(USER)
+    })
+
+    it('is false when there is no readable connection', async () => {
+      const { provider } = build({ status: { connected: false } })
+
+      expect(await provider.hasCredentialFor(USER)).toBe(false)
+    })
+
+    // A connected plan that cannot share is a failure at CALL time, with its
+    // own message, not an absent credential. Folding `sharing` in here would
+    // make the settings panel report "not connected" about an account that
+    // plainly is, and would silently route the user to their other
+    // credential instead of telling them what to fix in ChatGPT.
+    it('is true for a connected account whose plan does not grant sharing', async () => {
+      const { provider } = build({
+        status: { connected: true, sharing: false },
+      })
+
+      expect(await provider.hasCredentialFor(USER)).toBe(true)
+    })
+
+    // Contractually cheap: selection calls this on every enabled preview.
+    // A refresh here would spend a token rotation to answer a question, and
+    // a network call would make an import preview wait on OpenAI.
+    it('neither refreshes a token nor touches the network', async () => {
+      const { provider, calls, accessTokenFor } = build()
+
+      await provider.hasCredentialFor(USER)
+
+      expect(accessTokenFor).not.toHaveBeenCalled()
+      expect(calls).toHaveLength(0)
+    })
+  })
+
   describe('the request', () => {
     it('POSTs to the Responses API', async () => {
       const { provider, calls } = build()

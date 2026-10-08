@@ -260,6 +260,30 @@ export class ChatGptOAuthProvider implements AiProvider {
       deps.fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeoutMs) })
   }
 
+  /**
+   * Whether a connection exists that this provider could read, from the
+   * store's own `status` -- one local, decrypt-and-discard read. No refresh,
+   * no network call: the contract on `AiProvider.hasCredentialFor` says
+   * selection must stay cheap, and asking the authorization server whether a
+   * user *might* be offered a suggestion would spend a token rotation on a
+   * question.
+   *
+   * `sharing` is deliberately NOT part of this. A connected plan that cannot
+   * share is a failure at call time with its own message
+   * (`SHARING_FAILURES` above, surfaced as `ai.chatgpt.sharingNotEnabled`),
+   * not an absent credential -- folding it in here would make the settings
+   * panel say "not connected" about an account that plainly is, and would
+   * silently route a user to their other credential instead of telling them
+   * what to fix in ChatGPT.
+   *
+   * `status` returns no secret and this returns a bare boolean, so nothing
+   * about the credential escapes either way.
+   */
+  async hasCredentialFor(userId: string): Promise<boolean> {
+    const status = await this.store.status(userId)
+    return status.connected
+  }
+
   async categorizeBatch(args: {
     userId: string
     transactions: AiCategorizeInput[]
