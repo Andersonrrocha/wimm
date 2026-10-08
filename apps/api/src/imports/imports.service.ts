@@ -12,7 +12,7 @@ import {
   TransactionKind,
   toCents,
 } from '@wimm/shared'
-import { AnthropicCategorizerService } from '../ai/anthropic-categorizer.service'
+import { AiCategorizerSelector } from '../ai/ai-categorizer-selector.service'
 import { DefaultCategoriesService } from '../categories/default-categories.service'
 import { CategorizationRulesService } from '../categorization-rules/categorization-rules.service'
 import { PrismaService } from '../prisma/prisma.service'
@@ -80,7 +80,7 @@ export class ImportsService {
     private readonly prisma: PrismaService,
     private readonly categorizationRules: CategorizationRulesService,
     private readonly defaultCategories: DefaultCategoriesService,
-    private readonly aiCategorizer: AnthropicCategorizerService,
+    private readonly aiSelector: AiCategorizerSelector,
     private readonly csvSourceMappings: CsvSourceMappingService,
   ) {}
 
@@ -599,16 +599,22 @@ export class ImportsService {
    * would both spend a query on their behalf and let a failure in it reject
    * an import preview for a feature they did not ask for.
    *
-   * Beyond that one gate, the provider is still handed only `userId` and
-   * resolves its own credential. Note what that does *not* cover: a user who
-   * enabled AI but whose credential is missing or unusable still reaches the
-   * query below before the provider returns nothing. That is a narrower
-   * population than the OFF default, and closing it too would mean asking
-   * the provider whether it can serve a user -- widening the very contract
-   * this change narrowed. Left open deliberately.
+   * Beyond that one gate, WHICH provider runs is `AiCategorizerSelector`'s
+   * decision, taken from the user's mode and the credentials they actually
+   * have -- an Anthropic key, a connected ChatGPT plan, or both. The chosen
+   * provider is still handed only `userId` and resolves its own credential
+   * for the call itself.
    *
-   * Provider errors are swallowed: AI is advisory, never blocks the import
-   * preview.
+   * Note what the OFF gate does *not* cover: a user who enabled AI but has
+   * no usable credential still reaches the query below before selection
+   * returns nothing. Selection could answer that earlier now that
+   * `hasCredentialFor` exists, but moving it ahead of the query would put
+   * another database read outside the try/catch that makes this block
+   * advisory -- trading a spared query for a preview a selection failure
+   * could reject. Left open deliberately, as before.
+   *
+   * Selection and provider errors alike are swallowed: AI is advisory, never
+   * blocks the import preview.
    */
   private async enrichWithAiSuggestions(
     userId: string,
@@ -679,7 +685,21 @@ export class ImportsService {
     }))
 
     try {
-      const results = await this.aiCategorizer.categorizeBatch({
+      // Inside the try/catch on purpose: this reads the user row again, and
+      // a selection failure must cost a suggestion, never the preview.
+      const selection = await this.aiSelector.selectFor(userId)
+      if (selection.needsChoice) {
+        // Both own-credential sources are available and the user has chosen
+        // neither. Guessing would spend one of their own credentials on a
+        // decision they were never shown. Telling them is Task 14's half.
+        this.logger.warn(
+          `AI categorize skipped for user ${userId}: both credential sources are available and none is selected.`,
+        )
+        return
+      }
+      if (!selection.provider) return
+
+      const results = await selection.provider.categorizeBatch({
         userId,
         transactions: inputs,
         candidates,

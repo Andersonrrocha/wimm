@@ -12,7 +12,7 @@ import { ImportsService } from './imports.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { DefaultCategoriesService } from '../categories/default-categories.service'
 import { CategorizationRulesService } from '../categorization-rules/categorization-rules.service'
-import { AnthropicCategorizerService } from '../ai/anthropic-categorizer.service'
+import { AiCategorizerSelector } from '../ai/ai-categorizer-selector.service'
 import {
   CsvSourceMappingService,
   InvalidStoredCsvMappingError,
@@ -33,14 +33,25 @@ describe('ImportsService', () => {
     $transaction: jest.fn(),
   }
 
-  // The AI provider owns its own credential now, so `ImportsService` no
-  // longer gates on one -- it hands `userId` over and lets the provider
-  // decide. It does still gate on `aiCategorizationMode`, which is why
+  // The AI provider owns its own credential, so `ImportsService` no longer
+  // gates on one -- it hands `userId` over and lets the provider decide. It
+  // does still gate on `aiCategorizationMode`, which is why
   // `prismaMock.user.findUnique` is defaulted to an enabled mode below:
   // without that, every AI test here would exit before the provider is
   // reached. The OFF path has its own test.
   const aiCategorizerMock = {
     categorizeBatch: jest.fn(),
+  }
+
+  // WHICH provider runs is `AiCategorizerSelector`'s decision, and that
+  // decision has its own suite (`ai-categorizer-selector.service.spec.ts`).
+  // These specs are about what this service does with the answer, so the
+  // selector is a double here. The real selector, the real registry and the
+  // real providers are exercised together through this service in
+  // `app.local.module.spec.ts` -- a mock here could never prove that the
+  // instance production resolves is the one that holds a local provider.
+  const aiSelectorMock = {
+    selectFor: jest.fn(),
   }
 
   const categorizationRulesMock = {
@@ -76,6 +87,10 @@ describe('ImportsService', () => {
       aiCategorizationMode: AiCategorizationMode.BYOK,
     })
     aiCategorizerMock.categorizeBatch.mockResolvedValue([])
+    aiSelectorMock.selectFor.mockResolvedValue({
+      provider: aiCategorizerMock,
+      needsChoice: false,
+    })
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -90,8 +105,8 @@ describe('ImportsService', () => {
           useValue: categorizationRulesMock,
         },
         {
-          provide: AnthropicCategorizerService,
-          useValue: aiCategorizerMock,
+          provide: AiCategorizerSelector,
+          useValue: aiSelectorMock,
         },
         {
           provide: CsvSourceMappingService,
@@ -795,7 +810,91 @@ ${'note '.repeat(30)}
 
       await service.preview('user-1', 'src-1', csvFile())
 
+      expect(aiSelectorMock.selectFor).not.toHaveBeenCalled()
       expect(aiCategorizerMock.categorizeBatch).not.toHaveBeenCalled()
+    })
+
+    describe('which provider runs', () => {
+      it('asks the selector for the requesting user and categorizes with what it returns', async () => {
+        // A second provider double, with its own id and its own answer, so
+        // "used the selected one" cannot be satisfied by a service that just
+        // calls whatever it happens to hold. The default mock returns
+        // `aiCategorizerMock`; this test returns the other one.
+        const other = {
+          id: 'some-other-provider',
+          hasCredentialFor: jest.fn(),
+          categorizeBatch: jest
+            .fn()
+            .mockResolvedValue([
+              { index: 1, categoryId: 'cat-leaf', confidence: 0.42 },
+            ]),
+        }
+        aiSelectorMock.selectFor.mockResolvedValue({
+          provider: other,
+          needsChoice: false,
+        })
+
+        const r = await service.preview('user-1', 'src-1', csvFile())
+
+        expect(aiSelectorMock.selectFor).toHaveBeenCalledWith('user-1')
+        expect(other.categorizeBatch).toHaveBeenCalledTimes(1)
+        expect(aiCategorizerMock.categorizeBatch).not.toHaveBeenCalled()
+        expect(r.rows[1].aiSuggestedCategoryId).toBe('cat-leaf')
+        expect(r.rows[1].aiConfidence).toBe(0.42)
+      })
+
+      it('makes no suggestion when the selector returns no provider', async () => {
+        aiSelectorMock.selectFor.mockResolvedValue({
+          provider: null,
+          needsChoice: false,
+        })
+
+        const r = await service.preview('user-1', 'src-1', csvFile())
+
+        expect(aiCategorizerMock.categorizeBatch).not.toHaveBeenCalled()
+        expect(r.rows).toHaveLength(2)
+        expect(r.rows[0].aiSuggestedCategoryId).toBeUndefined()
+      })
+
+      // Both own-credential sources available, neither chosen. Picking one
+      // would spend a credential on a decision the user never saw.
+      it('warns and makes no suggestion when the selector needs the user to choose', async () => {
+        const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation()
+        aiSelectorMock.selectFor.mockResolvedValue({
+          provider: null,
+          needsChoice: true,
+        })
+
+        try {
+          const r = await service.preview('user-1', 'src-1', csvFile())
+
+          expect(aiCategorizerMock.categorizeBatch).not.toHaveBeenCalled()
+          expect(warn).toHaveBeenCalledWith(
+            'AI categorize skipped for user user-1: both credential sources are available and none is selected.',
+          )
+          expect(r.rows).toHaveLength(2)
+          expect(r.rows[0].aiSuggestedCategoryId).toBeUndefined()
+        } finally {
+          warn.mockRestore()
+        }
+      })
+
+      it('still returns the preview when selection itself throws', async () => {
+        const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation()
+        aiSelectorMock.selectFor.mockRejectedValue(new Error('selection is down'))
+
+        try {
+          const r = await service.preview('user-1', 'src-1', csvFile())
+
+          expect(r.rows).toHaveLength(2)
+          expect(r.rows[0].aiSuggestedCategoryId).toBeUndefined()
+          expect(warn).toHaveBeenCalledWith(
+            'AI categorize failed for user user-1: selection is down',
+          )
+        } finally {
+          warn.mockRestore()
+        }
+      })
     })
   })
 

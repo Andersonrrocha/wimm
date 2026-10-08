@@ -26,7 +26,7 @@
  */
 import { INestApplication, ValidationPipe } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
-import { SourceType } from '@wimm/shared'
+import { AiCategorizationMode, SourceType } from '@wimm/shared'
 import { randomUUID } from 'crypto'
 import { mkdirSync, readFileSync, rmSync } from 'fs'
 import type { AddressInfo } from 'node:net'
@@ -39,7 +39,9 @@ import { AppLocalModule } from './app.local.module'
 import {
   ChatGptConnectFlow,
 } from './ai/local-only/chatgpt-connect-flow'
+import { ChatGptConnectionStore } from './ai/local-only/chatgpt-connection.store'
 import { LocalOnlyAiModule } from './ai/local-only/local-only-ai.module'
+import { ImportsService } from './imports/imports.service'
 import { LocalPrismaService } from './prisma/local/local-prisma.service'
 import { PrismaService } from './prisma/prisma.service'
 import { SESSION_TOKEN_HEADER } from './profile/session-token'
@@ -64,6 +66,10 @@ const TEST_SESSION_TOKEN = 'app-local-module-spec-fixed-session-token'
 // wires it through to `AiKeyCrypto` via `ConfigService`.
 const TEST_AI_KEY_ENCRYPTION_SECRET = 'app-local-module-spec-fixed-ai-key-encryption-secret'
 
+// Upper-case and hyphenated so it cannot be a substring of ordinary text, and
+// so an assertion on the Authorization header is about this exact value.
+const ACCESS_TOKEN = 'SENTINEL-IMPORT-ROUTING-ACCESS-4f91ad'
+
 /** Builds a fresh SQLite file with the real, committed Phase 1 baseline applied. */
 function freshDatabaseFile(subdir: string): string {
   const dir = join(ROOT, subdir)
@@ -75,19 +81,31 @@ function freshDatabaseFile(subdir: string): string {
   return file
 }
 
+/** Runs `work` against the profile's database over a throwaway connection,
+ * so a test can seed or inspect rows without going through the booted
+ * composition's own client. */
+async function onProfile<T>(
+  file: string,
+  work: (prisma: LocalPrismaService) => Promise<T>,
+): Promise<T> {
+  const seeding = new LocalPrismaService(file)
+  await seeding.onModuleInit()
+  try {
+    return await work(seeding)
+  } finally {
+    await seeding.onModuleDestroy()
+  }
+}
+
 /** Inserts the single `User` row `ActiveProfileService` requires, through
  * Prisma itself (a throwaway `LocalPrismaService` connection), so
  * `createdAt`/`updatedAt` are populated the same way the real app would. */
 async function seedUser(file: string, email: string, username: string): Promise<string> {
-  const seeding = new LocalPrismaService(file)
-  await seeding.onModuleInit()
-  try {
+  return onProfile(file, async (prisma) => {
     const id = randomUUID()
-    await seeding.user.create({ data: { id, email, username, passwordHash: 'irrelevant-hash' } })
+    await prisma.user.create({ data: { id, email, username, passwordHash: 'irrelevant-hash' } })
     return id
-  } finally {
-    await seeding.onModuleDestroy()
-  }
+  })
 }
 
 describe('AppLocalModule (behavioral, boots the real local composition root)', () => {
@@ -227,6 +245,192 @@ describe('AppLocalModule (behavioral, boots the real local composition root)', (
       const afterBody = await after.json()
       expect(afterBody).toHaveLength(1)
       expect(afterBody[0].id).toBe(createdBody.id)
+    })
+  })
+
+  /**
+   * THE test this whole change exists for.
+   *
+   * Tasks 1-12 built the ChatGPT connection and never wired it to
+   * categorization, and the shape of the defect is why this test is here and
+   * not somewhere cheaper. `LocalOnlyAiModule` used to build its own
+   * `AiProviderRegistry`; `ImportsModule` imports `AiModule`, and Nest
+   * resolves a token through the injecting module's own import list, so the
+   * import path got `AiModule`'s Anthropic-only registry in every
+   * composition. A spec that fetched the local registry by hand saw
+   * `'chatgpt-oauth'` in it and passed over a dead feature.
+   *
+   * So this asserts through `ImportsService`, over the real
+   * `AppLocalModule` -- the real selector, the real registry instance
+   * production resolves, the real connection store and the real provider.
+   * The only double is `fetch`. Mutate the registration out of
+   * `LocalOnlyAiModule.onModuleInit` and this fails; nothing else in the
+   * suite does.
+   */
+  describe('an import preview reaches the local-only AI provider', () => {
+    // Two rows, no saved CSV mapping, no rules: both reach the AI pass.
+    const csvBody = [
+      'Data;Descricao;Valor',
+      '01/04/2026;Mercado Livre;-123,45',
+      '02/04/2026;Posto Shell;-50,00',
+    ].join('\n')
+
+    const csvFile = () =>
+      ({
+        originalname: 'extrato.csv',
+        buffer: Buffer.from(csvBody, 'utf8'),
+      }) as Express.Multer.File
+
+    it("categorizes through the user's connected ChatGPT plan when that is their only credential", async () => {
+      const file = freshDatabaseFile('ai-import-routing')
+      const userId = await seedUser(file, 'byok@example.com', 'byok')
+
+      const sourceId = await onProfile(file, async (prisma) => {
+        // BYOK and NO `aiApiKeyEncrypted`: `AiKeyResolverService` resolves
+        // nothing, so the Anthropic provider reports no credential and the
+        // ChatGPT plan is the single available source -- used without asking.
+        await prisma.user.update({
+          where: { id: userId },
+          data: { aiCategorizationMode: AiCategorizationMode.BYOK },
+        })
+
+        // Written with the same profile secret the module is composed with,
+        // through the real store, so the provider has to decrypt it.
+        await new ChatGptConnectionStore(
+          prisma as unknown as PrismaService,
+          TEST_AI_KEY_ENCRYPTION_SECRET,
+        ).save(userId, 'client-1', {
+          accessToken: ACCESS_TOKEN,
+          refreshToken: 'spec-refresh-token',
+          idToken: 'spec-id-token',
+          // Comfortably outside the refresh service's expiry skew, so no
+          // rotation is attempted and the stubbed fetch sees exactly one call.
+          expiresAt: new Date(Date.now() + 3_600_000),
+          scopes: 'openid offline_access chatgpt.tokens.use.direct',
+          subject: 'sub-1',
+          sharing: true,
+        })
+
+        const source = await prisma.source.create({
+          data: { userId, name: 'Cartao', type: SourceType.CREDIT_CARD, closingDay: 5, dueDay: 12 },
+        })
+        return source.id
+      })
+
+      const moduleRef = await Test.createTestingModule({
+        imports: [
+          AppLocalModule.forRoot({
+            databaseFile: file,
+            sessionToken: TEST_SESSION_TOKEN,
+            aiKeyEncryptionSecret: TEST_AI_KEY_ENCRYPTION_SECRET,
+            openBrowser: async () => undefined,
+          }),
+        ],
+      }).compile()
+
+      // `compile()` runs no lifecycle hook, and the local provider is
+      // registered in `LocalOnlyAiModule.onModuleInit`. Production always
+      // initializes (`app.init()` / `app.listen()`); without this the test
+      // would be asserting about an application state that never ships.
+      await moduleRef.init()
+
+      const urls: string[] = []
+      const authorizations: Array<string | null> = []
+      const fetchSpy = jest
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async (input, init) => {
+          urls.push(String(input))
+          const request = init as RequestInit | undefined
+          authorizations.push(new Headers(request?.headers).get('authorization'))
+          // Answer with a candidate id taken from the prompt itself. A made-up
+          // id would be dropped by `mapSuggestions`, so a suggestion arriving
+          // on the row proves the real candidate list made the round trip.
+          const prompt = String(JSON.parse(String(request?.body ?? '{}')).input ?? '')
+          const categoryId = /^- ([^:\n]+): /m.exec(prompt)?.[1]
+          return new Response(
+            JSON.stringify({
+              output_text: JSON.stringify({
+                suggestions: [{ index: 0, categoryId, confidence: 0.95 }],
+              }),
+            }),
+            { status: 200 },
+          )
+        })
+
+      try {
+        const preview = await moduleRef
+          .get(ImportsService)
+          .preview(userId, sourceId, csvFile())
+
+        // The ChatGPT provider, and nothing else, was asked.
+        expect(urls).toEqual(['https://api.openai.com/v1/responses'])
+        expect(authorizations).toEqual([`Bearer ${ACCESS_TOKEN}`])
+
+        // ...and its answer reached the preview row.
+        expect(preview.rows).toHaveLength(2)
+        expect(typeof preview.rows[0]!.aiSuggestedCategoryId).toBe('string')
+        expect(preview.rows[0]!.aiConfidence).toBe(0.95)
+      } finally {
+        fetchSpy.mockRestore()
+        await moduleRef.close()
+      }
+    })
+
+    it('asks no provider at all for a user whose AI mode is OFF', async () => {
+      const file = freshDatabaseFile('ai-import-routing-off')
+      const userId = await seedUser(file, 'off@example.com', 'off')
+
+      // Same connected plan, mode left at its OFF default: the mode gate in
+      // `ImportsService` must still short-circuit ahead of selection.
+      const sourceId = await onProfile(file, async (prisma) => {
+        await new ChatGptConnectionStore(
+          prisma as unknown as PrismaService,
+          TEST_AI_KEY_ENCRYPTION_SECRET,
+        ).save(userId, 'client-1', {
+          accessToken: ACCESS_TOKEN,
+          refreshToken: 'spec-refresh-token',
+          idToken: 'spec-id-token',
+          expiresAt: new Date(Date.now() + 3_600_000),
+          scopes: 'openid offline_access chatgpt.tokens.use.direct',
+          subject: 'sub-1',
+          sharing: true,
+        })
+        const source = await prisma.source.create({
+          data: { userId, name: 'Cartao', type: SourceType.CREDIT_CARD, closingDay: 5, dueDay: 12 },
+        })
+        return source.id
+      })
+
+      const moduleRef = await Test.createTestingModule({
+        imports: [
+          AppLocalModule.forRoot({
+            databaseFile: file,
+            sessionToken: TEST_SESSION_TOKEN,
+            aiKeyEncryptionSecret: TEST_AI_KEY_ENCRYPTION_SECRET,
+            openBrowser: async () => undefined,
+          }),
+        ],
+      }).compile()
+      await moduleRef.init()
+
+      const fetchSpy = jest
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async () => {
+          throw new Error('no AI request should be made for an OFF user')
+        })
+
+      try {
+        const preview = await moduleRef
+          .get(ImportsService)
+          .preview(userId, sourceId, csvFile())
+
+        expect(fetchSpy).not.toHaveBeenCalled()
+        expect(preview.rows).toHaveLength(2)
+        expect(preview.rows[0]!.aiSuggestedCategoryId).toBeUndefined()
+      } finally {
+        fetchSpy.mockRestore()
+        await moduleRef.close()
+      }
     })
   })
 

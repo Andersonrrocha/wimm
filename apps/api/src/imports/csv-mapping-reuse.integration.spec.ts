@@ -1,6 +1,6 @@
 import { Test } from '@nestjs/testing'
 import { AiCategorizationMode, SourceType, toCents } from '@wimm/shared'
-import { AnthropicCategorizerService } from '../ai/anthropic-categorizer.service'
+import { AiCategorizerSelector } from '../ai/ai-categorizer-selector.service'
 import { CategorizationRulesService } from '../categorization-rules/categorization-rules.service'
 import { DefaultCategoriesService } from '../categories/default-categories.service'
 import { PrismaService } from '../prisma/prisma.service'
@@ -72,7 +72,7 @@ describe('CSV mapping reuse across imports (real ImportsService + real CsvSource
       transaction: { findMany: jest.fn().mockResolvedValue([]) },
       // AI categorization OFF -- the schema default, and what this spec's
       // user would realistically have. `ImportsService` gates on this before
-      // the leaf-category query, so the whole AI path (and the categorizer
+      // the leaf-category query, so the whole AI path (and the selector
       // stubbed below) is skipped on the preview path. This fake IS
       // load-bearing: without it the gate's lookup throws and the preview
       // fails. The empty `category.findMany` below is not -- it is kept only
@@ -107,8 +107,12 @@ describe('CSV mapping reuse across imports (real ImportsService + real CsvSource
           },
         },
         {
-          provide: AnthropicCategorizerService,
-          useValue: { categorizeBatch: jest.fn().mockResolvedValue([]) },
+          provide: AiCategorizerSelector,
+          useValue: {
+            selectFor: jest
+              .fn()
+              .mockResolvedValue({ provider: null, needsChoice: false }),
+          },
         },
       ],
     }).compile()
