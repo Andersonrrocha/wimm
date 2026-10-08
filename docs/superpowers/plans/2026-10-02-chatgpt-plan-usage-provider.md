@@ -2570,7 +2570,28 @@ git commit -m "feat(desktop): open the ChatGPT authorize URL in the system brows
 - Modify: the settings screen that hosts AI preferences
 
 **Interfaces:**
-- Produces: `describeChatGptState(input: { connected: boolean; sharing: boolean; online: boolean; errorCode?: string }): { messageKey: string; retryable: boolean; tone: 'invite' | 'info' | 'error' }`
+- Produces: `describeChatGptState(input: { connected: boolean; sharing: boolean; online: boolean; modeOff: boolean; declined: boolean; errorCode?: string }): { messageKey: string; retryable: boolean; tone: 'invite' | 'info' | 'error' }`
+
+### Settled during pre-flight, against the shipped UI and API
+
+**1. The existing AI-mode control and this feature currently contradict each other, and fixing that is this task's real work.**
+
+`apps/desktop/src/renderer/pages/settings/preferences-tab.tsx` already has a three-way mode selector — `OFF` / `SERVER` / `BYOK` — and under `BYOK` it renders an Anthropic API-key field with the placeholder `sk-ant-...`. Task 10 sets the mode to `BYOK` on a successful ChatGPT connect, because `ImportsService` gates on the mode and may never import local-only code.
+
+So as things stand, a user who connects ChatGPT is shown **"bring your own key" selected, with an empty Anthropic key field asking for `sk-ant-...`**. They would reasonably conclude something broke, or paste an Anthropic key they do not need. And the reverse: choosing `OFF` while ChatGPT is connected silently stops all suggestions while the connection still reads as connected.
+
+**`BYOK` now means "one of my own credentials", and there are two kinds.** Make the UI say so:
+- The ChatGPT connection lives **inside the `BYOK` branch of `preferences-tab.tsx`**, beside the Anthropic key field — not in a new tab. Both credential sources visible under the mode that means "mine".
+- The `settings.aiModeByok` label and `settings.aiKeyHint` strings must stop implying a single Anthropic key. Both locales.
+- This is a modification to a file this plan has not touched before. Keep the change to the `BYOK` branch and those strings; do not restyle the tab.
+
+**2. Two inputs the brief's signature was missing.**
+- **`declined`** — Task 10 answers a refused consent with a 403 and a distinct message, and went to real trouble to make a denial distinguishable from a malformed callback (it orders the `state` check before the `error` check to stop a local forgery mislabelling an attempt). Throwing that away in the UI would waste it. "You declined" is not "something went wrong".
+- **`modeOff`** — connected, with `aiCategorizationMode === 'OFF'`. A row the design's failure table does not have and the user needs most: the connection is live and doing nothing. Without it the component reports "connected" while no suggestion ever appears, which is the worst of the available messages.
+
+**3. `status` returns `accountLabel` and `expiresAt`; show them.** Which account is connected, and when it needs renewing. `accountLabel` is the verified `email` claim (Task 10) and may be `null` — render the connection without a name rather than an empty row.
+
+**4. `resolveJsonModule` is missing from the one tsconfig that matters.** It is set in `tsconfig.node.json` and `tsconfig.web.json` but **not** `tsconfig.spec.json`, which is what ts-jest uses. The locale-parity spec imports JSON, so add it there. That file is spec-only and does not drive the electron-vite build.
 
 **Why the logic is extracted instead of tested through the component:** `apps/desktop/jest.config.js` sets `testEnvironment: 'node'`, its `roots` are `src/main` and `src/renderer/lib` only, and `testMatch` is `**/*.spec.ts` — not `.tsx`. Its own doc comment records that component-level testing (jsdom, React Testing Library) "remains future scope, not something this change introduces." Adding jsdom and RTL would be two new top-level dependencies, which `AGENTS.md` requires asking about, and a test-infrastructure change this feature does not need. So all the decision logic lives in `renderer/lib/` where the existing harness already reaches it (`api-mode.spec.ts`, `csv-mapping-format.spec.ts`, `local-api-adapter.spec.ts` are the precedent), and the component becomes a thin renderer of its output.
 
