@@ -12,20 +12,35 @@
     // stop building because the build config it extends dropped an option.
     "resolveJsonModule": true
   },
+  // One glob per directory `jest.config.js` lists in `roots`, so a new spec
+  // is type-checked the moment it exists. This was a file-by-file allowlist,
+  // which is a silent failure mode for a config whose whole job is to tell
+  // you whether things are checked: `scripts/verify-local-only-ai-in-package.spec.ts`
+  // reported clean while sitting outside the program entirely, and the only
+  // reason it was noticed was someone reading this list.
+  //
+  // `src/main` and `scripts` are whole-directory globs: both are
+  // node-targeted, so every file in them belongs in this program.
+  //
+  // `src/renderer/lib` is `*.spec.ts` only, and that is not a hedge. The
+  // directory holds browser-targeted modules beside the tested ones --
+  // `api-client.ts` reads `import.meta.env` and `window`, `category-label.ts`
+  // and `use-chatgpt-status.ts` import `.tsx` -- which belong to
+  // `tsconfig.web.json`'s program and produce 14 errors in a node one with no
+  // DOM lib and no `--jsx`. Pulling the whole renderer in here is a separate,
+  // larger problem and widening this glob is not how to solve it. The modules
+  // the specs do exercise still land in the program, by import resolution,
+  // exactly as they did when they were listed by hand.
+  //
+  // `src/preload` and `src/shared` are not jest roots and hold no spec; they
+  // are here because `src/main` imports them, and naming them keeps that
+  // dependency checked rather than merely pulled in.
   "include": [
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
-    "src/renderer/lib/api-mode.ts",
-    "src/renderer/lib/api-mode.spec.ts",
-    "src/renderer/lib/local-api-adapter.ts",
-    "src/renderer/lib/local-api-adapter.spec.ts",
-    "src/renderer/lib/csv-mapping-format.ts",
-    "src/renderer/lib/csv-mapping-format.spec.ts",
-    "src/renderer/lib/chatgpt-connection-state.ts",
-    "src/renderer/lib/chatgpt-connection-state.spec.ts",
-    "src/renderer/lib/locale-parity.spec.ts",
-    "scripts/verify-local-only-ai-in-package.spec.ts",
+    "src/renderer/lib/**/*.spec.ts",
+    "scripts/**/*.ts",
     "src/renderer/i18n/locales/en.json",
     "src/renderer/i18n/locales/pt.json"
   ],

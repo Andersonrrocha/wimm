@@ -40,10 +40,12 @@ interface ChatGptConnectionProps {
    */
   aiMode: AiCategorizationMode
   /**
-   * `User.hasAiApiKey`. Same reasoning as `aiMode`: the credential-source
-   * selector above decides whether to show itself from this very value, so
-   * passing it down is what keeps the two from disagreeing about whether a
-   * second source exists.
+   * `User.hasAiApiKey` -- a stored Anthropic key that still *decrypts*, which
+   * is the question `AiCategorizerSelector` itself asks (see
+   * `describeChatGptState`'s own note on this input). Same reasoning as
+   * `aiMode`: the credential-source selector above decides whether to show
+   * itself from this very value, so passing it down is what keeps the two
+   * from disagreeing about whether a second source exists.
    */
   hasAnthropicKey: boolean
   /** `User.aiByokSource` -- the source chosen above, or `null`. */
@@ -177,6 +179,16 @@ export function ChatGptConnection({
   // say something about -- see the doc comment.
   if (aiMode !== 'BYOK' && !status.connected) return null
 
+  // `connect` is interactive and blocks for as long as the API's callback
+  // listener waits, which is five minutes, so this button stays disabled on
+  // "Opening your browser…" for that whole stretch with no way out. There is
+  // deliberately no Cancel: abandoning the request here would leave the
+  // listener bound and still able to complete the sign-in, so the button
+  // would claim something it cannot do. A real one needs an abort path
+  // through `startCallbackListener`, which is a design change rather than a
+  // fix. What this round does instead is make the end of that wait say what
+  // actually happened -- `ai.chatgpt.timedOut` rather than a claim that
+  // ChatGPT refused the request.
   const busy = connectMut.isPending || disconnectMut.isPending
 
   return (

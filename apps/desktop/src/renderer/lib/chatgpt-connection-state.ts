@@ -37,12 +37,24 @@ export interface ChatGptStateInput {
    */
   mode: AiCategorizationMode
   /**
-   * An Anthropic key is stored for this user (`User.hasAiApiKey`).
+   * A *usable* Anthropic key is stored for this user (`User.hasAiApiKey`).
    *
    * With the connection live, that is the second own-credential source, and
    * it is the only condition under which `byokSource` means anything at all:
    * `AiCategorizerSelector` asks each provider whether it has a credential
    * and consults the stored choice only to break a genuine tie.
+   *
+   * "Usable" is load-bearing and is the API's job, not this module's:
+   * `UsersService` computes `hasAiApiKey` through
+   * `AiKeyCrypto.canDecrypt`, which is the same question
+   * `AnthropicCategorizerService.hasCredentialFor` asks. It used to be a
+   * `!== null` presence check, and a key that no longer decrypted made this
+   * module report a pending credential choice -- `chooseSource`, "no
+   * suggestion is made until you pick one" -- while the selector had seen a
+   * single source all along and was already answering with the plan. Picking
+   * `ANTHROPIC_KEY` then changed nothing and the panel claimed the plan was
+   * unused. Two false statements and a control that did nothing, all from the
+   * two sides answering different questions.
    */
   hasAnthropicKey: boolean
   /**
@@ -74,10 +86,9 @@ export interface ChatGptStateInput {
    * is what lets those two keep their own, more precise, messages.
    *
    * Without it, a failure with no `declined` and no `errorCode` -- a
-   * timeout, a malformed callback, a refused token exchange, i.e. every real
-   * failure today, since no ChatGPT route sets `data.code` -- carried the
-   * same inputs as "nothing has happened yet", and a first connect that
-   * failed looked exactly like one never attempted.
+   * malformed callback, a refused token exchange, a failed discovery --
+   * carried the same inputs as "nothing has happened yet", and a first
+   * connect that failed looked exactly like one never attempted.
    */
   failed: boolean
   /** A `subscription_sharing_*` code, when the API supplied one. */
@@ -156,6 +167,23 @@ export const CHATGPT_SHARING_FAILURE_CODES: readonly string[] = [
 ]
 
 /**
+ * The body `code` a sign-in that ran out of time answers with.
+ *
+ * Not in `SHARING_FAILURES`: those are codes OpenAI returns about a plan, and
+ * `describeFailure` is reached only once everything else has been ruled out.
+ * This one is WIMM's own, it is raised by `connect` rather than by a
+ * categorization call, and it has to be read before `describeFailure` rather
+ * than inside it -- see `describeChatGptState`.
+ *
+ * Mirrors `CHATGPT_SIGN_IN_TIMED_OUT_CODE` in
+ * `apps/api/src/ai/local-only/chatgpt-connect-flow.ts` verbatim, the same way
+ * `SHARING_FAILURES` mirrors its API-side table: the renderer cannot import
+ * from `ai/local-only/`, which nothing outside a local composition may reach
+ * (`apps/api/scripts/verify-ai-hosted-composition.ts`).
+ */
+export const CHATGPT_SIGN_IN_TIMED_OUT_CODE = 'sign_in_timed_out'
+
+/**
  * What a failed call says: the API's own `subscription_sharing_*` code when
  * it supplied a known one, the generic message otherwise.
  */
@@ -228,6 +256,17 @@ function describeFailure(errorCode: string | undefined): ChatGptStateDescription
  *   `errorCode`: `failed` is true for every rejection, a coded one included,
  *   so ahead of it every `subscription_sharing_*` message would be shadowed
  *   by the generic one.
+ * - `timedOut` -- a failed connect carrying the sign-in timeout code --
+ *   inside the `!connected` check and above `describeFailure`, because it is
+ *   an instance of the generic failure and the generic failure is a false
+ *   statement about it: `unknownError` says ChatGPT "refused the request",
+ *   when no callback ever arrived and ChatGPT may well have authorized
+ *   successfully. It sits *below* `offlineCannotConnect` for the same reason
+ *   `online` outranks `errorCode` further down -- offline, the remedy this
+ *   message offers ("trying again is fine") is one that cannot work yet,
+ *   while "you are offline" is both true and actionable. Above `declined`
+ *   it would be wrong in the other direction: a decline is a decision the
+ *   user made, and only one of the two codes can be in hand anyway.
  * - `!online` *inside* the `!connected` check and ahead of the failure it is
  *   also an instance of: a connect that failed with no network never reached
  *   ChatGPT, so `unknownError` -- "refused the request for a reason WIMM does
@@ -250,6 +289,9 @@ export function describeChatGptState(
         tone: 'error',
         retryable: true,
       }
+    }
+    if (input.failed && input.errorCode === CHATGPT_SIGN_IN_TIMED_OUT_CODE) {
+      return { messageKey: 'ai.chatgpt.timedOut', tone: 'error', retryable: true }
     }
     return input.failed
       ? describeFailure(input.errorCode)
@@ -371,8 +413,13 @@ export interface ChatGptFailure {
  * `declined` is the 403: `ChatGptConnectFlow` raises `ForbiddenException`
  * for exactly one thing, a declined sign-in, and the only other 403 in the
  * API is `auth/register`'s `REGISTRATION_DISABLED`, which these routes
- * cannot reach. A timeout, a malformed callback and a refused exchange all
- * keep their own 500.
+ * cannot reach.
+ *
+ * `errorCode` is the body's own `code`, which on these routes means exactly
+ * one thing today: `CHATGPT_SIGN_IN_TIMED_OUT_CODE`, from the 408
+ * `ChatGptConnectFlow` raises when no callback arrived. A malformed
+ * callback, a refused exchange and a failed discovery still keep their own
+ * 500 with no code, and land on the generic failure.
  */
 export function readChatGptFailure(error: unknown): ChatGptFailure {
   const response = (error as { response?: { status?: unknown; data?: unknown } } | null)

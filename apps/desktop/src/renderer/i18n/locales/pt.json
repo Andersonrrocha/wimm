@@ -144,6 +144,7 @@
       "declined": "O login foi recusado, então nada foi conectado. Você pode tentar de novo quando quiser.",
       "offline": "Você está offline. As sugestões voltam sozinhas quando a conexão retornar, e o resto continua funcionando.",
       "offlineCannotConnect": "Você está offline, então o login não pôde começar — o ChatGPT nunca foi alcançado. Tente de novo quando voltar a ficar online.",
+      "timedOut": "O login não foi concluído em tempo, então nada foi conectado. Tente de novo quando quiser.",
       "sharingNotEnabled": "Este plano do ChatGPT não inclui compartilhamento de plano, então não pode ser usado na categorização. Tentar de novo não muda isso.",
       "notEligible": "Esta conta ou workspace do ChatGPT não pode usar o compartilhamento de plano, então não pode ser usada na categorização.",
       "limitReached": "Um limite de compartilhamento do plano ChatGPT foi atingido. São seus próprios limites de uso e por aplicativo nas Configurações do ChatGPT — aumente-os lá ou aguarde a redefinição.",

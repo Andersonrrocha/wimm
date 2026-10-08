@@ -31,6 +31,14 @@ export function PreferencesTab(): JSX.Element {
   const value = user?.preferredLocale ?? 'pt'
   const chartMode: ChartDateMode = user?.chartDateMode ?? 'BILLING_CYCLE'
   const aiMode: AiCategorizationMode = user?.aiCategorizationMode ?? 'OFF'
+  // `hasAiApiKey` means "a stored key that still decrypts", not "a non-null
+  // column": `UsersService` computes it through `AiKeyCrypto.canDecrypt`, the
+  // same question `AnthropicCategorizerService.hasCredentialFor` asks. Both
+  // readers below depend on that. The key field shows the paste input rather
+  // than "key configured", which is the remedy for a key the profile secret
+  // moved out from under (`local-api.ts` logs that case by name); the source
+  // selector further down stays hidden, because with no usable key there is
+  // no second source and therefore no choice to offer.
   const hasAiKey = user?.hasAiApiKey ?? false
   const byokSource: AiByokSource | null = user?.aiByokSource ?? null
 
@@ -201,7 +209,9 @@ export function PreferencesTab(): JSX.Element {
             that changes nothing: it would offer a source the user does not
             have and then read back as though picking it had taken effect.
             Both conditions come from payloads the renderer already holds --
-            `hasAiApiKey` on the user, `connected` on the ChatGPT status. */}
+            `hasAiApiKey` on the user, `connected` on the ChatGPT status --
+            and `hasAiApiKey` answers the selector's own question, usability,
+            not mere presence (see `hasAiKey` above). */}
         {aiMode === 'BYOK' && hasAiKey && chatGptConnected ? (
           <Field
             label={t('settings.aiByokSourceLabel')}

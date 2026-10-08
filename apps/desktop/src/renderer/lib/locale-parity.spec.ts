@@ -3,6 +3,7 @@ import en from '../i18n/locales/en.json'
 import pt from '../i18n/locales/pt.json'
 import {
   CHATGPT_SHARING_FAILURE_CODES,
+  CHATGPT_SIGN_IN_TIMED_OUT_CODE,
   describeChatGptState,
 } from './chatgpt-connection-state'
 
@@ -82,6 +83,16 @@ describe('every ChatGPT state message exists in both locales', () => {
     { ...base, connected: false, sharing: false, declined: true },
     { ...base, connected: false, sharing: false, failed: true },
     { ...base, connected: false, sharing: false, failed: true, online: false },
+    // The API's own code, which only a failed connect carries, so it needs
+    // the `!connected` shape -- the `CHATGPT_SHARING_FAILURE_CODES` row below
+    // is built on a live connection and would not reach this branch.
+    {
+      ...base,
+      connected: false,
+      sharing: false,
+      failed: true,
+      errorCode: CHATGPT_SIGN_IN_TIMED_OUT_CODE,
+    },
     { ...base, sharing: false },
     { ...base, online: false },
     { ...base, errorCode: 'something_new_from_openai' },

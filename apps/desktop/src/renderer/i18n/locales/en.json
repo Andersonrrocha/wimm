@@ -144,6 +144,7 @@
       "declined": "Sign-in was declined, so nothing was connected. You can try again whenever you like.",
       "offline": "You are offline. Suggestions resume on their own once the connection is back, and everything else keeps working.",
       "offlineCannotConnect": "You are offline, so the sign-in could not start — ChatGPT was never reached. Try again once you are back online.",
+      "timedOut": "The sign-in was not completed in time, so nothing was connected. Try again whenever you are ready.",
       "sharingNotEnabled": "This ChatGPT plan does not include plan sharing, so it cannot be used for categorization. Trying again will not change that.",
       "notEligible": "This ChatGPT account or workspace cannot use plan sharing, so it cannot be used for categorization.",
       "limitReached": "A ChatGPT plan-sharing limit was reached. These are your own usage and per-app limits in ChatGPT Settings — raise them there, or wait for the reset.",

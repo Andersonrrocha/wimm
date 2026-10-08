@@ -1,6 +1,7 @@
 import { AiByokSource, AiCategorizationMode } from '@wimm/shared'
 import {
   CHATGPT_SHARING_FAILURE_CODES,
+  CHATGPT_SIGN_IN_TIMED_OUT_CODE,
   describeChatGptState,
   readChatGptFailure,
   readChatGptStatus,
@@ -112,6 +113,62 @@ describe('describeChatGptState', () => {
     expect(state.messageKey).not.toBe('ai.chatgpt.offline')
   })
 
+  /**
+   * The failure a user reaches by doing nothing: click Connect, close the
+   * tab, wait five minutes.
+   *
+   * It used to land on `unknownError` -- "ChatGPT refused the request for a
+   * reason WIMM does not recognise" -- which asserts a refusal by a party
+   * that was never heard from and may well have authorized successfully. The
+   * API now answers it with a 408 carrying its own code so this branch can
+   * exist at all.
+   */
+  it('reports a sign-in that ran out of time without blaming ChatGPT', () => {
+    const state = describeChatGptState({
+      ...base,
+      connected: false,
+      sharing: false,
+      failed: true,
+      errorCode: CHATGPT_SIGN_IN_TIMED_OUT_CODE,
+    })
+    expect(state.messageKey).toBe('ai.chatgpt.timedOut')
+    expect(state.messageKey).not.toBe('ai.chatgpt.unknownError')
+    expect(state.tone).toBe('error')
+    // Trying again is exactly the remedy.
+    expect(state.retryable).toBe(true)
+  })
+
+  // Offline, "try again" is advice that cannot work yet, while "you are
+  // offline" is both true and actionable -- the same ranking `online` has
+  // over `errorCode` on a live connection.
+  it('prefers being offline over the timeout code', () => {
+    expect(
+      describeChatGptState({
+        ...base,
+        connected: false,
+        sharing: false,
+        failed: true,
+        online: false,
+        errorCode: CHATGPT_SIGN_IN_TIMED_OUT_CODE,
+      }).messageKey,
+    ).toBe('ai.chatgpt.offlineCannotConnect')
+  })
+
+  // A decline is a decision the user made; only one of the two codes can be
+  // in hand at a time, and the decision wins.
+  it('keeps a decline ahead of the timeout code', () => {
+    expect(
+      describeChatGptState({
+        ...base,
+        connected: false,
+        sharing: false,
+        failed: true,
+        declined: true,
+        errorCode: CHATGPT_SIGN_IN_TIMED_OUT_CODE,
+      }).messageKey,
+    ).toBe('ai.chatgpt.declined')
+  })
+
   it('still invites a first connect when offline and nothing was attempted', () => {
     expect(
       describeChatGptState({
@@ -183,6 +240,13 @@ describe('describeChatGptState', () => {
       { ...base, connected: false, sharing: false, declined: true },
       { ...base, connected: false, sharing: false, failed: true },
       { ...base, connected: false, sharing: false, failed: true, online: false },
+      {
+        ...base,
+        connected: false,
+        sharing: false,
+        failed: true,
+        errorCode: CHATGPT_SIGN_IN_TIMED_OUT_CODE,
+      },
       { ...base, mode: AiCategorizationMode.OFF },
       { ...base, mode: AiCategorizationMode.SERVER },
       { ...base, hasAnthropicKey: true },
