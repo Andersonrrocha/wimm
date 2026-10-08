@@ -81,6 +81,7 @@ describe('every ChatGPT state message exists in both locales', () => {
     { ...base, connected: false, sharing: false },
     { ...base, connected: false, sharing: false, declined: true },
     { ...base, connected: false, sharing: false, failed: true },
+    { ...base, connected: false, sharing: false, failed: true, online: false },
     { ...base, sharing: false },
     { ...base, online: false },
     { ...base, errorCode: 'something_new_from_openai' },

@@ -205,6 +205,14 @@ function describeFailure(errorCode: string | undefined): ChatGptStateDescription
  *   `errorCode`: `failed` is true for every rejection, a coded one included,
  *   so ahead of it every `subscription_sharing_*` message would be shadowed
  *   by the generic one.
+ * - `!online` *inside* the `!connected` check and ahead of the failure it is
+ *   also an instance of: a connect that failed with no network never reached
+ *   ChatGPT, so `unknownError` -- "refused the request for a reason WIMM does
+ *   not recognise" -- reports a refusal that never happened. The `offline`
+ *   branch further down is equally wrong there, because "suggestions resume
+ *   on their own" describes a connection that exists. It needs `failed`
+ *   alongside it: offline and never attempted is still the plain invite, and
+ *   this message is about an attempt.
  */
 export function describeChatGptState(
   input: ChatGptStateInput,
@@ -213,6 +221,13 @@ export function describeChatGptState(
     return { messageKey: 'ai.chatgpt.declined', tone: 'invite', retryable: false }
   }
   if (!input.connected) {
+    if (input.failed && !input.online) {
+      return {
+        messageKey: 'ai.chatgpt.offlineCannotConnect',
+        tone: 'error',
+        retryable: true,
+      }
+    }
     return input.failed
       ? describeFailure(input.errorCode)
       : { messageKey: 'ai.chatgpt.notConnected', tone: 'invite', retryable: false }

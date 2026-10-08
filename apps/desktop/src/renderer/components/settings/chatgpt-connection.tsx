@@ -150,10 +150,16 @@ export function ChatGptConnection({
     await refreshUser()
   }
 
+  // `onMutate` clears the last failure: `settle()` runs only on a success or
+  // a "Try again" click, so without this a second "Connect" left the previous
+  // error on screen for the whole of the attempt -- including the stretch
+  // where the system browser is open and the message is the only thing the
+  // panel is saying.
   const connectMut = useMutation({
     mutationFn: async () => {
       await apiClient.post('/ai/chatgpt/connect')
     },
+    onMutate: () => setFailure(NO_FAILURE),
     onSuccess: () => void settle(),
     onError: (error: unknown) => setFailure(readChatGptFailure(error)),
   })
@@ -162,6 +168,7 @@ export function ChatGptConnection({
     mutationFn: async () => {
       await apiClient.post('/ai/chatgpt/disconnect')
     },
+    onMutate: () => setFailure(NO_FAILURE),
     onSuccess: () => void settle(),
     onError: (error: unknown) => setFailure(readChatGptFailure(error)),
   })
@@ -273,10 +280,15 @@ export function ChatGptConnection({
           </Button>
         )}
 
-        {/* `retryable` is the mapping's judgement about the connection; a
-            failed status call is its own reason to offer the same button,
+        {/* `retryable` is the mapping's judgement about the connection and
+            is right as it stands -- a failed connect could succeed on a
+            second try. Whether that deserves a *second button* is this
+            component's call, and with nothing connected it does not:
+            "Connect" is the retry, while "Try again" would only clear the
+            message and re-read a status that says not-connected. A failed
+            status call is its own reason to offer the button regardless,
             since re-checking is exactly what it needs. */}
-        {description.retryable || statusQuery.isError ? (
+        {(description.retryable && status.connected) || statusQuery.isError ? (
           <Button
             variant="ghost"
             size="sm"

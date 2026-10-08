@@ -95,6 +95,33 @@ describe('describeChatGptState', () => {
     expect(state.tone).toBe('error')
   })
 
+  // The connect never left the machine, so neither a refusal by ChatGPT nor
+  // "suggestions resume on their own" (which describes a connection that
+  // exists) is what happened.
+  it('reports a connect that could not start offline as neither refusal nor lull', () => {
+    const state = describeChatGptState({
+      ...base,
+      connected: false,
+      sharing: false,
+      failed: true,
+      online: false,
+    })
+    expect(state.messageKey).toBe('ai.chatgpt.offlineCannotConnect')
+    expect(state.messageKey).not.toBe('ai.chatgpt.unknownError')
+    expect(state.messageKey).not.toBe('ai.chatgpt.offline')
+  })
+
+  it('still invites a first connect when offline and nothing was attempted', () => {
+    expect(
+      describeChatGptState({
+        ...base,
+        connected: false,
+        sharing: false,
+        online: false,
+      }).messageKey,
+    ).toBe('ai.chatgpt.notConnected')
+  })
+
   it('reports a failed call on a live connection, not a healthy one', () => {
     const state = describeChatGptState({ ...base, failed: true })
     expect(state.messageKey).toBe('ai.chatgpt.unknownError')
@@ -154,6 +181,7 @@ describe('describeChatGptState', () => {
       { ...base, connected: false, sharing: false },
       { ...base, connected: false, sharing: false, declined: true },
       { ...base, connected: false, sharing: false, failed: true },
+      { ...base, connected: false, sharing: false, failed: true, online: false },
       { ...base, mode: AiCategorizationMode.OFF },
       { ...base, mode: AiCategorizationMode.SERVER },
       { ...base, hasAnthropicKey: true },
