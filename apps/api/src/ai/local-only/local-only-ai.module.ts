@@ -1,8 +1,7 @@
-import { Module } from '@nestjs/common'
+import { Module, type OnModuleInit } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { AiModule, buildAiProviders } from '../ai.module'
-import { AI_PROVIDERS, AiProviderRegistry } from '../ai-provider.registry'
-import { AnthropicCategorizerService } from '../anthropic-categorizer.service'
+import { AiModule } from '../ai.module'
+import { AiProviderRegistry } from '../ai-provider.registry'
 import { PrismaService } from '../../prisma/prisma.service'
 import { createAuthorizeRequest } from './chatgpt-authorize'
 import { startCallbackListener } from './chatgpt-callback-listener'
@@ -61,21 +60,27 @@ import { exchangeCode, verifyIdentity } from './chatgpt-token-exchange'
  *   touches the network, rather than failing to resolve at boot. Task 11
  *   turns that into a compose-time refusal.
  *
- * **The provider list.** `AI_PROVIDERS` is a module-private token:
- * `AiModule` builds its own list (the hosted one, `buildAiProviders`) and
- * hands out only the registry made from it, so nothing outside `AiModule`
- * can add to that list -- and `AiModule` must not import this module, since
- * it is reachable from the hosted root. This module therefore registers its
- * own `AI_PROVIDERS`: the hosted list plus `ChatGptOAuthProvider`, and an
- * `AiProviderRegistry` over it. That makes `'chatgpt-oauth'` resolvable here,
- * and a duplicate id a boot failure.
+ * **How `'chatgpt-oauth'` becomes resolvable.** This module does NOT build a
+ * provider list or a registry of its own. It injects the single
+ * `AiProviderRegistry` that `AiModule` provides -- resolvable because of the
+ * `imports: [AiModule]` below -- and registers `ChatGptOAuthProvider` into it
+ * on init.
  *
- * That registry is deliberately not exported. `AiModule` exports one under
- * the same class token, so a module importing both would resolve whichever
- * came first. Nothing dispatches through either registry yet --
- * `ImportsService` still injects `AnthropicCategorizerService` directly -- so
- * how the merged one reaches a consumer is a decision for the change that
- * routes an import to this provider, not this one.
+ * It used to do the opposite: its own `AI_PROVIDERS` (the hosted list plus the
+ * ChatGPT provider) and its own `AiProviderRegistry` over that, deliberately
+ * unexported. That registry was unreachable from anything that could use it.
+ * Nest resolves a token through the *injecting* module's own import list, and
+ * `ImportsModule` imports `AiModule`; so the import path got `AiModule`'s
+ * Anthropic-only registry even in the local composition, while a spec that
+ * fetched this module's registry by hand saw `'chatgpt-oauth'` sitting in it
+ * and passed. One registry removes that gap: there is no other instance for a
+ * test to be accidentally right about.
+ *
+ * **Registration happens in `onModuleInit`, so it requires an initialized
+ * application.** `Test.createTestingModule().compile()` constructs every
+ * provider but runs no lifecycle hook, so a spec that needs the ChatGPT
+ * provider to be in the registry must `init()` (what `app.init()` /
+ * `app.listen()` do in production). A compile-only spec sees it absent.
  */
 @Module({
   imports: [AiModule],
@@ -141,16 +146,25 @@ import { exchangeCode, verifyIdentity } from './chatgpt-token-exchange'
         CHATGPT_OPEN_BROWSER,
       ],
     },
-    {
-      provide: AI_PROVIDERS,
-      useFactory: (
-        anthropic: AnthropicCategorizerService,
-        chatgpt: ChatGptOAuthProvider,
-      ) => [...buildAiProviders(anthropic), chatgpt],
-      inject: [AnthropicCategorizerService, ChatGptOAuthProvider],
-    },
-    AiProviderRegistry,
   ],
   exports: [ChatGptOAuthProvider],
 })
-export class LocalOnlyAiModule {}
+export class LocalOnlyAiModule implements OnModuleInit {
+  constructor(
+    private readonly registry: AiProviderRegistry,
+    private readonly chatgpt: ChatGptOAuthProvider,
+  ) {}
+
+  /**
+   * Contributes this composition's extra provider into the registry
+   * `AiModule` already exports -- the one the import path resolves. See this
+   * module's doc comment for why there is no second registry to put it in.
+   *
+   * `register` refuses a duplicate id, so a composition that somehow imported
+   * this module twice fails at boot instead of quietly keeping one of two
+   * providers under `'chatgpt-oauth'`.
+   */
+  onModuleInit(): void {
+    this.registry.register(this.chatgpt)
+  }
+}

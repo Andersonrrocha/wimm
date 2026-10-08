@@ -20,9 +20,13 @@ import { AnthropicCategorizerService } from './anthropic-categorizer.service'
  *
  * A local-only provider (`ai/local-only/local-only-ai.module.ts`) is deliberately
  * NOT added here: this module is reachable from the hosted root, and a
- * local-only provider must not be. `LocalOnlyAiModule` registers its own
- * `AI_PROVIDERS` -- this list plus the ChatGPT provider -- see its doc
- * comment.
+ * local-only provider must not be. `LocalOnlyAiModule` instead registers its
+ * provider into the registry built below, on init -- see its doc comment, and
+ * `AiProviderRegistry`'s, for why there is one registry per composition and
+ * not one per module. The licensing boundary is the import graph, not DI: the
+ * hosted root never imports that module, so nothing ever registers into this
+ * composition's registry (`scripts/verify-ai-hosted-composition.ts` is what
+ * proves it, over the real module graph).
  */
 export function buildAiProviders(anthropic: AnthropicCategorizerService): AiProvider[] {
   return [anthropic]

@@ -11,9 +11,8 @@ import { LocalPrismaService } from '../../prisma/local/local-prisma.service'
 import { generateAiKeyEncryptionSecret } from '../../prisma/local/profile-secret'
 import { PrismaService } from '../../prisma/prisma.service'
 import { AiModule } from '../ai.module'
-import { AI_PROVIDERS, AiProviderRegistry } from '../ai-provider.registry'
+import { AiProviderRegistry } from '../ai-provider.registry'
 import { CHATGPT_OPEN_BROWSER } from './chatgpt-connect-flow'
-import type { AiProvider } from '../ai-provider.interface'
 import { AnthropicCategorizerService } from '../anthropic-categorizer.service'
 import { ChatGptConnectFlow } from './chatgpt-connect-flow'
 import { ChatGptConnectionStore } from './chatgpt-connection.store'
@@ -101,11 +100,15 @@ describe('LocalOnlyAiModule (wired)', () => {
   let fetchSpy: jest.SpyInstance
 
   /**
-   * `strict: true` is load-bearing. `get` is non-strict by default, which
-   * searches every module and returns the first match -- and
-   * `AiProviderRegistry` exists twice here, once per module, so a non-strict
-   * lookup answers with `AiModule`'s and a test of this module's would be
-   * silently asserting about the other one.
+   * `strict: true` is load-bearing in the other direction now. There is
+   * exactly one `AiProviderRegistry` -- `AiModule`'s -- and this module
+   * registers into it on init. A non-strict `get` would still find that one
+   * instance, so it would no longer be wrong; but every other token here IS
+   * module-scoped (the store, the flow, the provider), and resolving one of
+   * those non-strictly finds the first match anywhere in the container, which
+   * is how a test ends up asserting about something other than this module's
+   * wiring. Both helpers stay strict so the module a token comes from is
+   * always stated.
    */
   /**
    * The composition's opener. The test below proves THIS one reaches the flow.
@@ -174,6 +177,13 @@ describe('LocalOnlyAiModule (wired)', () => {
       ],
     }).compile()
 
+    // `compile()` constructs every provider but runs no lifecycle hook, and
+    // `LocalOnlyAiModule` registers its provider into the registry in
+    // `onModuleInit`. Without this the registry assertions below would be
+    // testing an uninitialized application -- which is not what production
+    // ever runs, since `app.init()` / `app.listen()` always call the hooks.
+    await moduleRef.init()
+
     fetchSpy = jest
       .spyOn(globalThis, 'fetch')
       .mockImplementation(async (input) =>
@@ -193,53 +203,42 @@ describe('LocalOnlyAiModule (wired)', () => {
     rmSync(ROOT, { recursive: true, force: true })
   })
 
-  describe('the provider list', () => {
-    it("registers the real ChatGPT provider under 'chatgpt-oauth'", () => {
+  describe('the provider registry', () => {
+    // `AiModule`'s registry, not a local one: that is the instance anything
+    // consuming a provider resolves, because Nest resolves a token through
+    // the injecting module's own import list and every consumer
+    // (`ImportsModule` -> `AiCategorizerSelector`) imports `AiModule`. A
+    // registration that landed anywhere else would be unreachable from the
+    // import path, which is exactly the defect this design removed.
+    it("registers the real ChatGPT provider into AiModule's registry under 'chatgpt-oauth'", () => {
       const provider = inLocal(ChatGptOAuthProvider)
 
       expect(provider).toBeInstanceOf(ChatGptOAuthProvider)
       expect(provider.id).toBe('chatgpt-oauth')
-      expect(inLocal(AiProviderRegistry).get('chatgpt-oauth')).toBe(provider)
+      expect(inAi(AiProviderRegistry).get('chatgpt-oauth')).toBe(provider)
     })
 
-    it('keeps the hosted providers in the list beside it', () => {
-      const registry = inLocal(AiProviderRegistry)
+    it('leaves the hosted providers in that same registry beside it', () => {
+      const registry = inAi(AiProviderRegistry)
 
       expect(registry.get('anthropic')).toBeInstanceOf(AnthropicCategorizerService)
       expect(registry.get('anthropic')).toBe(inAi(AnthropicCategorizerService))
     })
 
-    it('carries every hosted provider, not just the one named here', () => {
-      // The two lists share `buildAiProviders`, so a hosted provider added
-      // THERE reaches both. Nothing stops one being registered directly in
-      // `AiModule`'s own `providers` array, though, and the local list would
-      // then silently drop it -- and the test above only ever checks
-      // `'anthropic'` by name. This holds whatever is added, to either.
-      const idsIn = (module: Parameters<typeof moduleRef.select>[0]) =>
-        (
-          moduleRef.select(module).get<AiProvider[]>(AI_PROVIDERS, {
-            strict: true,
-          }) ?? []
-        )
-          .map((provider) => provider.id)
-          .sort()
-
-      const hosted = idsIn(AiModule)
-      const local = idsIn(LocalOnlyAiModule)
-
-      expect(hosted.length).toBeGreaterThan(0)
-      expect(local).toEqual([...hosted, 'chatgpt-oauth'].sort())
-    })
-
-    // The hosted list is `AiModule`'s own, and `AiModule` is reachable from
-    // the hosted root. If the ChatGPT provider ever showed up there, the
-    // licensing boundary would be breached through DI instead of through an
-    // import, and the composition guard would not see it.
-    it("leaves AiModule's own registry without it", () => {
-      const hosted = inAi(AiProviderRegistry)
-
-      expect(hosted.get('anthropic')).toBeDefined()
-      expect(hosted.has('chatgpt-oauth')).toBe(false)
+    // The inverse of the test this replaced. There used to be a second
+    // registry here, over the hosted list plus the ChatGPT provider, and the
+    // suite asserted that `AiModule`'s own stayed clean -- true, and useless:
+    // the clean one was the one the import path actually resolved, so the
+    // feature was dead while both tests passed. Proving there is no second
+    // instance is what keeps that from coming back. The licensing boundary
+    // does not rest on DI at all: the hosted root never imports this module
+    // (`scripts/verify-ai-hosted-composition.ts`, over the real module
+    // graph), and `ai.module.spec.ts` pins that `AiModule`'s own dispatch
+    // registers nothing under `'chatgpt-oauth'`.
+    it('has no registry of its own for a consumer to resolve by mistake', () => {
+      expect(() =>
+        moduleRef.select(LocalOnlyAiModule).get(AiProviderRegistry, { strict: true }),
+      ).toThrow()
     })
   })
 

@@ -40,6 +40,50 @@ describe('AiProviderRegistry', () => {
     expect(() => new AiProviderRegistry([first, second])).toThrow(/duplicate AI provider id "anthropic"/)
   })
 
+  describe('register (a composition layering a provider on after construction)', () => {
+    it('makes the added provider resolvable by its id', () => {
+      const registry = new AiProviderRegistry([fakeProvider('anthropic')])
+      const chatgpt = fakeProvider('chatgpt-oauth')
+
+      registry.register(chatgpt)
+
+      expect(registry.get('chatgpt-oauth')).toBe(chatgpt)
+      expect(registry.has('chatgpt-oauth')).toBe(true)
+    })
+
+    it('leaves the constructed providers in place', () => {
+      const anthropic = fakeProvider('anthropic')
+      const registry = new AiProviderRegistry([anthropic])
+
+      registry.register(fakeProvider('chatgpt-oauth'))
+
+      expect(registry.get('anthropic')).toBe(anthropic)
+    })
+
+    // Same refusal as the constructor, because both go through `register`.
+    // Without it, `get` would answer with whichever provider was inserted
+    // last and the composition that did it would get no signal at all.
+    it('refuses an id a constructed provider already holds, keeping the original', () => {
+      const anthropic = fakeProvider('anthropic')
+      const registry = new AiProviderRegistry([anthropic])
+      const impostor = fakeProvider('anthropic')
+
+      expect(() => registry.register(impostor)).toThrow(
+        /duplicate AI provider id "anthropic"/,
+      )
+      expect(registry.get('anthropic')).toBe(anthropic)
+    })
+
+    it('refuses an id a previous register call already added', () => {
+      const registry = new AiProviderRegistry([])
+      registry.register(fakeProvider('chatgpt-oauth'))
+
+      expect(() => registry.register(fakeProvider('chatgpt-oauth'))).toThrow(
+        /duplicate AI provider id "chatgpt-oauth"/,
+      )
+    })
+  })
+
   it('exposes AI_PROVIDERS as a stable symbol usable as a DI token', () => {
     expect(typeof AI_PROVIDERS).toBe('symbol')
   })
