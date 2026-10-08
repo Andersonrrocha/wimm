@@ -1,6 +1,7 @@
 /**
  * Parse a single Cresol transaction block (from extractCresolTransactionBlocks) into a normalized row.
- * Not wired into ImportsService — composable building block.
+ * Reached from ImportsService through `import-parser-registry`'s
+ * `cresolStatementParser`, via `parseCresolStatementFromExtractedText`.
  */
 
 import type { CresolTransactionBlockCandidate } from './extract-cresol-transaction-blocks'
