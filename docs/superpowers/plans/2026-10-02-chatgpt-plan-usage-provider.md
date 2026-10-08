@@ -2112,7 +2112,7 @@ git commit -m "feat(ai): implement the ChatGPT plan-usage provider"
 
 ## Open, with owners — from Task 9's review
 
-### F3. The merged provider registry is reachable from nowhere — **OWNED BY TASK 13**
+### F3. The merged provider registry is reachable from nowhere — **DONE in Task 13**
 
 `LocalOnlyAiModule` exports only `ChatGptOAuthProvider`; `AiModule` exports `AiProviderRegistry`. `app.local.module.ts` imports **both**. So the merged registry — the one that actually contains the ChatGPT provider — can be resolved only from inside its own spec. Any future consumer under `AppLocalModule` that injects `AiProviderRegistry` gets `AiModule`'s ChatGPT-less one, `get('chatgpt-oauth')` returns `undefined`, and **nothing errors**.
 
