@@ -11,6 +11,7 @@ import { useAuth } from '../../context/auth-context'
 import { apiClient } from '../../lib/api-client'
 import { Button } from '../../components/ui/button'
 import { ChartDateModeToggle } from '../../components/ui/chart-date-mode-toggle'
+import { ChatGptConnection } from '../../components/settings/chatgpt-connection'
 import { Field } from '../../components/ui/field'
 import { Panel } from '../../components/ui/panel'
 import { ProfileBackupsSection } from '../../components/profile-backups'
@@ -181,6 +182,14 @@ export function PreferencesTab(): JSX.Element {
             </div>
           </Field>
         ) : null}
+
+        {/* The second credential source, beside the Anthropic key field.
+            `BYOK` means "one of my own credentials" and there are two kinds;
+            `ChatGptConnectFlow` sets `OFF` to `BYOK` on a successful connect
+            for exactly that reason. Rendered outside the `BYOK` branch above
+            rather than inside it so that a connection left live under `OFF`
+            can still say so -- see the component's own doc comment. */}
+        <ChatGptConnection aiMode={aiMode} />
 
         {error ? (
           <p className="m-0 text-wm-sm text-negative">{error}</p>

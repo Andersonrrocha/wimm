@@ -5,7 +5,12 @@
     "module": "CommonJS",
     "moduleResolution": "Node",
     "noEmit": true,
-    "types": ["node", "jest"]
+    "types": ["node", "jest"],
+    // `locale-parity.spec.ts` imports the i18next bundles as JSON. Inherited
+    // from `tsconfig.node.json` today, but stated here too: this is the
+    // config ts-jest compiles against, and a spec suite should not silently
+    // stop building because the build config it extends dropped an option.
+    "resolveJsonModule": true
   },
   "include": [
     "src/main/**/*.ts",
@@ -16,7 +21,12 @@
     "src/renderer/lib/local-api-adapter.ts",
     "src/renderer/lib/local-api-adapter.spec.ts",
     "src/renderer/lib/csv-mapping-format.ts",
-    "src/renderer/lib/csv-mapping-format.spec.ts"
+    "src/renderer/lib/csv-mapping-format.spec.ts",
+    "src/renderer/lib/chatgpt-connection-state.ts",
+    "src/renderer/lib/chatgpt-connection-state.spec.ts",
+    "src/renderer/lib/locale-parity.spec.ts",
+    "src/renderer/i18n/locales/en.json",
+    "src/renderer/i18n/locales/pt.json"
   ],
   "exclude": ["node_modules"]
 }
