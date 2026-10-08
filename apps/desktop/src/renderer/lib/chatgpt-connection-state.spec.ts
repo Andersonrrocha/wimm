@@ -1,4 +1,4 @@
-import { AiCategorizationMode } from '@wimm/shared'
+import { AiByokSource, AiCategorizationMode } from '@wimm/shared'
 import {
   CHATGPT_SHARING_FAILURE_CODES,
   describeChatGptState,
@@ -11,12 +11,18 @@ import {
  * -- see `describeChatGptState`'s own doc comment. They are `BYOK` (the one
  * mode under which the connection is what runs), false and false here so that
  * each test below varies exactly one thing.
+ *
+ * `hasAnthropicKey` is false, which makes the plan the only own credential:
+ * one source is used without asking, so `byokSource` is not consulted and
+ * this base is the healthy connection.
  */
 const base = {
   connected: true,
   sharing: true,
   online: true,
   mode: AiCategorizationMode.BYOK,
+  hasAnthropicKey: false,
+  byokSource: null,
   declined: false,
   failed: false,
 }
@@ -150,6 +156,8 @@ describe('describeChatGptState', () => {
       { ...base, connected: false, sharing: false, failed: true },
       { ...base, mode: AiCategorizationMode.OFF },
       { ...base, mode: AiCategorizationMode.SERVER },
+      { ...base, hasAnthropicKey: true },
+      { ...base, hasAnthropicKey: true, byokSource: AiByokSource.ANTHROPIC_KEY },
       { ...base, sharing: false },
       { ...base, online: false },
       { ...base, errorCode: 'subscription_sharing_user_not_eligible' },
@@ -168,6 +176,70 @@ describe('describeChatGptState', () => {
     const state = describeChatGptState({ ...base, errorCode: 'something_new_from_openai' })
     expect(state.messageKey).toBe('ai.chatgpt.unknownError')
     expect(state.retryable).toBe(true)
+  })
+
+  // Both own credentials available and nothing stored is the one state
+  // `AiCategorizerSelector` answers with `needsChoice`: no provider at all,
+  // so the panel must ask rather than report a connection in use.
+  it('asks which credential to use when both are available and none is chosen', () => {
+    const state = describeChatGptState({ ...base, hasAnthropicKey: true })
+    expect(state.messageKey).toBe('ai.chatgpt.chooseSource')
+    expect(state.messageKey).not.toBe('ai.chatgpt.connected')
+    expect(state.tone).toBe('info')
+    expect(state.retryable).toBe(false)
+  })
+
+  // The selector routes to the Anthropic key here, so this live connection is
+  // idle -- the same over-claim `modeServer` exists to prevent.
+  it('reports a connection the Anthropic key was chosen over, not a healthy one', () => {
+    const state = describeChatGptState({
+      ...base,
+      hasAnthropicKey: true,
+      byokSource: AiByokSource.ANTHROPIC_KEY,
+    })
+    expect(state.messageKey).toBe('ai.chatgpt.sourceAnthropicKey')
+    expect(state.messageKey).not.toBe('ai.chatgpt.connected')
+    expect(state.tone).toBe('info')
+    expect(state.retryable).toBe(false)
+  })
+
+  it('reports a healthy connection when the plan is the chosen source', () => {
+    expect(
+      describeChatGptState({
+        ...base,
+        hasAnthropicKey: true,
+        byokSource: AiByokSource.CHATGPT_PLAN,
+      }).messageKey,
+    ).toBe('ai.chatgpt.connected')
+  })
+
+  // The selector ignores a stored source when only one credential exists,
+  // including when it names the one the user does not have. A stale
+  // `ANTHROPIC_KEY` on a user who removed their key must not call the plan
+  // idle when the plan is exactly what runs.
+  it('ignores a stored source naming a credential the user no longer has', () => {
+    expect(
+      describeChatGptState({ ...base, byokSource: AiByokSource.ANTHROPIC_KEY })
+        .messageKey,
+    ).toBe('ai.chatgpt.connected')
+  })
+
+  // Same ranking the mode branches get, for the same reason: with no choice
+  // stored nothing runs, so an error in hand is from the past and `offline`'s
+  // "suggestions resume on their own" is a promise nothing will keep.
+  it('does not let a stale failure or an offline moment outrank a pending choice', () => {
+    expect(
+      describeChatGptState({ ...base, hasAnthropicKey: true, failed: true })
+        .messageKey,
+    ).toBe('ai.chatgpt.chooseSource')
+    expect(
+      describeChatGptState({ ...base, hasAnthropicKey: true, online: false })
+        .messageKey,
+    ).toBe('ai.chatgpt.chooseSource')
+    expect(
+      describeChatGptState({ ...base, hasAnthropicKey: true, sharing: false })
+        .messageKey,
+    ).toBe('ai.chatgpt.chooseSource')
   })
 
   it('reports a healthy connection', () => {

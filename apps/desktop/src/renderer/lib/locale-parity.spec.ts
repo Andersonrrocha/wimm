@@ -1,4 +1,4 @@
-import { AiCategorizationMode } from '@wimm/shared'
+import { AiByokSource, AiCategorizationMode } from '@wimm/shared'
 import en from '../i18n/locales/en.json'
 import pt from '../i18n/locales/pt.json'
 import {
@@ -57,6 +57,8 @@ describe('every ChatGPT state message exists in both locales', () => {
     sharing: true,
     online: true,
     mode: AiCategorizationMode.BYOK,
+    hasAnthropicKey: false,
+    byokSource: null,
     declined: false,
     failed: false,
   }
@@ -66,6 +68,16 @@ describe('every ChatGPT state message exists in both locales', () => {
     // its own message cannot be added without its translation being checked.
     // `BYOK` is the healthy connection.
     ...Object.values(AiCategorizationMode).map((mode) => ({ ...base, mode })),
+    // Every own-credential source the shared enum defines plus the unchosen
+    // `null`, under the one condition that makes the stored value mean
+    // anything: both sources available. Derived for the same reason as the
+    // modes above -- a third source cannot be added in `@wimm/shared`
+    // without whatever message the mapping answers it with being checked.
+    ...[null, ...Object.values(AiByokSource)].map((byokSource) => ({
+      ...base,
+      hasAnthropicKey: true,
+      byokSource,
+    })),
     { ...base, connected: false, sharing: false },
     { ...base, connected: false, sharing: false, declined: true },
     { ...base, connected: false, sharing: false, failed: true },

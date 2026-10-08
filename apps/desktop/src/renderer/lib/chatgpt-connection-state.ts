@@ -12,7 +12,7 @@
  * result.
  */
 
-import type { AiCategorizationMode } from '@wimm/shared'
+import type { AiByokSource, AiCategorizationMode } from '@wimm/shared'
 
 export type ChatGptTone = 'invite' | 'info' | 'error'
 
@@ -36,6 +36,26 @@ export interface ChatGptStateInput {
    * combination of two flags that cannot occur.
    */
   mode: AiCategorizationMode
+  /**
+   * An Anthropic key is stored for this user (`User.hasAiApiKey`).
+   *
+   * With the connection live, that is the second own-credential source, and
+   * it is the only condition under which `byokSource` means anything at all:
+   * `AiCategorizerSelector` asks each provider whether it has a credential
+   * and consults the stored choice only to break a genuine tie.
+   */
+  hasAnthropicKey: boolean
+  /**
+   * The user's `aiByokSource` -- which own credential they picked, or `null`
+   * for "not chosen".
+   *
+   * Read only when `hasAnthropicKey` is true, exactly as the selector reads
+   * it. With one source there is no tie to break, so the selector ignores
+   * the stored value entirely, including when it names the source the user
+   * does not have; a stale `ANTHROPIC_KEY` left on someone who has since
+   * removed their key must not make this panel call the live plan idle.
+   */
+  byokSource: AiByokSource | null
   /**
    * The user refused consent at the authorization server.
    *
@@ -160,6 +180,21 @@ function describeFailure(errorCode: string | undefined): ChatGptStateDescription
  *   API: when the connection is not the credential that runs, no request is
  *   being made through it, so any error in hand is from the past and the
  *   live fact is that the connection is idle.
+ * - the two own-credential-source branches immediately after `mode`, and
+ *   still ahead of everything about the network or the API, because they are
+ *   the same kind of fact as `OFF` and `SERVER`. Under `BYOK` with both
+ *   sources available `AiCategorizerSelector` either suggests nothing at all
+ *   (nothing chosen -- its `needsChoice`) or routes to the Anthropic key, and
+ *   in neither case does a request go through this connection. Below
+ *   `online` they would promise that "suggestions resume on their own",
+ *   which with nothing chosen they never do; below `sharing` they would
+ *   answer "is my plan doing anything?" with "it never can" and leave
+ *   unsaid that the Anthropic key is idle too while no choice is stored.
+ * - `byokSource` read only under `hasAnthropicKey`, which is the selector's
+ *   own rule: one source is used without asking, so with no second source
+ *   there is nothing pending and nothing the stored value can redirect.
+ *   `CHATGPT_PLAN` falls through on purpose -- the plan is then what runs,
+ *   and the branches below are the ones that describe the call it makes.
  * - `online` before `errorCode`: offline, the last code is an artefact of
  *   the dropped connection rather than something the API said.
  * - `errorCode` before `sharing`: the API's own code names the cause
@@ -187,6 +222,18 @@ export function describeChatGptState(
   }
   if (input.mode === 'SERVER') {
     return { messageKey: 'ai.chatgpt.modeServer', tone: 'info', retryable: false }
+  }
+  if (input.hasAnthropicKey) {
+    if (input.byokSource === null) {
+      return { messageKey: 'ai.chatgpt.chooseSource', tone: 'info', retryable: false }
+    }
+    if (input.byokSource === 'ANTHROPIC_KEY') {
+      return {
+        messageKey: 'ai.chatgpt.sourceAnthropicKey',
+        tone: 'info',
+        retryable: false,
+      }
+    }
   }
   if (!input.online) {
     return { messageKey: 'ai.chatgpt.offline', tone: 'info', retryable: true }

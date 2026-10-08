@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { UseQueryResult } from '@tanstack/react-query'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import type { AiCategorizationMode } from '@wimm/shared'
+import type { AiByokSource, AiCategorizationMode } from '@wimm/shared'
 import { useAuth } from '../../context/auth-context'
 import { apiClient } from '../../lib/api-client'
 import {
@@ -29,6 +30,31 @@ const toneClass: Record<ChatGptTone, string> = {
   error: 'text-negative',
 }
 
+/**
+ * `GET /api/ai/chatgpt/status` as one React Query entry, shared by every
+ * caller.
+ *
+ * Exported because the Preferences tab needs the same `connected` flag to
+ * decide whether the credential-source choice is real at all, and one query
+ * key reading one route is how both learn it. A second `useQuery` with its
+ * own `queryFn` would be a second definition of the same server state, free
+ * to disagree with this one.
+ *
+ * Disabled outside local mode: `ChatGptController` is registered by
+ * `LocalOnlyAiModule`, so in hosted mode the route does not exist.
+ */
+export function useChatGptStatus(): UseQueryResult<ChatGptStatus> {
+  const { mode } = useAuth()
+  return useQuery({
+    queryKey: STATUS_QUERY_KEY,
+    enabled: mode?.mode === 'local',
+    queryFn: async () => {
+      const { data } = await apiClient.get<unknown>('/ai/chatgpt/status')
+      return readChatGptStatus(data)
+    },
+  })
+}
+
 interface ChatGptConnectionProps {
   /**
    * The user's current `aiCategorizationMode`. Taken as a prop rather than
@@ -36,6 +62,15 @@ interface ChatGptConnectionProps {
    * above it can never disagree about which mode is selected.
    */
   aiMode: AiCategorizationMode
+  /**
+   * `User.hasAiApiKey`. Same reasoning as `aiMode`: the credential-source
+   * selector above decides whether to show itself from this very value, so
+   * passing it down is what keeps the two from disagreeing about whether a
+   * second source exists.
+   */
+  hasAnthropicKey: boolean
+  /** `User.aiByokSource` -- the source chosen above, or `null`. */
+  byokSource: AiByokSource | null
 }
 
 /**
@@ -59,6 +94,12 @@ interface ChatGptConnectionProps {
  * if this rendered only inside the `BYOK` branch, since `OFF` and `SERVER`
  * are each mutually exclusive with it.
  *
+ * **It reports when the choice above leaves it idle.** Under `BYOK` with an
+ * Anthropic key stored as well, `AiCategorizerSelector` either suggests
+ * nothing at all (no source chosen) or routes to the key, and the connection
+ * reads as connected through both. `describeChatGptState` has a message for
+ * each, which is why `hasAnthropicKey` and `byokSource` are inputs here.
+ *
  * **Local mode only.** `ChatGptController` is registered by
  * `LocalOnlyAiModule`, which only `app.local.module.ts` composes -- in hosted
  * mode these three routes do not exist, so there is nothing to show and
@@ -77,6 +118,8 @@ interface ChatGptConnectionProps {
  */
 export function ChatGptConnection({
   aiMode,
+  hasAnthropicKey,
+  byokSource,
 }: ChatGptConnectionProps): JSX.Element | null {
   const { t, i18n } = useTranslation()
   const { mode, refreshUser } = useAuth()
@@ -96,14 +139,7 @@ export function ChatGptConnection({
     }
   }, [])
 
-  const statusQuery = useQuery({
-    queryKey: STATUS_QUERY_KEY,
-    enabled: isLocal,
-    queryFn: async () => {
-      const { data } = await apiClient.get<unknown>('/ai/chatgpt/status')
-      return readChatGptStatus(data)
-    },
-  })
+  const statusQuery = useChatGptStatus()
 
   // Both mutations refresh the user: `connect` moves `OFF` to `BYOK` and
   // `disconnect` moves `BYOK` back to `OFF` (while no Anthropic key remains),
@@ -141,6 +177,8 @@ export function ChatGptConnection({
     sharing: status.sharing,
     online,
     mode: aiMode,
+    hasAnthropicKey,
+    byokSource,
     declined: failure.declined,
     failed: failure.failed,
     errorCode: failure.errorCode,
