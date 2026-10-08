@@ -1,9 +1,10 @@
-import { ForbiddenException } from '@nestjs/common'
+import { ForbiddenException, RequestTimeoutException } from '@nestjs/common'
 import { AiCategorizationMode } from '@wimm/shared'
 import type { PrismaService } from '../../prisma/prisma.service'
 import { type createAuthorizeRequest } from './chatgpt-authorize'
 import {
   ChatGptSignInDeniedError,
+  ChatGptSignInTimedOutError,
   type startCallbackListener,
 } from './chatgpt-callback-listener'
 import type {
@@ -68,6 +69,31 @@ export const CHATGPT_OPEN_BROWSER = Symbol('CHATGPT_OPEN_BROWSER')
 /** `agent_name_hint` on a first registration. */
 const APP_NAME = 'WIMM'
 
+/**
+ * Bounds OIDC discovery and the token exchange on the interactive path.
+ *
+ * The same 30 seconds `ChatGptRefreshService` uses, and for the reason its
+ * own constant records: these are the very same two endpoints, and a request
+ * that never settles would otherwise be bounded only by undici's defaults.
+ * The listener's five-minute budget does not cover them -- discovery runs
+ * *before* the listener exists, and the exchange runs after the callback has
+ * already stopped it -- so without this the one path a user watches is the
+ * one path with no timeout at all.
+ */
+const REQUEST_TIMEOUT_MS = 30_000
+
+/**
+ * The body `code` a timed-out sign-in answers with.
+ *
+ * Mirrored verbatim by the renderer (`CHATGPT_SIGN_IN_TIMED_OUT_CODE` in
+ * `apps/desktop/src/renderer/lib/chatgpt-connection-state.ts`), the same way
+ * the `subscription_sharing_*` codes are mirrored there: it is a wire string,
+ * and the renderer cannot import from `ai/local-only/` -- nothing outside a
+ * local composition may reach this directory at all
+ * (`scripts/verify-ai-hosted-composition.ts`).
+ */
+export const CHATGPT_SIGN_IN_TIMED_OUT_CODE = 'sign_in_timed_out'
+
 export interface ChatGptConnectDeps {
   store: Pick<
     ChatGptConnectionStore,
@@ -96,7 +122,15 @@ export interface ChatGptConnectDeps {
   appName?: string
   /** Handed to the callback listener; it applies its own default. */
   timeoutMs?: number
+  /**
+   * Bounded with `REQUEST_TIMEOUT_MS` in the constructor before anything uses
+   * it, so discovery and the exchange cannot hang. Still optional: absent
+   * means "the process's own `fetch`", which is then bounded too -- the
+   * default is a source, not an escape from the budget.
+   */
   fetchImpl?: typeof fetch
+  /** Per-request budget for discovery and the exchange; defaults to 30 seconds. */
+  requestTimeoutMs?: number
 }
 
 /**
@@ -155,7 +189,30 @@ export interface ChatGptConnectDeps {
  * builds it with a `useFactory`.
  */
 export class ChatGptConnectFlow {
-  constructor(private readonly deps: ChatGptConnectDeps) {}
+  /**
+   * `deps.fetchImpl`, or the process's own `fetch`, with a timeout signal --
+   * never the bare function. Built here rather than read per call so there is
+   * one unbounded-fetch-shaped hole fewer: `discover` and `exchange` each
+   * take a `fetchImpl` and each apply their own default when it is absent, so
+   * leaving it `undefined` is what put the interactive path outside every
+   * budget. Same shape as `ChatGptRefreshService`'s and
+   * `ChatGptOAuthProvider`'s constructors.
+   *
+   * `fetch` is looked up at call time rather than captured, so the global the
+   * process actually has at that moment is the one used -- the reason
+   * `local-only-ai.module.ts` wraps it in a lambda for the other two.
+   */
+  private readonly fetchImpl: typeof fetch
+
+  constructor(private readonly deps: ChatGptConnectDeps) {
+    const timeoutMs = deps.requestTimeoutMs ?? REQUEST_TIMEOUT_MS
+    const underlying = deps.fetchImpl
+    this.fetchImpl = (input, init) =>
+      (underlying ?? fetch)(input, {
+        ...init,
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+  }
 
   /**
    * Runs one interactive sign-in and returns the resulting status.
@@ -175,7 +232,7 @@ export class ChatGptConnectFlow {
       )
     }
 
-    const config = await this.deps.discover(this.deps.fetchImpl)
+    const config = await this.deps.discover(this.fetchImpl)
     // Reuse the durable per-installation client ID when there is one.
     // Dynamic registration issues it once; re-registering would invalidate
     // every previously stored identity, because it is the `id_token`
@@ -206,19 +263,34 @@ export class ChatGptConnectFlow {
         verifier: request.verifier,
         redirectUri: listener.redirectUri,
         nonce: request.nonce,
-        fetchImpl: this.deps.fetchImpl,
+        fetchImpl: this.fetchImpl,
       })
       await this.deps.store.save(userId, clientId, credentials, accountLabel)
       await this.grantConsent(userId)
       return await this.deps.store.status(userId)
     } catch (error) {
-      // "You declined" is not "something failed". Everything else -- a
-      // timeout, a malformed callback, a refused exchange -- keeps its own
-      // message and its own 500.
+      // "You declined" is not "something failed", and neither is "nobody ever
+      // came back". Each gets its own status and, for the timeout, its own
+      // body `code`, because the renderer has no other way to tell them from
+      // the generic failure. Everything else -- a malformed callback, a
+      // refused exchange, a failed discovery -- keeps its own message and its
+      // own 500.
       if (error instanceof ChatGptSignInDeniedError) {
         throw new ForbiddenException(
           'ChatGPT sign-in was declined, so nothing was connected.',
         )
+      }
+      if (error instanceof ChatGptSignInTimedOutError) {
+        // The object form, not the string one: `HttpException` uses an object
+        // response verbatim as the body, which is what carries `code` out to
+        // `readChatGptFailure`. Every value in it is a literal from this
+        // file -- nothing here is copied from a response.
+        throw new RequestTimeoutException({
+          statusCode: 408,
+          code: CHATGPT_SIGN_IN_TIMED_OUT_CODE,
+          message:
+            'ChatGPT sign-in was not completed in time, so nothing was connected.',
+        })
       }
       throw error
     } finally {

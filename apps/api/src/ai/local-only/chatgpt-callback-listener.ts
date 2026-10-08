@@ -76,6 +76,30 @@ export class ChatGptSignInDeniedError extends Error {
   }
 }
 
+/**
+ * No callback arrived before the listener's budget ran out.
+ *
+ * Its own class for the same reason `ChatGptSignInDeniedError` is one, and
+ * for a sharper one: this is the most reachable outcome in the whole flow --
+ * the user clicks Connect, then closes the tab or walks away -- and it is the
+ * only one nobody did anything to cause. As a plain `Error` it reached Nest
+ * as a default 500 with no body `code`, and the settings panel's generic
+ * failure message then asserted that ChatGPT had refused a request, when no
+ * callback ever arrived and ChatGPT may well have authorized successfully.
+ * `ChatGptConnectFlow` turns this into a 408 carrying a code of its own, so
+ * the panel can say what actually happened.
+ *
+ * Carries nothing, exactly like the decline: the message is a static literal
+ * and the timeout budget is this module's own number, not something a
+ * response said.
+ */
+export class ChatGptSignInTimedOutError extends Error {
+  constructor() {
+    super('ChatGPT sign-in callback timed out waiting for the browser redirect.')
+    this.name = 'ChatGptSignInTimedOutError'
+  }
+}
+
 export interface CallbackListener {
   /** `http://127.0.0.1:<bound port>/auth/callback` — known only after binding. */
   redirectUri: string
@@ -270,12 +294,7 @@ export async function startCallbackListener(
    * must still free its port.
    */
   const timer = setTimeout(
-    () =>
-      abandon(
-        new Error(
-          'ChatGPT sign-in callback timed out waiting for the browser redirect.',
-        ),
-      ),
+    () => abandon(new ChatGptSignInTimedOutError()),
     timeoutMs,
   )
 

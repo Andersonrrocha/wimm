@@ -66,7 +66,18 @@ export interface User {
    * without asking.
    */
   aiByokSource: AiByokSource | null
-  /** True when a BYOK Anthropic key is stored (the value itself never leaves the server). */
+  /**
+   * True when a BYOK Anthropic key is stored **and still decrypts** under the
+   * server's current encryption secret (the value itself never leaves the
+   * server).
+   *
+   * Usability, not presence, because that is the question every reader is
+   * really asking: it is the same one `AnthropicCategorizerService` answers
+   * when the backend decides which credential runs. A key stops decrypting
+   * when the secret rotates under it, and while this reported mere presence
+   * the clients contradicted the backend about whether a second BYOK source
+   * existed.
+   */
   hasAiApiKey: boolean
   createdAt: string
   updatedAt: string

@@ -78,4 +78,37 @@ export class AiKeyCrypto {
   decrypt(payload: string): string {
     return decryptWithAiKey(this.key, payload)
   }
+
+  /**
+   * Whether `payload` still decrypts under the configured secret -- the
+   * question "is there a usable BYOK key?", asked without handing the key
+   * back.
+   *
+   * It exists because *presence* and *usability* are different questions and
+   * the codebase was answering the user-facing one with the cheaper of the
+   * two. A stored value stops decrypting when the encryption secret changes
+   * under it (`AiKeyResolverService` documents the rotated-secret path, and
+   * `apps/desktop/src/main/local-api.ts` logs a dedicated warning for the
+   * profile-secret migration that can leave exactly this behind), and from
+   * that moment `AiKeyResolverService.resolveForUser` -- and therefore
+   * `AnthropicCategorizerService.hasCredentialFor`, and therefore which
+   * provider actually runs -- treats the user as having no key. A `!== null`
+   * check disagrees, which is how the settings panel came to assert that a
+   * credential choice was pending when the backend had already made it.
+   *
+   * Here rather than in each caller so `UsersService` and `AuthService`
+   * cannot drift apart on it, and so the swallow lives in one place: a
+   * decrypt attempt on a read path must never throw into a user fetch, and
+   * neither the key nor the ciphertext is logged, returned or put in a
+   * message. The plaintext is discarded inside this method and never leaves
+   * it.
+   */
+  canDecrypt(payload: string): boolean {
+    try {
+      decryptWithAiKey(this.key, payload)
+      return true
+    } catch {
+      return false
+    }
+  }
 }

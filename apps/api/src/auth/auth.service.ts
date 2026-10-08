@@ -8,36 +8,44 @@ import { JwtService } from '@nestjs/jwt'
 import * as bcrypt from 'bcrypt'
 import { createHash, randomBytes } from 'crypto'
 import {
+  AiByokSource,
   AiCategorizationMode,
+  type AppLocale,
   ChartDateMode,
   parseEnum,
   SubscriptionPlan,
   SubscriptionStatus,
+  type User,
 } from '@wimm/shared'
+import { AiKeyCrypto } from '../ai/ai-key-crypto'
 import { DefaultCategoriesService } from '../categories/default-categories.service'
 import { PrismaService } from '../prisma/prisma.service'
 import type { LoginDto } from './dto/login.dto'
 import type { RefreshTokenDto } from './dto/refresh-token.dto'
 import type { RegisterDto } from './dto/register.dto'
 
+/**
+ * `user` is the shared `User`, not a structural copy of it.
+ *
+ * It used to be an inline type listing the fields by hand, and that is how a
+ * required shared field went missing without breaking the build: when
+ * `aiByokSource` was added to `User` in `packages/shared`, login and register
+ * kept compiling while returning a `User`-shaped object that did not have it.
+ * Nothing noticed because local mode never reads this payload -- restore and
+ * `refreshUser` both call `/users/me` -- so the only cost was a response that
+ * lied about its shape. Naming the shared type is what makes the *next*
+ * addition a compile error here instead.
+ *
+ * Naming it also fixes a second, quieter mismatch: `User` declares its four
+ * timestamps as ISO strings, which is what the wire has always carried
+ * (`JSON.stringify` of a `Date` is its `toISOString()`), while this type
+ * claimed `Date`. The conversion below is explicit for that reason; the bytes
+ * on the wire are unchanged.
+ */
 export type AuthResponseBody = {
   accessToken: string
   refreshToken: string
-  user: {
-    id: string
-    email: string
-    username: string
-    createdAt: Date
-    preferredLocale: string
-    chartDateMode: 'BILLING_CYCLE' | 'PURCHASE_DATE'
-    onboardedAt: Date | null
-    subscriptionStatus: 'ACTIVE' | 'TRIALING' | 'EXPIRED' | 'CANCELED'
-    subscriptionPlan: 'MONTHLY' | 'ANNUAL' | 'LIFETIME' | null
-    trialEndsAt: Date | null
-    founderNumber: number | null
-    aiCategorizationMode: 'OFF' | 'SERVER' | 'BYOK'
-    hasAiApiKey: boolean
-  }
+  user: User
 }
 
 @Injectable()
@@ -47,6 +55,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
     private readonly defaultCategories: DefaultCategoriesService,
+    private readonly aiKeyCrypto: AiKeyCrypto,
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthResponseBody> {
@@ -140,7 +149,9 @@ export class AuthService {
         trialEndsAt: true,
         founderNumber: true,
         aiCategorizationMode: true,
+        aiByokSource: true,
         aiApiKeyEncrypted: true,
+        updatedAt: true,
       },
     })
     if (!row) {
@@ -158,10 +169,17 @@ export class AuthService {
         id: row.id,
         email: row.email,
         username: row.username,
-        createdAt: row.createdAt,
-        preferredLocale: row.preferredLocale,
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
+        // `AppLocale` has no runtime enum object to hand `parseEnum`, so
+        // there is nothing to validate against here. The column is written
+        // only through `UpdateMeDto`, which does validate it, and
+        // `UsersService.findByIdOrThrow` passes the same value through
+        // unchecked on the route the clients actually read.
+        preferredLocale: row.preferredLocale as AppLocale,
         chartDateMode: parseEnum(ChartDateMode, row.chartDateMode, 'chartDateMode'),
-        onboardedAt: row.onboardedAt,
+        onboardedAt:
+          row.onboardedAt === null ? null : row.onboardedAt.toISOString(),
         subscriptionStatus: parseEnum(
           SubscriptionStatus,
           row.subscriptionStatus,
@@ -171,14 +189,25 @@ export class AuthService {
           row.subscriptionPlan === null
             ? null
             : parseEnum(SubscriptionPlan, row.subscriptionPlan, 'subscriptionPlan'),
-        trialEndsAt: row.trialEndsAt,
+        trialEndsAt:
+          row.trialEndsAt === null ? null : row.trialEndsAt.toISOString(),
         founderNumber: row.founderNumber,
         aiCategorizationMode: parseEnum(
           AiCategorizationMode,
           row.aiCategorizationMode,
           'aiCategorizationMode',
         ),
-        hasAiApiKey: row.aiApiKeyEncrypted !== null,
+        aiByokSource:
+          row.aiByokSource === null
+            ? null
+            : parseEnum(AiByokSource, row.aiByokSource, 'aiByokSource'),
+        // Usable, not merely present -- the identical expression
+        // `UsersService.findByIdOrThrow` uses, deliberately, so the two
+        // payloads cannot answer the same field differently. See
+        // `AiKeyCrypto.canDecrypt`.
+        hasAiApiKey:
+          row.aiApiKeyEncrypted !== null &&
+          this.aiKeyCrypto.canDecrypt(row.aiApiKeyEncrypted),
       },
     }
   }

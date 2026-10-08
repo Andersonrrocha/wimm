@@ -1,6 +1,7 @@
 import 'reflect-metadata'
+import type { ConfigService } from '@nestjs/config'
 import { AiByokSource } from '@wimm/shared'
-import type { AiKeyCrypto } from '../ai/ai-key-crypto'
+import { AiKeyCrypto } from '../ai/ai-key-crypto'
 import type { PrismaService } from '../prisma/prisma.service'
 import { UsersService } from './users.service'
 
@@ -8,7 +9,15 @@ describe('UsersService', () => {
   const update = jest.fn()
   const findUnique = jest.fn()
   const prisma = { user: { update, findUnique } } as unknown as PrismaService
-  const aiKeyCrypto = { encrypt: jest.fn(() => 'encrypted') } as unknown as AiKeyCrypto
+  // `canDecrypt` is part of the double because `hasAiApiKey` is now "a key
+  // that still decrypts", not "a row with something in the column" -- see
+  // `AiKeyCrypto.canDecrypt`. True here, so the tests below describe a user
+  // whose stored key works.
+  const canDecrypt = jest.fn(() => true)
+  const aiKeyCrypto = {
+    encrypt: jest.fn(() => 'encrypted'),
+    canDecrypt,
+  } as unknown as AiKeyCrypto
   let service: UsersService
 
   /** Every column `findByIdOrThrow` selects, as Prisma would return them. */
@@ -33,6 +42,7 @@ describe('UsersService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    canDecrypt.mockReturnValue(true)
     findUnique.mockResolvedValue(row())
     update.mockResolvedValue(undefined)
     service = new UsersService(prisma, aiKeyCrypto)
@@ -71,6 +81,47 @@ describe('UsersService', () => {
 
       expect(me.hasAiApiKey).toBe(true)
       expect(JSON.stringify(me)).not.toContain('SENTINEL-CIPHERTEXT')
+    })
+
+    /**
+     * `hasAiApiKey` has to answer the question the *selector* asks.
+     *
+     * `AnthropicCategorizerService.hasCredentialFor` is
+     * `resolveForUser(...) !== null`, and `AiKeyResolverService` returns null
+     * for a key that no longer decrypts. While this was `!== null`, a user
+     * with a stored-but-undecryptable key plus a live ChatGPT connection was
+     * told a credential choice was pending and that no suggestion would be
+     * made until they picked one -- while the backend had seen a single
+     * source all along and was already suggesting through the plan. Picking
+     * the Anthropic key then changed nothing, and the panel claimed the plan
+     * was unused.
+     *
+     * The real `AiKeyCrypto`, not the double: the point is that the two sides
+     * agree about an actual AES-GCM failure, which a stubbed boolean cannot
+     * establish.
+     */
+    it('reports a key that no longer decrypts as no key at all', async () => {
+      const secretA = 'a'.repeat(32)
+      const secretB = 'b'.repeat(32)
+      const crypto = (secret: string): AiKeyCrypto =>
+        new AiKeyCrypto({ get: () => secret } as unknown as ConfigService)
+      const ciphertext = crypto(secretA).encrypt('sk-ant-SENTINEL-USERS-KEY')
+      findUnique.mockResolvedValue(row({ aiApiKeyEncrypted: ciphertext }))
+
+      // Same ciphertext, read under the secret it was written with, then
+      // under a different one. Only the second is the rotated-secret state.
+      await expect(
+        new UsersService(prisma, crypto(secretA)).findByIdOrThrow('user-1'),
+      ).resolves.toMatchObject({ hasAiApiKey: true })
+
+      const me = await new UsersService(prisma, crypto(secretB)).findByIdOrThrow(
+        'user-1',
+      )
+
+      // Unusable, and the attempt neither threw into this fetch nor put the
+      // ciphertext in the response.
+      expect(me.hasAiApiKey).toBe(false)
+      expect(JSON.stringify(me)).not.toContain(ciphertext)
     })
   })
 

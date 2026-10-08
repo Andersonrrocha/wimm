@@ -2,6 +2,7 @@ import { createConnection, createServer } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import {
   ChatGptSignInDeniedError,
+  ChatGptSignInTimedOutError,
   startCallbackListener,
   type CallbackListener,
 } from './chatgpt-callback-listener'
@@ -279,9 +280,15 @@ describe('startCallbackListener', () => {
     }
   })
 
-  it('rejects on timeout', async () => {
+  // The class, not just the message: `ChatGptConnectFlow` discriminates on
+  // it to answer 408 with a body `code`, and a message-only check would pass
+  // over a plain `Error` that reaches Nest as a default 500 with no code --
+  // which is exactly the state this listener used to leave the UI in.
+  it('rejects on timeout with its own error type', async () => {
     const listener = await start({ timeoutMs: 50 })
-    await expect(listener.awaitCallback('s-1')).rejects.toThrow(/timed out/i)
+    const pending = listener.awaitCallback('s-1')
+    await expect(pending).rejects.toBeInstanceOf(ChatGptSignInTimedOutError)
+    await expect(pending).rejects.toThrow(/timed out/i)
   })
 
   it('starts the timeout at bind, so a listener that is never armed still frees its port', async () => {

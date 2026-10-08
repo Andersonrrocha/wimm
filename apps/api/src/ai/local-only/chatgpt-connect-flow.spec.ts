@@ -14,7 +14,7 @@
  * arm" fails here with that message instead of passing because the suite
  * happened to be sequential.
  */
-import { ForbiddenException } from '@nestjs/common'
+import { ForbiddenException, RequestTimeoutException } from '@nestjs/common'
 import { createHash } from 'node:crypto'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync } from 'node:fs'
@@ -32,10 +32,14 @@ import {
 } from './chatgpt-authorize'
 import {
   ChatGptSignInDeniedError,
+  ChatGptSignInTimedOutError,
   type CallbackListener,
   type CallbackResult,
 } from './chatgpt-callback-listener'
-import { ChatGptConnectFlow } from './chatgpt-connect-flow'
+import {
+  CHATGPT_SIGN_IN_TIMED_OUT_CODE,
+  ChatGptConnectFlow,
+} from './chatgpt-connect-flow'
 import { ChatGptConnectionStore } from './chatgpt-connection.store'
 import { DYNAMIC_CLIENT_ID, type OidcConfig } from './chatgpt-oidc'
 import type { ChatGptExchange } from './chatgpt-token-exchange'
@@ -107,6 +111,8 @@ interface Harness {
   exchangeArgs: () => Record<string, unknown> | null
   listenerArgs: () => unknown
   openedUrl: () => string | null
+  /** The `fetchImpl` the flow handed to discovery, once it has. */
+  discoverFetch: () => typeof fetch | undefined
 }
 
 describe('ChatGptConnectFlow', () => {
@@ -175,8 +181,10 @@ describe('ChatGptConnectFlow', () => {
         refuse: (error: unknown) => void,
       ) => void
       openBrowser?: null
-      discover?: () => Promise<OidcConfig>
+      discover?: (fetchImpl?: typeof fetch) => Promise<OidcConfig>
       timeoutMs?: number
+      fetchImpl?: typeof fetch
+      requestTimeoutMs?: number
     } = {},
   ): Harness {
     const events: string[] = []
@@ -187,6 +195,7 @@ describe('ChatGptConnectFlow', () => {
     let openedUrl: string | null = null
     let deliver: ((result: CallbackResult) => void) | null = null
     let refuse: ((error: unknown) => void) | null = null
+    let discoverFetch: typeof fetch | undefined
 
     const listener: CallbackListener = {
       redirectUri: REDIRECT_URI,
@@ -214,9 +223,10 @@ describe('ChatGptConnectFlow', () => {
       prisma: prisma as unknown as PrismaService,
       discover:
         options.discover ??
-        (async () => {
+        ((fetchImpl) => {
           events.push('discover')
-          return config
+          discoverFetch = fetchImpl
+          return Promise.resolve(config)
         }),
       startListener: async (args) => {
         events.push('startListener')
@@ -258,11 +268,14 @@ describe('ChatGptConnectFlow', () => {
               onOpen(deliver, refuse)
             },
       timeoutMs: options.timeoutMs,
+      fetchImpl: options.fetchImpl,
+      requestTimeoutMs: options.requestTimeoutMs,
     })
 
     return {
       flow,
       events,
+      discoverFetch: () => discoverFetch,
       armedState: () => armedState,
       request: () => {
         if (request === null) throw new Error('no authorize request was built')
@@ -564,6 +577,65 @@ describe('ChatGptConnectFlow', () => {
     })
   })
 
+  // Minor 4. Discovery runs before the listener exists and the exchange runs
+  // after the callback has stopped it, so the listener's five-minute budget
+  // covers neither. Without this the one path a user sits and watches was the
+  // one path bounded only by undici's defaults.
+  describe('the network calls it makes', () => {
+    it('bounds discovery and the exchange with an abort signal', async () => {
+      const seen: Array<AbortSignal | null | undefined> = []
+      const fetchImpl = (async (_input, init) => {
+        seen.push(init?.signal)
+        throw new Error('no request is actually sent in this spec')
+      }) as typeof fetch
+
+      const h = harness({ fetchImpl })
+      await h.flow.connect(userId)
+
+      const handed = h.discoverFetch()
+      expect(handed).toBeDefined()
+      // The flow must not hand its collaborators the bare function: both
+      // `discoverOidcConfig` and `exchangeCode` apply their own default when
+      // `fetchImpl` is absent, so an unwrapped (or undefined) one is exactly
+      // how this path escaped every budget.
+      expect(handed).not.toBe(fetchImpl)
+      expect(h.exchangeArgs()).toMatchObject({ fetchImpl: handed })
+
+      await expect(
+        (handed as typeof fetch)('https://auth.openai.com/.well-known/openid-configuration'),
+      ).rejects.toThrow(/no request is actually sent/)
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toBeInstanceOf(AbortSignal)
+    })
+
+    // The wrap must still bound the process's own `fetch` when no double is
+    // supplied -- `local-only-ai.module.ts` passes one, but the dep is
+    // optional and "absent" must not mean "unbounded".
+    it('bounds the default fetch too', async () => {
+      const h = harness()
+      await h.flow.connect(userId)
+
+      expect(h.discoverFetch()).toBeDefined()
+      expect(h.exchangeArgs()).toMatchObject({ fetchImpl: h.discoverFetch() })
+    })
+
+    it('aborts once the budget is spent', async () => {
+      let captured: AbortSignal | null | undefined
+      const fetchImpl = (async (_input, init) => {
+        captured = init?.signal
+        return new Promise<Response>(() => undefined)
+      }) as typeof fetch
+
+      const h = harness({ fetchImpl, requestTimeoutMs: 1 })
+      await h.flow.connect(userId)
+
+      void (h.discoverFetch() as typeof fetch)('https://auth.openai.com/')
+      expect(captured).toBeInstanceOf(AbortSignal)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect((captured as AbortSignal).aborted).toBe(true)
+    })
+  })
+
   describe('when it fails', () => {
     it('frees the port when the exchange fails', async () => {
       const h = harness({
@@ -601,6 +673,72 @@ describe('ChatGptConnectFlow', () => {
       await expect(store.status(userId)).resolves.toMatchObject({
         connected: false,
       })
+    })
+
+    // The most reachable failure in the feature, and the only one a user
+    // causes by doing nothing: click Connect, close the tab, wait. As a plain
+    // `Error` it became Nest's default 500 with no body `code`, and the
+    // settings panel's generic failure message then told the user ChatGPT had
+    // refused the request -- a claim about a party that was never heard from.
+    it('answers a timed-out sign-in with a 408 carrying its own code', async () => {
+      const h = harness({
+        onBrowserOpen: (_ok, refuse) => refuse(new ChatGptSignInTimedOutError()),
+      })
+
+      const error = await rejection(h.flow.connect(userId))
+
+      expect(error).toBeInstanceOf(RequestTimeoutException)
+      expect((error as RequestTimeoutException).getStatus()).toBe(408)
+      // The body, not the message: `readChatGptFailure` in the renderer reads
+      // `error.response.data.code` and nothing else can tell it this apart
+      // from every other 500.
+      expect((error as RequestTimeoutException).getResponse()).toMatchObject({
+        code: CHATGPT_SIGN_IN_TIMED_OUT_CODE,
+      })
+      expect(h.events).toContain('close')
+      await expect(store.status(userId)).resolves.toMatchObject({
+        connected: false,
+      })
+    })
+
+    // A timeout is not a decline and a decline is not a timeout: the two
+    // statuses and the two codes must not be reachable from one cause.
+    it('does not call a timed-out sign-in a decline', async () => {
+      const h = harness({
+        onBrowserOpen: (_ok, refuse) => refuse(new ChatGptSignInTimedOutError()),
+      })
+
+      const error = await rejection(h.flow.connect(userId))
+
+      expect(error).not.toBeInstanceOf(ForbiddenException)
+      expect((error as Error).message).not.toMatch(/declin/i)
+    })
+
+    // Every other cause keeps its 500 with no code, so the panel's generic
+    // failure message stays the fallback it is meant to be rather than
+    // becoming the only message.
+    it('leaves every other cause as a plain failure with no code', async () => {
+      for (const options of [
+        {
+          exchange: async () => {
+            throw new Error('the token endpoint refused the grant')
+          },
+        },
+        {
+          onBrowserOpen: (
+            _ok: (result: CallbackResult) => void,
+            refuse: (error: unknown) => void,
+          ) => refuse(new Error('the callback carried no usable code')),
+        },
+        {
+          discover: () => Promise.reject(new Error('discovery failed')),
+        },
+      ] satisfies Array<Parameters<typeof harness>[0]>) {
+        const error = await rejection(harness(options).flow.connect(userId))
+
+        expect(error).not.toBeInstanceOf(RequestTimeoutException)
+        expect(error).not.toBeInstanceOf(ForbiddenException)
+      }
     })
 
     it('does not call an ordinary failure a decline', async () => {

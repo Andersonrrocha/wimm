@@ -38,8 +38,23 @@ export class UsersService {
     }
     // Never leak the encrypted key. Surface a boolean so the UI can show
     // "key configured" without revealing the value.
+    //
+    // **Usable, not merely present.** `AiKeyCrypto.canDecrypt` is the same
+    // question `AiKeyResolverService.resolveForUser` asks, which is what
+    // decides whether the Anthropic provider offers a credential at all. A
+    // bare `!== null` answered a different question, and the two diverge for
+    // a stored-but-undecryptable key: the renderer then showed the BYOK
+    // credential chooser and said no suggestion would be made until a source
+    // was picked, while the backend had seen one source all along and was
+    // already using the ChatGPT plan. The remedy for this user is to paste
+    // the key again, which is exactly what the "no key" branch of the
+    // settings UI offers -- see `AiKeyCrypto.canDecrypt` for the full note.
     const { aiApiKeyEncrypted, ...rest } = user
-    return { ...rest, hasAiApiKey: aiApiKeyEncrypted !== null }
+    return {
+      ...rest,
+      hasAiApiKey:
+        aiApiKeyEncrypted !== null && this.aiKeyCrypto.canDecrypt(aiApiKeyEncrypted),
+    }
   }
 
   async updateMe(userId: string, dto: UpdateMeDto) {
