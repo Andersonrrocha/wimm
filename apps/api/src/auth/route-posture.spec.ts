@@ -33,7 +33,7 @@ import { PrismaService } from '../prisma/prisma.service'
  * handler's own null-check caught it instead": both produce a
  * byte-for-byte identical 401. A tokenless-only check would pass even if
  * the global guard were completely disabled, for every route that happens
- * to use `@CurrentUser()` -- which is all 36 of them. The second check
+ * to use `@CurrentUser()` -- which is every one of them. The second check
  * below (a validly signed token for a route the guard should still accept)
  * closes that gap: if the guard is doing its job, a well-formed token gets
  * past it and the request fails downstream (validation, or the stubbed

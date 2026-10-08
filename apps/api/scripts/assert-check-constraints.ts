@@ -7,7 +7,7 @@
  * internal row-shape types to bare `string`, on the argument that the database
  * guarantees validity. These constraints ARE that guarantee. They live only in
  * migration SQL — Prisma does not model CHECK — so a squashed or regenerated
- * baseline would drop all 14 silently.
+ * baseline would drop every one of them silently.
  *
  * The database is the oracle here, not the migration file that first created
  * these constraints: a later migration can legitimately widen a value set
@@ -19,7 +19,7 @@
  * So this script reads `pg_get_constraintdef` off the live database, parses
  * it, and compares table, column, allowed values, and nullability against the
  * module directly. It also flags any CHECK in the database that the module
- * does not declare, so a 15th enum-shaped column can't go unguarded.
+ * does not declare, so a further enum-shaped column can't go unguarded.
  *
  * Run in CI after `prisma migrate deploy`.
  */
