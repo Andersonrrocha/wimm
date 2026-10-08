@@ -1,3 +1,4 @@
+import { AiCategorizationMode } from '@wimm/shared'
 import en from '../i18n/locales/en.json'
 import pt from '../i18n/locales/pt.json'
 import {
@@ -55,15 +56,19 @@ describe('every ChatGPT state message exists in both locales', () => {
     connected: true,
     sharing: true,
     online: true,
-    modeOff: false,
+    mode: AiCategorizationMode.BYOK,
     declined: false,
+    failed: false,
   }
 
   const states = [
-    { ...base },
+    // Every mode the shared enum defines, so a mode the mapping answers with
+    // its own message cannot be added without its translation being checked.
+    // `BYOK` is the healthy connection.
+    ...Object.values(AiCategorizationMode).map((mode) => ({ ...base, mode })),
     { ...base, connected: false, sharing: false },
     { ...base, connected: false, sharing: false, declined: true },
-    { ...base, modeOff: true },
+    { ...base, connected: false, sharing: false, failed: true },
     { ...base, sharing: false },
     { ...base, online: false },
     { ...base, errorCode: 'something_new_from_openai' },

@@ -20,7 +20,7 @@ import { Button } from '../ui/button'
 const STATUS_QUERY_KEY = ['chatgpt-status']
 
 const NO_CONNECTION: ChatGptStatus = readChatGptStatus(undefined)
-const NO_FAILURE: ChatGptFailure = { declined: false, errorCode: undefined }
+const NO_FAILURE: ChatGptFailure = { failed: false, declined: false, errorCode: undefined }
 
 /** Colours come from `theme.css` tokens only -- never a literal. */
 const toneClass: Record<ChatGptTone, string> = {
@@ -51,11 +51,13 @@ interface ChatGptConnectionProps {
  * connected ChatGPT that something had broken.
  *
  * **Visible under any mode once a connection exists**, not only under `BYOK`.
- * That is the other half of the same contradiction: choosing `OFF` while
- * ChatGPT is connected stops every suggestion, and the connection still reads
- * as connected. `describeChatGptState`'s `modeOff` is the message for it, and
- * it would be unreachable if this rendered only inside the `BYOK` branch,
- * since `modeOff` and `BYOK` are mutually exclusive.
+ * That is the other half of the same contradiction: choosing `OFF` stops
+ * every suggestion, and choosing `SERVER` hands them to the server's own
+ * Anthropic key, so with ChatGPT connected either choice leaves a connection
+ * that reads as connected and is not used. `describeChatGptState` has a
+ * message for each, keyed on its `mode` input, and they would be unreachable
+ * if this rendered only inside the `BYOK` branch, since `OFF` and `SERVER`
+ * are each mutually exclusive with it.
  *
  * **Local mode only.** `ChatGptController` is registered by
  * `LocalOnlyAiModule`, which only `app.local.module.ts` composes -- in hosted
@@ -138,8 +140,9 @@ export function ChatGptConnection({
     connected: status.connected,
     sharing: status.sharing,
     online,
-    modeOff: aiMode === 'OFF',
+    mode: aiMode,
     declined: failure.declined,
+    failed: failure.failed,
     errorCode: failure.errorCode,
   })
 

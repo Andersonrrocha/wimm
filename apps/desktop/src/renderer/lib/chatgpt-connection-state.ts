@@ -12,6 +12,8 @@
  * result.
  */
 
+import type { AiCategorizationMode } from '@wimm/shared'
+
 export type ChatGptTone = 'invite' | 'info' | 'error'
 
 export interface ChatGptStateInput {
@@ -20,14 +22,20 @@ export interface ChatGptStateInput {
   /** `navigator.onLine`, passed in rather than read here. */
   online: boolean
   /**
-   * The user's `aiCategorizationMode` is `OFF`.
+   * The user's `aiCategorizationMode`. Only `BYOK` means this connection is
+   * the credential that runs.
    *
    * A connection that is live and doing nothing is the one row the failure
-   * table did not have, and the one a user is least able to diagnose:
-   * `ImportsService` gates every AI call on the mode, so with it `OFF` no
-   * suggestion ever appears while the connection still reads as connected.
+   * table did not have, and the one a user is least able to diagnose, and
+   * there are two ways to get there. `ImportsService` gates every AI call on
+   * the mode, so with it `OFF` no suggestion ever appears; with it `SERVER`
+   * the server's own Anthropic key answers instead
+   * (`AiKeyResolverService.resolveForUser`). Either way the connection still
+   * reads as connected unless the mode is looked at, which is why this is
+   * the mode itself and not a boolean: one field, three values, and no
+   * combination of two flags that cannot occur.
    */
-  modeOff: boolean
+  mode: AiCategorizationMode
   /**
    * The user refused consent at the authorization server.
    *
@@ -38,6 +46,20 @@ export interface ChatGptStateInput {
    * that distinction away.
    */
   declined: boolean
+  /**
+   * The last `connect` / `disconnect` call failed, for any reason.
+   *
+   * True for every rejection, so it is also true alongside `declined` and
+   * alongside `errorCode`; the order of checks in `describeChatGptState`
+   * is what lets those two keep their own, more precise, messages.
+   *
+   * Without it, a failure with no `declined` and no `errorCode` -- a
+   * timeout, a malformed callback, a refused token exchange, i.e. every real
+   * failure today, since no ChatGPT route sets `data.code` -- carried the
+   * same inputs as "nothing has happened yet", and a first connect that
+   * failed looked exactly like one never attempted.
+   */
+  failed: boolean
   /** A `subscription_sharing_*` code, when the API supplied one. */
   errorCode?: string
 }
@@ -105,6 +127,18 @@ export const CHATGPT_SHARING_FAILURE_CODES: readonly string[] = [
 ]
 
 /**
+ * What a failed call says: the API's own `subscription_sharing_*` code when
+ * it supplied a known one, the generic message otherwise.
+ */
+function describeFailure(errorCode: string | undefined): ChatGptStateDescription {
+  const known = errorCode === undefined ? undefined : SHARING_FAILURES.get(errorCode)
+  if (known !== undefined) {
+    return { messageKey: known.messageKey, tone: 'error', retryable: known.retryable }
+  }
+  return { messageKey: 'ai.chatgpt.unknownError', tone: 'error', retryable: true }
+}
+
+/**
  * The single message the connection UI should show, and whether to offer a
  * retry.
  *
@@ -115,13 +149,27 @@ export const CHATGPT_SHARING_FAILURE_CODES: readonly string[] = [
  *   went to trouble to make distinguishable.
  * - `connected` before `sharing`: with no connection at all there is nothing
  *   to say about the plan, and `sharing` is false in that case anyway.
- * - `modeOff` before everything about the network or the API: with the mode
- *   `OFF` no request is being made, so any error code in hand is from the
- *   past and the live fact is that AI is switched off.
+ * - `failed` is consulted inside the `connected` check, not after it: a
+ *   connect that failed also leaves the connection absent, so it has the
+ *   problem `declined` has. "Not connected" is exactly what the panel said
+ *   before the click, and a user who tried and failed must not be told the
+ *   same thing as one who never tried. Nothing below applies to an absent
+ *   connection (there is no mode to be idle in, no network call to blame, no
+ *   plan to describe), so a failed call needs no further ranking there.
+ * - `mode` (`OFF` or `SERVER`) before everything about the network or the
+ *   API: when the connection is not the credential that runs, no request is
+ *   being made through it, so any error in hand is from the past and the
+ *   live fact is that the connection is idle.
  * - `online` before `errorCode`: offline, the last code is an artefact of
  *   the dropped connection rather than something the API said.
  * - `errorCode` before `sharing`: the API's own code names the cause
  *   precisely, where "sharing is not enabled" only describes the symptom.
+ * - `failed` with no code, after `errorCode` and before `sharing`: it is
+ *   the same fact as `errorCode` minus the cause, and the plan flag cannot
+ *   explain a call that just failed. It must not be checked before
+ *   `errorCode`: `failed` is true for every rejection, a coded one included,
+ *   so ahead of it every `subscription_sharing_*` message would be shadowed
+ *   by the generic one.
  */
 export function describeChatGptState(
   input: ChatGptStateInput,
@@ -130,20 +178,21 @@ export function describeChatGptState(
     return { messageKey: 'ai.chatgpt.declined', tone: 'invite', retryable: false }
   }
   if (!input.connected) {
-    return { messageKey: 'ai.chatgpt.notConnected', tone: 'invite', retryable: false }
+    return input.failed
+      ? describeFailure(input.errorCode)
+      : { messageKey: 'ai.chatgpt.notConnected', tone: 'invite', retryable: false }
   }
-  if (input.modeOff) {
+  if (input.mode === 'OFF') {
     return { messageKey: 'ai.chatgpt.modeOff', tone: 'info', retryable: false }
+  }
+  if (input.mode === 'SERVER') {
+    return { messageKey: 'ai.chatgpt.modeServer', tone: 'info', retryable: false }
   }
   if (!input.online) {
     return { messageKey: 'ai.chatgpt.offline', tone: 'info', retryable: true }
   }
-  if (input.errorCode) {
-    const known = SHARING_FAILURES.get(input.errorCode)
-    if (known !== undefined) {
-      return { messageKey: known.messageKey, tone: 'error', retryable: known.retryable }
-    }
-    return { messageKey: 'ai.chatgpt.unknownError', tone: 'error', retryable: true }
+  if (input.errorCode || input.failed) {
+    return describeFailure(input.errorCode)
   }
   if (!input.sharing) {
     return { messageKey: 'ai.chatgpt.sharingNotEnabled', tone: 'error', retryable: false }
@@ -193,13 +242,19 @@ function nonEmptyString(value: unknown): string | null {
 }
 
 export interface ChatGptFailure {
+  /** The call failed. True for every rejection, including the 403. */
+  failed: boolean
   declined: boolean
   errorCode: string | undefined
 }
 
 /**
- * Reads a failed `connect` / `disconnect` call as the two inputs
+ * Reads a failed `connect` / `disconnect` call as the three inputs
  * `describeChatGptState` needs.
+ *
+ * `failed` is unconditionally true: this is only ever called from an
+ * `onError`, and it is what keeps a failure with no 403 and no code from
+ * reading as "nothing has happened".
  *
  * `declined` is the 403: `ChatGptConnectFlow` raises `ForbiddenException`
  * for exactly one thing, a declined sign-in, and the only other 403 in the
@@ -212,6 +267,7 @@ export function readChatGptFailure(error: unknown): ChatGptFailure {
     ?.response
   const data = (response?.data ?? {}) as Record<string, unknown>
   return {
+    failed: true,
     declined: response?.status === 403,
     errorCode: nonEmptyString(data.code) ?? undefined,
   }

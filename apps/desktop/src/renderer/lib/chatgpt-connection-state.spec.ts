@@ -1,3 +1,4 @@
+import { AiCategorizationMode } from '@wimm/shared'
 import {
   CHATGPT_SHARING_FAILURE_CODES,
   describeChatGptState,
@@ -6,16 +7,18 @@ import {
 } from './chatgpt-connection-state'
 
 /**
- * `modeOff` and `declined` are part of the input, not optional extras -- see
- * `describeChatGptState`'s own doc comment. They are false here so that each
- * test below varies exactly one thing.
+ * `mode`, `declined` and `failed` are part of the input, not optional extras
+ * -- see `describeChatGptState`'s own doc comment. They are `BYOK` (the one
+ * mode under which the connection is what runs), false and false here so that
+ * each test below varies exactly one thing.
  */
 const base = {
   connected: true,
   sharing: true,
   online: true,
-  modeOff: false,
+  mode: AiCategorizationMode.BYOK,
   declined: false,
+  failed: false,
 }
 
 describe('describeChatGptState', () => {
@@ -54,10 +57,78 @@ describe('describeChatGptState', () => {
   })
 
   it('reports a connection the user has switched AI off for, not a healthy one', () => {
-    const state = describeChatGptState({ ...base, modeOff: true })
+    const state = describeChatGptState({ ...base, mode: AiCategorizationMode.OFF })
     expect(state.messageKey).toBe('ai.chatgpt.modeOff')
     expect(state.messageKey).not.toBe('ai.chatgpt.connected')
     expect(state.tone).toBe('info')
+    expect(state.retryable).toBe(false)
+  })
+
+  // Under SERVER the server's own Anthropic key answers, so a live, sharing,
+  // online ChatGPT connection is idle -- the panel must not call it "in use".
+  it('reports a connection the server key has taken over from, not a healthy one', () => {
+    const state = describeChatGptState({ ...base, mode: AiCategorizationMode.SERVER })
+    expect(state.messageKey).toBe('ai.chatgpt.modeServer')
+    expect(state.messageKey).not.toBe('ai.chatgpt.connected')
+    expect(state.tone).toBe('info')
+    expect(state.retryable).toBe(false)
+  })
+
+  // The state a failed first connect leaves behind: nothing connected, no 403
+  // and no code, because no ChatGPT route sets one. Without `failed` this was
+  // indistinguishable from never having clicked "Connect".
+  it('reports a failed first connect as a failure, not as never having tried', () => {
+    const state = describeChatGptState({
+      ...base,
+      connected: false,
+      sharing: false,
+      failed: true,
+    })
+    expect(state.messageKey).toBe('ai.chatgpt.unknownError')
+    expect(state.messageKey).not.toBe('ai.chatgpt.notConnected')
+    expect(state.tone).toBe('error')
+  })
+
+  it('reports a failed call on a live connection, not a healthy one', () => {
+    const state = describeChatGptState({ ...base, failed: true })
+    expect(state.messageKey).toBe('ai.chatgpt.unknownError')
+    expect(state.messageKey).not.toBe('ai.chatgpt.connected')
+  })
+
+  // `readChatGptFailure` sets `failed` on a 403 too, so the decline has to
+  // keep winning over the generic failure it is also an instance of.
+  it('keeps a decline as a decline even though the call also failed', () => {
+    const state = describeChatGptState({
+      ...base,
+      connected: false,
+      sharing: false,
+      failed: true,
+      declined: true,
+    })
+    expect(state.messageKey).toBe('ai.chatgpt.declined')
+    expect(state.messageKey).not.toBe('ai.chatgpt.unknownError')
+    expect(state.tone).toBe('invite')
+  })
+
+  // The real call site always sets `failed` alongside an `errorCode`, so the
+  // generic failure must rank below every code's own message.
+  it('keeps each error code its own message when the call also failed', () => {
+    for (const errorCode of CHATGPT_SHARING_FAILURE_CODES) {
+      expect(describeChatGptState({ ...base, failed: true, errorCode })).toEqual(
+        describeChatGptState({ ...base, errorCode }),
+      )
+    }
+  })
+
+  it('does not let a stale failure outrank a mode that leaves the connection idle', () => {
+    expect(
+      describeChatGptState({ ...base, failed: true, mode: AiCategorizationMode.OFF })
+        .messageKey,
+    ).toBe('ai.chatgpt.modeOff')
+    expect(
+      describeChatGptState({ ...base, failed: true, mode: AiCategorizationMode.SERVER })
+        .messageKey,
+    ).toBe('ai.chatgpt.modeServer')
   })
 
   it('reports a declined sign-in as a decision, not as a failure', () => {
@@ -76,7 +147,9 @@ describe('describeChatGptState', () => {
     const inputs = [
       { ...base, connected: false, sharing: false },
       { ...base, connected: false, sharing: false, declined: true },
-      { ...base, modeOff: true },
+      { ...base, connected: false, sharing: false, failed: true },
+      { ...base, mode: AiCategorizationMode.OFF },
+      { ...base, mode: AiCategorizationMode.SERVER },
       { ...base, sharing: false },
       { ...base, online: false },
       { ...base, errorCode: 'subscription_sharing_user_not_eligible' },
@@ -178,15 +251,22 @@ describe('readChatGptStatus', () => {
 describe('readChatGptFailure', () => {
   it('recognises a declined sign-in by the 403 the API answers it with', () => {
     expect(readChatGptFailure({ response: { status: 403, data: {} } })).toEqual({
+      failed: true,
       declined: true,
       errorCode: undefined,
     })
   })
 
-  it('does not call any other failure a decline', () => {
-    expect(readChatGptFailure({ response: { status: 500, data: {} } }).declined).toBe(false)
-    expect(readChatGptFailure(new Error('network down')).declined).toBe(false)
-    expect(readChatGptFailure(null).declined).toBe(false)
+  it('does not call any other failure a decline, but still calls it a failure', () => {
+    for (const error of [
+      { response: { status: 500, data: {} } },
+      new Error('network down'),
+      null,
+    ]) {
+      const failure = readChatGptFailure(error)
+      expect(failure.declined).toBe(false)
+      expect(failure.failed).toBe(true)
+    }
   })
 
   it('carries a code the API supplied, and nothing when it supplied none', () => {
