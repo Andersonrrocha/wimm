@@ -2112,7 +2112,7 @@ git commit -m "feat(ai): implement the ChatGPT plan-usage provider"
 
 ## Open, with owners — from Task 9's review
 
-### F3. The merged provider registry is reachable from nowhere — **owned by whichever task routes imports**
+### F3. The merged provider registry is reachable from nowhere — **OWNED BY TASK 13**
 
 `LocalOnlyAiModule` exports only `ChatGptOAuthProvider`; `AiModule` exports `AiProviderRegistry`. `app.local.module.ts` imports **both**. So the merged registry — the one that actually contains the ChatGPT provider — can be resolved only from inside its own spec. Any future consumer under `AppLocalModule` that injects `AiProviderRegistry` gets `AiModule`'s ChatGPT-less one, `get('chatgpt-oauth')` returns `undefined`, and **nothing errors**.
 
@@ -2775,7 +2775,17 @@ Running the real check (`tsc --noEmit -p apps/desktop/tsconfig.web.json`) report
 
 **Shape:** change the lint target to `tsc -b --noEmit` (or add `tsconfig.web.json` explicitly), then clear the 76 `JSX` occurrences with `import type { JSX } from 'react'`. Mechanical but broad, across roughly 30 files, and it must not be mixed into a feature commit.
 
-### F6. The seven `subscription_sharing_*` messages cannot reach the UI
+### F6. The seven `subscription_sharing_*` messages cannot reach the UI — **still open after Task 13**
+
+**Updated 2026-10-08.** Task 13 routes the import path to the ChatGPT
+provider, so these seven codes can now genuinely be *raised* during
+categorization — which they could not before. They still cannot be
+*displayed*: `ImportsService` catches the failure and logs a warning,
+because AI is advisory and must never gate an import, and none of the three
+ChatGPT routes populates `response.data.code`. So the gap is no longer
+"nothing can produce these" but "nothing carries them to the user", which is
+a narrower and more tractable decision than the one below.
+
 
 Task 9 maps all seven codes to distinct messages and Task 12 renders them, both correctly and both tested. But nothing can deliver them: those codes are raised by the provider during import categorization, where `ImportsService` catches the failure and logs a warning — AI is advisory and must never gate an import. None of the three ChatGPT routes populates a `code`.
 
@@ -2783,7 +2793,439 @@ So the states reachable today are `notConnected`, `declined`, `connected`, `mode
 
 **Decide, do not drift:** either the import preview surfaces a categorization failure to the user (which means deciding what "AI is advisory" means when the user should know their weekly cap is spent), or those seven messages are acknowledged as reachable only once something routes that signal. The design's failure table assumes the former — `subscription_sharing_usage_limit_exceeded` is the weekly-cap row, and a user who hit their own cap is exactly who needs telling.
 
-## Task 13: Full sweep and the packaging guard
+## Task 13: Route categorization to the selected provider
+
+**Why this task exists.** Tasks 1-12 built the whole ChatGPT connection and
+never wired it to categorization. `imports.service.ts:83` injects
+`AnthropicCategorizerService` concretely and `:682` calls it directly;
+`AiProviderRegistry` holds `'chatgpt-oauth'` in local mode but nothing calls
+`.get()` on the import path. So a connected ChatGPT plan has no effect
+whatever, and two strings Task 12 shipped are false today in every mode:
+`ai.chatgpt.connected` ("Connected, and in use for categorization") and
+`settings.aiKeyHint` ("optional when a ChatGPT plan is connected below").
+A `BYOK` user who connects ChatGPT and stores no `sk-ant-` key gets
+`AiKeyResolverService.resolveForUser` -> `null` -> zero suggestions.
+
+**The owner's decision (2026-10-08), which this task implements.** When more
+than one credential source is available the user chooses; when only one is
+available it is used without asking.
+
+### THE DI HAZARD THAT MAKES A NAIVE FIX LOOK CORRECT
+
+Read this before writing anything.
+
+`LocalOnlyAiModule` (`local-only-ai.module.ts:144-152`) registers **its own**
+`AI_PROVIDERS` (hosted list + `ChatGptOAuthProvider`) and **its own**
+`AiProviderRegistry` over it -- and `exports: [ChatGptOAuthProvider]` only.
+That registry is therefore unreachable from any other module.
+
+`ImportsModule` imports `AiModule`, which exports `AiProviderRegistry` --
+the **hosted** instance, holding `'anthropic'` alone. Nest resolves a token
+through the injecting module's own import list, so making `ImportsService`
+inject `AiProviderRegistry` gets the Anthropic-only registry **even in local
+mode**. `'chatgpt-oauth'` stays unreachable, and the feature stays dead.
+
+Worse, the obvious test passes anyway: a spec that boots `AppLocalModule` and
+asserts `registry.has('chatgpt-oauth')` resolves `LocalOnlyAiModule`'s
+instance, which does hold it, while the import path uses the other one. That
+is a green test over a dead feature -- the ninth distinct way a test has
+misled in this plan. Any test for this task MUST assert through the same
+registry instance `ImportsService` receives, which means asserting on
+behaviour reached via `ImportsService`, not on a registry fetched by hand.
+
+**The chosen design: one registry, contributed into on init.**
+`LocalOnlyAiModule` stops creating a second registry and instead registers
+its provider into the one `AiModule` already exports. Blast radius is two
+files; hosted behaviour is untouched; and there is then only one instance, so
+the test above cannot lie.
+
+Rejected: having each composition root supply `AI_PROVIDERS` and `AiModule`
+provide only the registry. It is arguably cleaner, but it makes `AiModule`
+non-self-sufficient and would require every root -- including ~16 spec boots
+of the hosted root -- to supply the token. That is the same blast radius that
+forced the `openBrowser` compose-time reversal earlier in this plan.
+
+**Files:**
+- Modify: `packages/shared/src/enums.ts` (new `AiByokSource`)
+- Modify: `packages/shared/src/enums.spec.ts` (two existing tests)
+- Modify: `packages/shared/src/index.ts` (`UserResponse`, `UpdateUserMeRequest`)
+- Modify: `apps/api/prisma/schema.prisma`, `apps/api/prisma/schema.sqlite.prisma`
+- Create: `apps/api/prisma/migrations/<ts>_add_user_ai_byok_source/migration.sql`
+- Regenerate (never hand-edit): the SQLite baseline, via `gen:sqlite-schema`
+  and `gen:sqlite-baseline` -- parity checks 1 and 3 compare bytes
+- Modify: `apps/api/src/ai/ai-provider.interface.ts` (`hasCredentialFor`)
+- Modify: `apps/api/src/ai/anthropic-categorizer.service.ts`
+- Modify: `apps/api/src/ai/local-only/chatgpt-oauth-provider.ts`
+- Modify: `apps/api/src/ai/ai-provider.registry.ts` (`register`)
+- Modify: `apps/api/src/ai/local-only/local-only-ai.module.ts` (drop the
+  second `AI_PROVIDERS`/registry; register on init)
+- Create: `apps/api/src/ai/ai-categorizer-selector.service.ts` + `.spec.ts`
+- Modify: `apps/api/src/ai/ai.module.ts` (provide/export the selector)
+- Modify: `apps/api/src/imports/imports.service.ts` (route through it)
+- Modify: `apps/api/src/users/dto/update-me.dto.ts`,
+  `apps/api/src/users/users.service.ts` (+ their specs)
+
+**Interfaces:**
+- Consumes: `AiProvider` (`ai-provider.interface.ts`), `AiProviderRegistry`,
+  `AiKeyResolverService.resolveForUser`, `ChatGptConnectionStore`,
+  `AiCategorizationMode` from `@wimm/shared`.
+- Produces, for Task 14:
+  - `AiByokSource` = `{ ANTHROPIC_KEY, CHATGPT_PLAN }` (const object + type)
+  - `UserResponse.aiByokSource: AiByokSource | null`
+  - `UpdateUserMeRequest.aiByokSource?: AiByokSource | null`
+  - `AiCategorizerSelector.selectFor(userId): Promise<AiSelection>` where
+    `AiSelection = { provider: AiProvider | null; needsChoice: boolean }`
+
+- [ ] **Step 1: the shared enum**
+
+`packages/shared/src/enums.ts`, following the existing const-object
+convention exactly (see `AiCategorizationMode` at `:34`):
+
+```ts
+/**
+ * Which of the user's own credentials categorization uses under
+ * `AiCategorizationMode.BYOK`.
+ *
+ * `BYOK` says *whose* credential, not *which vendor*, and there are two
+ * kinds: an Anthropic API key and a ChatGPT plan. Persisted and
+ * user-facing, which is why it is an enum here and not an `AiProvider.id`
+ * -- `ai-provider.interface.ts` states that ids are never shown to a user
+ * and never persisted, and this must not be the exception that breaks it.
+ * The mapping from a value here to a provider id lives in
+ * `AiCategorizerSelector`.
+ *
+ * `null` on a user means "not chosen", which matters only when both
+ * sources are available: with one, it is used without asking.
+ */
+export const AiByokSource = {
+  ANTHROPIC_KEY: 'ANTHROPIC_KEY',
+  CHATGPT_PLAN: 'CHATGPT_PLAN',
+} as const
+export type AiByokSource = (typeof AiByokSource)[keyof typeof AiByokSource]
+```
+
+Two existing tests in `enums.spec.ts` must be extended or they will not see
+this enum at all: the exact-shape block around `:38`, and the
+"uses each key as its own value" list at `:74`. Add:
+
+```ts
+  it('exposes the BYOK credential sources', () => {
+    expect(AiByokSource).toEqual({
+      ANTHROPIC_KEY: 'ANTHROPIC_KEY',
+      CHATGPT_PLAN: 'CHATGPT_PLAN',
+    })
+  })
+```
+
+**Trap:** `packages/shared/src/` contains untracked emitted `enums.js` and
+`enums.d.ts` beside the `.ts`. They are stale build artifacts, not sources.
+If a consumer resolves the `.js`, your new export will be missing and the
+error will point anywhere but here. Confirm with
+`git ls-files packages/shared/src/` (only `.ts` is tracked) and rebuild the
+package rather than editing them.
+
+- [ ] **Step 2: the column, in both chains**
+
+`apps/api/prisma/schema.prisma`, on `model User`, beside the other AI fields
+(`:29-34`):
+
+```prisma
+  /**
+   * Which own-credential source BYOK categorization uses when more than one
+   * is available: ANTHROPIC_KEY | CHATGPT_PLAN. NULL = not chosen, which
+   * only matters when both exist.
+   */
+  aiByokSource         String?
+```
+
+Then the SQLite schema the same way, and a Postgres migration whose SQL
+follows the repo's `-- AlterTable` comment convention. Regenerate the
+derived artifacts with `pnpm --filter @wimm/api gen:sqlite-schema` and
+`gen:sqlite-baseline`; never hand-edit them.
+
+Verify with `pnpm --filter @wimm/api assert:parity` (3/3). **Do NOT run
+`assert:constraints`** -- it loads dotenv, reads `DATABASE_URL`, and queries
+live Postgres.
+
+Add `aiByokSource` wherever the baseline spec enumerates `User`'s columns, if
+it does; mutation-prove it by misspelling the column and showing the failure.
+
+- [ ] **Step 3: availability on the provider contract**
+
+`ai-provider.interface.ts`, on `AiProvider`:
+
+```ts
+  /**
+   * Whether this provider has a usable credential for the user right now.
+   *
+   * Selection needs this and `categorizeBatch` cannot answer it: a provider
+   * with no credential returns `[]`, which is indistinguishable from "no
+   * suggestion applied". Cheap and side-effect-free by contract -- a local
+   * read, never a network call, and never a token refresh.
+   */
+  hasCredentialFor(userId: string): Promise<boolean>
+```
+
+`AnthropicCategorizerService`: `return (await this.keys.resolveForUser(userId)) !== null`.
+
+`ChatGptOAuthProvider`: true when the store holds a connection for the user.
+Use the store read the class already has; do not refresh, do not call the
+network, and do not treat `sharing` as part of availability -- a plan that
+cannot share is a *failure at call time* with its own message
+(`ai.chatgpt.sharingNotEnabled`), not an absent credential, and conflating
+them would make the panel say "not connected".
+
+- [ ] **Step 4: one registry**
+
+`ai-provider.registry.ts` gains:
+
+```ts
+  /**
+   * Adds a provider after construction, for a composition that layers one
+   * on (`LocalOnlyAiModule`). Same duplicate-id refusal as the constructor:
+   * two providers under one id would make `get` return whichever was
+   * inserted last, with no signal.
+   */
+  register(provider: AiProvider): void
+```
+
+Factor the duplicate check so the constructor and `register` share it --
+verbatim duplication of that block is a review defect in this repo.
+
+In `local-only-ai.module.ts`: delete its `AI_PROVIDERS` factory and its
+`AiProviderRegistry` entry, and instead implement `OnModuleInit` registering
+`ChatGptOAuthProvider` into the injected `AiProviderRegistry` (resolvable
+because the module already does `imports: [AiModule]` at `:81`). Keep
+`exports: [ChatGptOAuthProvider]`. Update the module's doc comment at
+`:64-70`, which currently describes the two-registry design.
+
+- [ ] **Step 5: the selector**
+
+`apps/api/src/ai/ai-categorizer-selector.service.ts`:
+
+```ts
+export interface AiSelection {
+  /** The provider to use, or `null` to make no suggestion at all. */
+  provider: AiProvider | null
+  /**
+   * Both own-credential sources are available and the user has not chosen.
+   * `provider` is `null`; the UI asks, nothing is guessed.
+   */
+  needsChoice: boolean
+}
+```
+
+`selectFor(userId)`:
+
+1. Read the user's `aiCategorizationMode`, `aiByokSource`. Missing user ->
+   `{ provider: null, needsChoice: false }`.
+2. `OFF` -> `{ provider: null, needsChoice: false }`.
+3. `SERVER` -> the `'anthropic'` provider. A ChatGPT plan is never used
+   under `SERVER`: that mode means the server's own key pays, and routing a
+   user's personal plan under it would be the opposite of what they chose.
+4. `BYOK` -> the registered providers that answer `hasCredentialFor` true:
+   - none -> `{ provider: null, needsChoice: false }`
+   - exactly one -> that provider, `needsChoice: false`
+   - more than one -> the provider `aiByokSource` names, if it is among the
+     available ones; otherwise `{ provider: null, needsChoice: true }`
+
+The `AiByokSource` -> id mapping is a constant in this file:
+`ANTHROPIC_KEY -> 'anthropic'`, `CHATGPT_PLAN -> 'chatgpt-oauth'`. Keep it
+exhaustive over the enum so a third source cannot be added without the
+compiler pointing here.
+
+Every DB read in this service must be inside the caller's existing
+try/catch posture: AI is advisory and an import preview must never fail
+because selection failed. Mirror `AiKeyResolverService`, which returns
+`null` rather than throwing on a missing or undecryptable key.
+
+Provide and export it from `AiModule`.
+
+- [ ] **Step 6: route the import path**
+
+`imports.service.ts`: replace the `AnthropicCategorizerService` injection at
+`:83` with `AiCategorizerSelector`, and at `:682` call the selected
+provider. Keep every surrounding guarantee exactly as it is: the early
+return for `OFF` before the candidate query (`:655-662`), the leaf-category
+constraint, and the `try/catch` that logs a warning and leaves the import
+intact (`:694-698`). The mode gate stays where it is -- do not move
+mode handling into the selector and delete it here; `OFF` must still skip
+the candidate query, which is the defect this plan already fixed once
+in Task 2.
+
+When `needsChoice` is true, log at the same warning level and make no
+suggestion. The user-facing half of that state is Task 14.
+
+- [ ] **Step 7: persist the choice**
+
+`update-me.dto.ts`: `aiByokSource?: AiByokSource | null`, validated against
+the enum with `class-validator`, following `aiCategorizationMode`'s existing
+pattern at `:36` and the asymmetric null handling documented at `:22`
+(string sets, `null` clears, `undefined` leaves alone). `users.service.ts`
+persists it; the user response gains `aiByokSource`.
+
+Add it to `UserResponse` and `UpdateUserMeRequest` in
+`packages/shared/src/index.ts` (`:61-75`).
+
+- [ ] **Step 8: tests**
+
+`ai-categorizer-selector.service.spec.ts` must cover, each as its own case:
+
+- `OFF` -> no provider, no choice needed
+- `SERVER` -> the Anthropic provider, **even with a live ChatGPT connection
+  and `aiByokSource: CHATGPT_PLAN`** (the explicit mode wins)
+- `BYOK`, Anthropic key only -> Anthropic, `needsChoice: false`, and the
+  stored `aiByokSource` is **ignored** -- including when it names
+  `CHATGPT_PLAN`, the source that is not available
+- `BYOK`, ChatGPT only -> ChatGPT, `needsChoice: false`, `aiByokSource` null
+- `BYOK`, both, `aiByokSource: CHATGPT_PLAN` -> ChatGPT
+- `BYOK`, both, `aiByokSource: ANTHROPIC_KEY` -> Anthropic
+- `BYOK`, both, `aiByokSource: null` -> no provider, `needsChoice: true`
+- `BYOK`, neither -> no provider, `needsChoice: false`
+- a provider whose `hasCredentialFor` rejects does not take the import down
+
+**Fixture discipline.** Five times in this plan a fixture hid a mutation.
+Specifically here: do not let the two providers be the same double, or
+"returns Anthropic" and "returns ChatGPT" become indistinguishable and a
+hardcoded return passes both. Give each a distinct `id` matching the real
+one and assert on `provider?.id`.
+
+The import-path test must go through `ImportsService` so it resolves the
+same registry instance the production code does -- see the DI hazard above.
+An assertion on a registry you fetched yourself proves nothing.
+
+- [ ] **Step 9: verification**
+
+```
+pnpm --filter @wimm/shared test
+pnpm --filter @wimm/api test
+pnpm --filter @wimm/api assert:parity
+pnpm --filter @wimm/api guard   # the hosted-composition licensing guard
+pnpm lint
+```
+
+The licensing guard matters most here: this task edits
+`local-only-ai.module.ts` and `ai.module.ts`, the two sides of the boundary
+`scripts/verify-ai-hosted-composition.ts` walks over the real import graph.
+A `ChatGptOAuthProvider` import that leaks into the hosted side must fail it
+-- prove the guard still catches that by adding the import temporarily,
+showing the failure, and removing it.
+
+Mutation-prove at least: `SERVER` returning the ChatGPT provider; the
+both-available case defaulting to one instead of `needsChoice`; and
+`register` accepting a duplicate id.
+
+---
+
+## Task 14: Let the user choose the credential source
+
+**Files:**
+- Modify: `apps/desktop/src/renderer/lib/chatgpt-connection-state.ts` + `.spec.ts`
+- Modify: `apps/desktop/src/renderer/components/settings/chatgpt-connection.tsx`
+- Modify: `apps/desktop/src/renderer/pages/settings/preferences-tab.tsx`
+- Modify: `apps/desktop/src/renderer/i18n/locales/en.json`, `pt.json`
+
+**Interfaces:**
+- Consumes from Task 13: `AiByokSource`, `UserResponse.aiByokSource`,
+  `UpdateUserMeRequest.aiByokSource`, and `UserResponse.hasAiApiKey`
+  (which already exists, `packages/shared/src/index.ts:62`).
+
+The renderer can determine availability without a new route: `hasAiApiKey`
+is already on the user, and the ChatGPT connection's `connected` is already
+on `GET /ai/chatgpt/status`. Do not add a route for what two existing
+payloads already say.
+
+- [ ] **Step 1: the selector, shown only when the choice is real**
+
+Inside the `BYOK` branch of `preferences-tab.tsx`, a two-option control
+over `AiByokSource`, rendered **only** when `hasAiApiKey && status.connected`.
+With one source there is nothing to choose and the control must not appear
+-- that is the owner's rule, and a selector offering a source the user does
+not have is the same over-claim this task exists to remove.
+
+Use the existing design-system control the mode selector already uses; do
+not introduce an ad-hoc style, and take every color from a token.
+
+Persist through the same `PATCH /users/me` mutation the tab already owns.
+Do not add a second axios instance or a second mutation hook for one field.
+
+- [ ] **Step 2: the pending-choice state**
+
+`describeChatGptState` gains the input and the branch, with a new key
+`ai.chatgpt.chooseSource` in both locales: connected, both sources
+available, nothing chosen -> no suggestion is being made and the user must
+pick. Place it in the check order where it is true rather than where it is
+convenient, and state the reason in the function's doc comment as the
+existing branches do. Extend the "gives every distinct cause a distinct
+message" test with the new row.
+
+- [ ] **Step 3: the copy Task 12 over-claimed**
+
+With routing real, `ai.chatgpt.connected` and `settings.aiKeyHint` become
+true -- but only in the cases where they are. Re-read both against Task 13's
+actual rules and correct whatever still over-claims, in both locales. In
+particular `settings.aiKeyHint`'s "optional when a ChatGPT plan is
+connected below" is now accurate; `ai.chatgpt.connected` must not claim to
+be in use when the selector points at the Anthropic key.
+
+- [ ] **Step 4: three carried-over items from Task 12's fix round**
+
+The fix-round implementer disclosed these and correctly left them outside its
+brief. They live in the same two files and the same two bundles this task
+already edits, so they are requirements here, not follow-ups.
+
+1. **A stale failure message survives the next attempt.** `failure` is
+   cleared only by `settle()` (a success or a "Try again" click), so clicking
+   "Connect" again while an error is on screen leaves the old error up for the
+   whole of the second attempt. Clear it in the mutations' `onMutate`. Already
+   true for `declined` and the coded failures before this round.
+
+2. **A never-connected account that is offline and whose connect failed shows
+   `unknownError`** — "ChatGPT refused the request for a reason WIMM does not
+   recognise", when ChatGPT never saw the request. The implementer checked the
+   alternative and was right that `offline` is also wrong there ("Suggestions
+   resume on their own" describes a connection that exists). Both are wrong
+   because the accurate message does not exist yet, so add it: one new key in
+   both locales saying the sign-in could not start because the user is
+   offline, and to try again once they are back. Place its branch so it beats
+   both `failed` and `offline` for a never-connected account, and record the
+   ordering reason in the doc comment as the existing branches do.
+
+3. **A failed first connect offers "Connect ChatGPT" and "Try again" side by
+   side**, because `unknownError` is `retryable: true`. That is two buttons
+   for one thing — exactly what `ChatGptStateDescription.retryable`'s own doc
+   comment says it keeps false for every `invite` state to avoid. "Try again"
+   there only clears the message and re-reads a status that says
+   not-connected. Suppress the retry button when `status.connected` is false:
+   "Connect" *is* the retry. Do not change `retryable` on the mapping to
+   achieve it — the mapping's judgement about the connection is correct; this
+   is the component's rendering decision, and the comment at the retry button
+   should say so.
+
+- [ ] **Step 5: verification**
+
+```
+cd apps/desktop && pnpm jest
+pnpm exec tsc --noEmit -p apps/desktop/tsconfig.web.json
+```
+
+`pnpm lint` does **not** type-check the renderer (follow-up F5); the `tsc`
+line above is the real check. Report the error count before and after: the
+bar is no new error outside the pre-existing React-19 `JSX` class.
+
+Locale parity must stay exact, and `locale-parity.spec.ts` must cover the
+new key without being special-cased.
+
+---
+
+## Task 15: Full sweep and the packaging guard
+
+> **Renumbered 2026-10-08.** This was Task 13. Tasks 13 and 14 above were
+> inserted when the owner decided to route categorization to the provider
+> rather than ship the connection unwired (see Task 13's "Why this task
+> exists"). The sweep stays last, as it always was.
+
+
 
 **Files:** none created; this task is verification.
 
