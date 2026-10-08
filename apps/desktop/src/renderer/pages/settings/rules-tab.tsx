@@ -7,7 +7,10 @@ import type {
   Category,
 } from '@wimm/shared'
 import { apiClient } from '../../lib/api-client'
-import { buildCategoryOptionGroups } from '../../lib/category-label'
+import {
+  buildCategoryOptionGroups,
+  categoryDisplayName,
+} from '../../lib/category-label'
 import { Select } from '../../components/ui/select'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
